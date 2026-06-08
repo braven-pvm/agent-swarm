@@ -13,6 +13,7 @@ import { workerResultSchema } from "./schemas.js";
 import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
+import { ingestWorkerJsonl } from "./worker-events.js";
 
 const program = new Command();
 
@@ -332,6 +333,12 @@ program
       const jsonlPath = path.join(artifactPath, "codex-events.jsonl");
       fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
       if (result.stderr) fs.writeFileSync(path.join(artifactPath, "codex-stderr.log"), result.stderr, "utf8");
+      const workerEvents = ingestWorkerJsonl({
+        store,
+        actor: options.actor,
+        sliceId: slice.id,
+        jsonl: result.stdout ?? "",
+      });
 
       if (fs.existsSync(lastMessagePath)) {
         store.insertEvidence({
@@ -355,6 +362,7 @@ program
             eventsPath: jsonlPath,
             resultPath: lastMessagePath,
             stderrPath: result.stderr ? path.join(artifactPath, "codex-stderr.log") : undefined,
+            workerEvents,
           },
         }),
       );
@@ -370,6 +378,8 @@ program
       });
       console.log(`Worker ${result.status === 0 ? "completed" : "failed"} for ${slice.id}`);
       console.log(`  events: ${jsonlPath}`);
+      console.log(`  ingested events: ${workerEvents.eventCount}`);
+      if (workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${workerEvents.parseErrorCount}`);
       console.log(`  result: ${lastMessagePath}`);
       if (result.stderr?.trim()) console.error(result.stderr.trim());
     } finally {

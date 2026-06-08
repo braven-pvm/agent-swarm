@@ -78,6 +78,7 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - Blocked dependency events for dashboard work requested before backend readiness.
 - Slices with FR/AC coverage, lease status, source refs, and final state.
 - Worker-result evidence paths.
+- Ingested worker JSONL events from fixture or Codex runs.
 - Verification command evidence with stdout, exit code, and pass/fail.
 - Worker-result schema/coverage gates that block acceptance when coverage evidence is missing.
 - Heartbeats for named workers and verifiers.
