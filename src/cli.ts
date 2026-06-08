@@ -270,8 +270,22 @@ program
       const lastMessagePath = path.join(artifactPath, "worker-result.json");
       const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
       const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
+      const driver = parseWorkerDriver(options.driver);
+      const runId = makeId("agentRun");
+      const now = new Date().toISOString();
+      const attempt = store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === options.actor).length + 1;
 
       store.updateSliceStatus(slice.id, "implementing");
+      store.insertAgentRun({
+        id: runId,
+        sliceId: slice.id,
+        actor: options.actor,
+        driver,
+        status: "running",
+        attempt,
+        startedAt: now,
+        updatedAt: now,
+      });
       store.upsertHeartbeat({
         id: `heartbeat:${options.actor}`,
         actor: options.actor,
@@ -292,11 +306,12 @@ program
             workerActor: options.actor,
             driver: options.driver,
             model: options.model,
+            runId,
+            attempt,
           },
         }),
       );
 
-      const driver = parseWorkerDriver(options.driver);
       let result: { status: number | null; stdout?: string; stderr?: string };
       if (driver === "fixture") {
         const workerResult = runFixtureWorker({ slice, targetPath: target.path });
@@ -339,6 +354,14 @@ program
         sliceId: slice.id,
         jsonl: result.stdout ?? "",
       });
+      const stderrPath = result.stderr ? path.join(artifactPath, "codex-stderr.log") : undefined;
+      store.updateAgentRun(runId, {
+        status: result.status === 0 ? "completed" : "failed",
+        sessionId: workerEvents.sessionId,
+        eventsPath: jsonlPath,
+        resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
+        stderrPath,
+      });
 
       if (fs.existsSync(lastMessagePath)) {
         store.insertEvidence({
@@ -359,9 +382,10 @@ program
           entityId: slice.id,
           payload: {
             exitCode: result.status,
+            runId,
             eventsPath: jsonlPath,
             resultPath: lastMessagePath,
-            stderrPath: result.stderr ? path.join(artifactPath, "codex-stderr.log") : undefined,
+            stderrPath,
             workerEvents,
           },
         }),
@@ -377,8 +401,10 @@ program
         entityId: slice.id,
       });
       console.log(`Worker ${result.status === 0 ? "completed" : "failed"} for ${slice.id}`);
+      console.log(`  run: ${runId}`);
       console.log(`  events: ${jsonlPath}`);
       console.log(`  ingested events: ${workerEvents.eventCount}`);
+      if (workerEvents.sessionId) console.log(`  session: ${workerEvents.sessionId}`);
       if (workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${workerEvents.parseErrorCount}`);
       console.log(`  result: ${lastMessagePath}`);
       if (result.stderr?.trim()) console.error(result.stderr.trim());
@@ -705,6 +731,77 @@ escalations
     }
   });
 
+const recovery = program.command("recovery").description("Inspect and recover stalled agent runs");
+
+recovery
+  .command("scan")
+  .description("Find stale running agent runs")
+  .option("--stale-after <seconds>", "heartbeat age threshold in seconds", parseInteger, 300)
+  .option("--mark-stale", "mark stale runs blocked/stale and raise scoped blocker escalations")
+  .option("--release", "release stale affected slices back to the pool")
+  .option("--actor <actor>", "recovery actor", "recovery-agent")
+  .action((options: { staleAfter: number; markStale?: boolean; release?: boolean; actor: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const staleRuns = findStaleAgentRuns(store, options.staleAfter);
+      console.log(`Stale agent runs: ${staleRuns.length}`);
+      for (const item of staleRuns) {
+        console.log(`  - ${item.run.id} ${item.run.actor} slice:${item.run.sliceId} age:${formatDuration(item.ageMs)}`);
+        if (item.heartbeat?.detail) console.log(`    heartbeat: ${item.heartbeat.state} - ${item.heartbeat.detail}`);
+        if (!options.markStale && !options.release) continue;
+
+        store.updateAgentRun(item.run.id, { status: options.release ? "released" : "stale" });
+        store.upsertHeartbeat({
+          id: `heartbeat:${item.run.actor}`,
+          actor: item.run.actor,
+          state: "blocked",
+          detail: options.release ? "Stale run released by recovery scan" : "Stale run marked for recovery",
+          entityType: "slice",
+          entityId: item.run.sliceId,
+        });
+        const slice = store.listSlices().find((candidate) => candidate.id === item.run.sliceId);
+        if (slice && !["accepted", "closed"].includes(slice.status)) {
+          store.updateSliceStatus(slice.id, options.release ? "closed" : "blocked");
+          if (options.release) store.releaseLeasesForSlice(slice.id);
+        }
+        const existingEscalation = store
+          .listEscalations("active")
+          .some((escalation) => escalation.entityId === item.run.sliceId && escalation.message.includes(item.run.id));
+        if (!existingEscalation) {
+          const now = new Date().toISOString();
+          store.insertEscalation({
+            id: makeId("escalation"),
+            level: "blocker",
+            status: "active",
+            entityType: "slice",
+            entityId: item.run.sliceId,
+            message: `Agent run ${item.run.id} is stale after ${formatDuration(item.ageMs)}.`,
+            createdBy: options.actor,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+        store.addEvent(
+          createEvent({
+            actor: options.actor,
+            type: options.release ? "recovery.released_stale_run" : "recovery.marked_stale_run",
+            entityType: "agent_run",
+            entityId: item.run.id,
+            payload: {
+              sliceId: item.run.sliceId,
+              ageMs: item.ageMs,
+              staleAfterSeconds: options.staleAfter,
+            },
+          }),
+        );
+      }
+    } finally {
+      store.close();
+    }
+  });
+
 program
   .command("watch")
   .description("Show a lightweight live terminal dashboard")
@@ -828,11 +925,13 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
       ...slice,
       leases: leases.filter((lease) => lease.sliceId === slice.id),
       evidence: evidence.filter((item) => item.sliceId === slice.id),
+      agentRuns: store.listAgentRuns().filter((run) => run.sliceId === slice.id),
     })),
     dependencies: store.listDependencies().map((dependency) => ({
       ...dependency,
       status: currentDependencyStatus(store, dependency),
     })),
+    agentRuns: store.listAgentRuns(),
     heartbeats: store.listHeartbeats(),
     activeEscalations: store.listEscalations("active"),
     recentEvents: store.recentEvents(eventCount),
@@ -842,6 +941,7 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
 function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot>): string {
   const activeSlices = snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
   const blockedDependencies = snapshot.dependencies.filter((dependency) => dependency.status === "blocked");
+  const runningAgentRuns = snapshot.agentRuns.filter((run) => run.status === "running");
   const sliceStatusCounts = countBy(snapshot.slices.map((slice) => slice.status));
   const lines = [
     "Agent Swarm Watch",
@@ -850,6 +950,7 @@ function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot
     "",
     `Targets ${snapshot.targets.length} | Sources ${snapshot.sources.length} | Lanes ${snapshot.lanes.length} | Slices ${snapshot.slices.length} | Active ${activeSlices.length}`,
     `Slice states: ${formatCounts(sliceStatusCounts) || "none"}`,
+    `Agent runs: ${snapshot.agentRuns.length} | Running: ${runningAgentRuns.length}`,
     `Active escalations: ${snapshot.activeEscalations.length} | Blocked dependencies: ${blockedDependencies.length}`,
     "",
     "Lanes",
@@ -884,6 +985,13 @@ function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot
     if (heartbeat.detail) lines.push(`    ${heartbeat.detail}`);
   }
 
+  lines.push("", "Agent Runs");
+  if (snapshot.agentRuns.length === 0) lines.push("  none");
+  for (const run of snapshot.agentRuns.slice(-8).reverse()) {
+    lines.push(`  ${run.id} ${run.actor} ${run.driver} [${run.status}] slice:${run.sliceId} attempt:${run.attempt}`);
+    if (run.sessionId) lines.push(`    session: ${run.sessionId}`);
+  }
+
   lines.push("", "Blockers");
   if (snapshot.activeEscalations.length === 0 && blockedDependencies.length === 0) lines.push("  none");
   for (const escalation of snapshot.activeEscalations) {
@@ -915,6 +1023,38 @@ function formatCounts(counts: Record<string, number>): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}:${value}`)
     .join(", ");
+}
+
+function findStaleAgentRuns(store: SwarmStore, staleAfterSeconds: number): Array<{
+  run: ReturnType<SwarmStore["listAgentRuns"]>[number];
+  heartbeat?: ReturnType<SwarmStore["listHeartbeats"]>[number];
+  ageMs: number;
+}> {
+  const now = Date.now();
+  const staleAfterMs = staleAfterSeconds * 1000;
+  const heartbeats = store.listHeartbeats();
+  return store
+    .listAgentRuns("running")
+    .map((run) => {
+      const heartbeat = heartbeats.find((item) => item.actor === run.actor && item.entityId === run.sliceId);
+      const timestamp = heartbeat?.timestamp ?? run.updatedAt;
+      return {
+        run,
+        heartbeat,
+        ageMs: now - Date.parse(timestamp),
+      };
+    })
+    .filter((item) => item.ageMs >= staleAfterMs);
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.max(Math.floor(ms / 1000), 0);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainder}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function parseEscalationLevel(value: string): "info" | "warning" | "blocker" | "human_required" | "critical" {

@@ -6,6 +6,7 @@ export interface WorkerEventIngestResult {
   eventCount: number;
   parseErrorCount: number;
   inferredStates: HeartbeatState[];
+  sessionId?: string;
 }
 
 export function ingestWorkerJsonl(input: {
@@ -17,6 +18,7 @@ export function ingestWorkerJsonl(input: {
   const inferredStates: HeartbeatState[] = [];
   let eventCount = 0;
   let parseErrorCount = 0;
+  let sessionId: string | undefined;
   const lines = input.jsonl
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -45,6 +47,7 @@ export function ingestWorkerJsonl(input: {
     }
 
     const payload = asPayload(parsed.value);
+    sessionId ??= findSessionId(payload);
     const state = inferHeartbeatState(payload);
     inferredStates.push(state);
     eventCount += 1;
@@ -71,7 +74,7 @@ export function ingestWorkerJsonl(input: {
     });
   }
 
-  return { eventCount, parseErrorCount, inferredStates };
+  return { eventCount, parseErrorCount, inferredStates, sessionId };
 }
 
 function parseJsonLine(line: string): { ok: true; value: unknown } | { ok: false; error: string } {
@@ -101,4 +104,24 @@ function inferHeartbeatState(event: Record<string, unknown>): HeartbeatState {
 
 function matchesAny(value: string, needles: string[]): boolean {
   return needles.some((needle) => value.includes(needle));
+}
+
+function findSessionId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findSessionId(item);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["session_id", "sessionId", "conversation_id", "conversationId"]) {
+    if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
+  }
+  for (const item of Object.values(record)) {
+    const found = findSessionId(item);
+    if (found) return found;
+  }
+  return undefined;
 }

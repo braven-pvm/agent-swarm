@@ -11,6 +11,7 @@ const prefixes = {
   heartbeat: "HB",
   evidence: "EVD",
   escalation: "ESC",
+  agentRun: "RUN",
 } as const;
 
 export function makeId(kind: keyof typeof prefixes): string {

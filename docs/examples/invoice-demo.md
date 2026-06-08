@@ -40,9 +40,12 @@ npm run swarm -- watch --once --events 12
 npm run swarm -- timeline <slice-id> --json
 npm run swarm -- graph --format json
 npm run swarm -- graph --format dot
+npm run swarm -- recovery scan --stale-after 300
 ```
 
 `watch` shows the lightweight terminal operator view: lane purpose, active work, heartbeats, blockers, and recent events. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
+
+`recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool.
 
 The real Codex smoke path is explicit because it spends real agent cycles:
 
@@ -83,10 +86,12 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - Verification command evidence with stdout, exit code, and pass/fail.
 - Worker-result schema/coverage gates that block acceptance when coverage evidence is missing.
 - Heartbeats for named workers and verifiers.
+- Durable agent-run lifecycle records for workers.
 - Recent planning, worker, verifier, lane, and escalation events.
 - Per-entity timelines for slices, lanes, and FR/AC-like refs.
 - A dependency/evidence graph in JSON and DOT formats.
 - A lightweight terminal watch frame for lanes, active work, heartbeats, blockers, and recent events.
+- Recovery scanning for stale running agent runs.
 
 ## Observed MVP Lessons
 
@@ -104,3 +109,4 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - A negative verification-gate E2E test proving a slice cannot be accepted without worker-result evidence.
 - A readiness E2E test proving dashboard work is blocked until backend dependencies are completed.
 - Timeline and graph E2E assertions for worker events, evidence, completed leases, dependency blockers, actor nodes, and DOT rendering.
+- Agent-run and recovery E2E assertions for completed runs, stale detection, blocker escalation, and recovery events.

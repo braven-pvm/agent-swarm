@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -30,6 +31,8 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   assert.equal(dashboardSlices.length, 1);
   assert.deepEqual(invoiceSlices.map((slice) => slice.status), ["accepted", "accepted", "accepted"]);
   assert.equal(dashboardSlices[0].status, "accepted");
+  assert.equal(snapshot.agentRuns.length, 4);
+  assert.ok(snapshot.agentRuns.every((run) => run.status === "completed"));
   assert.equal(snapshot.activeEscalations.length, 0);
   assert.ok(snapshot.heartbeats.some((heartbeat) => heartbeat.actor === "backend-worker-query"));
   assert.ok(snapshot.heartbeats.some((heartbeat) => heartbeat.actor === "backend-verifier-lookup"));
@@ -153,6 +156,69 @@ test("planner blocks dashboard slices until backend dependencies are accepted", 
 
   const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "10"]));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "slice.blocked_by_dependencies"));
+});
+
+test("recovery scan marks stale running agent runs and raises a scoped blocker", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-recovery-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const staleTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const store = new SwarmStore(workspace);
+  try {
+    store.insertAgentRun({
+      id: "RUN-stale001",
+      sliceId,
+      actor: "stale-worker",
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      startedAt: staleTimestamp,
+      updatedAt: staleTimestamp,
+    });
+    store.upsertHeartbeat({
+      id: "heartbeat:stale-worker",
+      actor: "stale-worker",
+      state: "thinking",
+      detail: "Synthetic stale heartbeat",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: staleTimestamp,
+    });
+  } finally {
+    store.close();
+  }
+
+  const scanOutput = runSwarm(workspace, ["recovery", "scan", "--stale-after", "60"]);
+  assert.match(scanOutput, /Stale agent runs: 1/);
+  assert.match(scanOutput, /RUN-stale001/);
+
+  runSwarm(workspace, ["recovery", "scan", "--stale-after", "60", "--mark-stale"]);
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "20"]));
+  const run = snapshot.agentRuns.find((item) => item.id === "RUN-stale001");
+  const slice = snapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(run.status, "stale");
+  assert.equal(slice.status, "blocked");
+  assert.ok(snapshot.activeEscalations.some((item) => item.entityId === sliceId && item.message.includes("RUN-stale001")));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "recovery.marked_stale_run"));
 });
 
 function runSwarm(workspace, args) {

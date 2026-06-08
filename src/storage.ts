@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { artifactsDir, stateDbPath, swarmDir } from "./paths.js";
 import type {
+  AgentRunRecord,
   DependencyEdge,
   EscalationRecord,
   EvidenceRecord,
@@ -131,6 +132,21 @@ export class SwarmStore {
         entity_type text,
         entity_id text,
         timestamp text not null
+      );
+
+      create table if not exists agent_runs (
+        id text primary key,
+        slice_id text not null,
+        actor text not null,
+        driver text not null,
+        status text not null,
+        session_id text,
+        attempt integer not null,
+        events_path text,
+        result_path text,
+        stderr_path text,
+        started_at text not null,
+        updated_at text not null
       );
 
       create table if not exists evidence (
@@ -378,6 +394,63 @@ export class SwarmStore {
       .map((row) => mapLease(row as Row));
   }
 
+  insertAgentRun(run: AgentRunRecord): void {
+    this.db
+      .prepare(
+        `insert into agent_runs (id, slice_id, actor, driver, status, session_id, attempt, events_path, result_path, stderr_path, started_at, updated_at)
+         values (@id, @sliceId, @actor, @driver, @status, @sessionId, @attempt, @eventsPath, @resultPath, @stderrPath, @startedAt, @updatedAt)`,
+      )
+      .run({
+        ...run,
+        sessionId: run.sessionId ?? null,
+        eventsPath: run.eventsPath ?? null,
+        resultPath: run.resultPath ?? null,
+        stderrPath: run.stderrPath ?? null,
+      });
+  }
+
+  updateAgentRun(
+    id: string,
+    input: Partial<Pick<AgentRunRecord, "status" | "sessionId" | "eventsPath" | "resultPath" | "stderrPath">>,
+  ): void {
+    const current = this.db.prepare("select * from agent_runs where id = ?").get(id) as Row | undefined;
+    if (!current) throw new Error(`Agent run not found: ${id}`);
+    this.db
+      .prepare(
+        `update agent_runs
+         set status = @status,
+             session_id = @sessionId,
+             events_path = @eventsPath,
+             result_path = @resultPath,
+             stderr_path = @stderrPath,
+             updated_at = @updatedAt
+         where id = @id`,
+      )
+      .run({
+        id,
+        status: input.status ?? current.status,
+        sessionId: input.sessionId ?? current.session_id ?? null,
+        eventsPath: input.eventsPath ?? current.events_path ?? null,
+        resultPath: input.resultPath ?? current.result_path ?? null,
+        stderrPath: input.stderrPath ?? current.stderr_path ?? null,
+        updatedAt: new Date().toISOString(),
+      });
+  }
+
+  listAgentRuns(status?: AgentRunRecord["status"]): AgentRunRecord[] {
+    const rows = status
+      ? this.db.prepare("select * from agent_runs where status = ? order by started_at asc").all(status)
+      : this.db.prepare("select * from agent_runs order by started_at asc").all();
+    return rows.map((row) => mapAgentRun(row as Row));
+  }
+
+  latestAgentRunForSlice(sliceId: string): AgentRunRecord | undefined {
+    const row = this.db
+      .prepare("select * from agent_runs where slice_id = ? order by started_at desc limit 1")
+      .get(sliceId) as Row | undefined;
+    return row ? mapAgentRun(row) : undefined;
+  }
+
   upsertHeartbeat(input: Omit<HeartbeatRecord, "id" | "timestamp"> & { id?: string; timestamp?: string }): HeartbeatRecord {
     const heartbeat: HeartbeatRecord = {
       id: input.id ?? `heartbeat:${input.actor}`,
@@ -557,6 +630,23 @@ function mapDependency(row: Row): DependencyEdge {
     reason: String(row.reason),
     status: row.status as DependencyEdge["status"],
     createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapAgentRun(row: Row): AgentRunRecord {
+  return {
+    id: String(row.id),
+    sliceId: String(row.slice_id),
+    actor: String(row.actor),
+    driver: row.driver as AgentRunRecord["driver"],
+    status: row.status as AgentRunRecord["status"],
+    sessionId: row.session_id === null || row.session_id === undefined ? undefined : String(row.session_id),
+    attempt: Number(row.attempt),
+    eventsPath: row.events_path === null || row.events_path === undefined ? undefined : String(row.events_path),
+    resultPath: row.result_path === null || row.result_path === undefined ? undefined : String(row.result_path),
+    stderrPath: row.stderr_path === null || row.stderr_path === undefined ? undefined : String(row.stderr_path),
+    startedAt: String(row.started_at),
     updatedAt: String(row.updated_at),
   };
 }

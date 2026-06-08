@@ -126,6 +126,21 @@ export interface HeartbeatRecord {
   timestamp: string;
 }
 
+export interface AgentRunRecord {
+  id: string;
+  sliceId: string;
+  actor: string;
+  driver: "codex" | "fixture";
+  status: "running" | "completed" | "failed" | "stale" | "released";
+  sessionId?: string;
+  attempt: number;
+  eventsPath?: string;
+  resultPath?: string;
+  stderrPath?: string;
+  startedAt: string;
+  updatedAt: string;
+}
+
 export interface EvidenceRecord {
   id: string;
   sliceId: string;
