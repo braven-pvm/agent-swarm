@@ -93,6 +93,12 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   assert.match(watch, /Heartbeats/);
   assert.match(watch, /Blocked dependencies: 0/);
   assert.match(watch, /Recent Events/);
+
+  const agentWatch = runSwarm(workspace, ["watch", "--once", "--no-clear", "--view", "agents", "--events", "8"]);
+  assert.match(agentWatch, /View: agents/);
+  assert.match(agentWatch, /Agent Runs/);
+  assert.match(agentWatch, /RUN-/);
+  assert.doesNotMatch(agentWatch, /\nLanes\n/);
 });
 
 test("verification blocks acceptance when worker coverage evidence is missing", () => {

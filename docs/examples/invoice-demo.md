@@ -37,13 +37,14 @@ After the run, inspect the operational visibility surfaces:
 ```powershell
 npm run swarm -- observe --events 60
 npm run swarm -- watch --once --events 12
+npm run swarm -- watch --view agents
 npm run swarm -- timeline <slice-id> --json
 npm run swarm -- graph --format json
 npm run swarm -- graph --format dot
 npm run swarm -- recovery scan --stale-after 300
 ```
 
-`watch` shows the lightweight terminal operator view: lane purpose, active work, heartbeats, blockers, and recent events. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
+`watch` shows the terminal operator view: lane purpose, active work, heartbeats, agent runs, blockers, recent events, and suggested operator actions. Use `--view all|lanes|agents|blockers|events` to focus the frame. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
 
 `recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool. `recovery revive <run-id>` resumes the same Codex session when a captured session id is available; starting a fresh agent remains a separate restart action.
 
@@ -90,7 +91,7 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - Recent planning, worker, verifier, lane, and escalation events.
 - Per-entity timelines for slices, lanes, and FR/AC-like refs.
 - A dependency/evidence graph in JSON and DOT formats.
-- A lightweight terminal watch frame for lanes, active work, heartbeats, blockers, and recent events.
+- A terminal watch frame for lanes, active work, heartbeats, agent runs, blockers, recent events, and focused views.
 - Recovery scanning for stale running agent runs.
 
 ## Observed MVP Lessons

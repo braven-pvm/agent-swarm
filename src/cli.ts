@@ -941,17 +941,20 @@ program
   .description("Show a lightweight live terminal dashboard")
   .option("--interval <seconds>", "refresh interval in seconds", parseInteger, 2)
   .option("--events <count>", "recent event count", parseInteger, 12)
+  .option("--stale-after <seconds>", "mark heartbeat/run ages stale after this many seconds", parseInteger, 300)
+  .option("--view <view>", "all, lanes, agents, blockers, or events", "all")
   .option("--once", "render one frame and exit")
   .option("--no-clear", "do not clear the terminal between frames")
-  .action(async (options: { interval: number; events: number; once?: boolean; clear?: boolean }) => {
+  .action(async (options: { interval: number; events: number; staleAfter: number; view: string; once?: boolean; clear?: boolean }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
+    const view = parseWatchView(options.view);
     const render = () => {
       const store = new SwarmStore(workspace);
       try {
         const snapshot = buildObservabilitySnapshot(store, workspace, options.events);
         if (options.clear !== false && !options.once) process.stdout.write("\x1Bc");
-        process.stdout.write(`${renderWatchFrame(snapshot)}\n`);
+        process.stdout.write(`${renderWatchFrame(snapshot, { staleAfterSeconds: options.staleAfter, view })}\n`);
       } finally {
         store.close();
       }
@@ -1072,24 +1075,43 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
   };
 }
 
-function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot>): string {
+type WatchView = "all" | "lanes" | "agents" | "blockers" | "events";
+
+function renderWatchFrame(
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  options: { staleAfterSeconds: number; view: WatchView },
+): string {
   const activeSlices = snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
   const blockedDependencies = snapshot.dependencies.filter((dependency) => dependency.status === "blocked");
   const runningAgentRuns = snapshot.agentRuns.filter((run) => run.status === "running");
+  const staleAgentRuns = staleRunningAgentRuns(snapshot, options.staleAfterSeconds);
   const sliceStatusCounts = countBy(snapshot.slices.map((slice) => slice.status));
   const lines = [
     "Agent Swarm Watch",
     `Generated: ${snapshot.generatedAt}`,
     `Workspace: ${snapshot.workspace}`,
+    `View: ${options.view} | Stale threshold: ${options.staleAfterSeconds}s`,
     "",
     `Targets ${snapshot.targets.length} | Sources ${snapshot.sources.length} | Lanes ${snapshot.lanes.length} | Slices ${snapshot.slices.length} | Active ${activeSlices.length}`,
     `Slice states: ${formatCounts(sliceStatusCounts) || "none"}`,
-    `Agent runs: ${snapshot.agentRuns.length} | Running: ${runningAgentRuns.length}`,
+    `Agent runs: ${snapshot.agentRuns.length} | Running: ${runningAgentRuns.length} | Stale candidates: ${staleAgentRuns.length}`,
     `Active escalations: ${snapshot.activeEscalations.length} | Blocked dependencies: ${blockedDependencies.length}`,
-    "",
-    "Lanes",
   ];
 
+  if (shouldRender(options.view, "lanes")) renderLaneSection(lines, snapshot, activeSlices);
+  if (shouldRender(options.view, "agents")) renderAgentSection(lines, snapshot, options.staleAfterSeconds);
+  if (shouldRender(options.view, "blockers")) renderBlockerSection(lines, snapshot, blockedDependencies, staleAgentRuns);
+  if (shouldRender(options.view, "events")) renderEventSection(lines, snapshot);
+  renderActionSection(lines, options.view, staleAgentRuns.length);
+  return lines.join("\n");
+}
+
+function renderLaneSection(
+  lines: string[],
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  activeSlices: ReturnType<typeof buildObservabilitySnapshot>["slices"],
+): void {
+  lines.push("", "Lanes");
   if (snapshot.lanes.length === 0) lines.push("  none");
   for (const lane of snapshot.lanes) {
     const laneSlices = snapshot.slices.filter((slice) => slice.laneId === lane.id);
@@ -1109,12 +1131,20 @@ function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot
     lines.push(`    lane: ${lane?.name ?? slice.laneId}`);
     lines.push(`    refs: ${leaseSummary}`);
   }
+}
 
+function renderAgentSection(
+  lines: string[],
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  staleAfterSeconds: number,
+): void {
   lines.push("", "Heartbeats");
   if (snapshot.heartbeats.length === 0) lines.push("  none");
   for (const heartbeat of snapshot.heartbeats.slice(0, 8)) {
+    const ageMs = Date.now() - Date.parse(heartbeat.timestamp);
+    const stale = ageMs >= staleAfterSeconds * 1000;
     lines.push(
-      `  ${heartbeat.actor}: ${heartbeat.state} ${heartbeat.entityType ?? "entity"}:${heartbeat.entityId ?? "-"} (${elapsedSince(heartbeat.timestamp)})`,
+      `  ${heartbeat.actor}: ${heartbeat.state}${stale ? " STALE" : ""} ${heartbeat.entityType ?? "entity"}:${heartbeat.entityId ?? "-"} (${elapsedSince(heartbeat.timestamp)})`,
     );
     if (heartbeat.detail) lines.push(`    ${heartbeat.detail}`);
   }
@@ -1124,25 +1154,44 @@ function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot
   for (const run of snapshot.agentRuns.slice(-8).reverse()) {
     lines.push(`  ${run.id} ${run.actor} ${run.driver} [${run.status}] slice:${run.sliceId} attempt:${run.attempt}`);
     if (run.sessionId) lines.push(`    session: ${run.sessionId}`);
+    if (run.eventsPath) lines.push(`    events: ${run.eventsPath}`);
   }
+}
 
+function renderBlockerSection(
+  lines: string[],
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  blockedDependencies: ReturnType<typeof buildObservabilitySnapshot>["dependencies"],
+  staleAgentRuns: ReturnType<typeof buildObservabilitySnapshot>["agentRuns"],
+): void {
   lines.push("", "Blockers");
-  if (snapshot.activeEscalations.length === 0 && blockedDependencies.length === 0) lines.push("  none");
+  if (snapshot.activeEscalations.length === 0 && blockedDependencies.length === 0 && staleAgentRuns.length === 0) lines.push("  none");
   for (const escalation of snapshot.activeEscalations) {
     lines.push(`  escalation ${escalation.level} ${escalation.entityType}:${escalation.entityId} - ${escalation.message}`);
   }
   for (const dependency of blockedDependencies.slice(0, 8)) {
     lines.push(`  dependency ${dependency.target} -> ${dependency.fromType}:${dependency.fromId} - ${dependency.reason}`);
   }
+  for (const run of staleAgentRuns.slice(0, 8)) {
+    lines.push(`  stale run ${run.id} actor:${run.actor} slice:${run.sliceId}`);
+  }
+}
 
+function renderEventSection(lines: string[], snapshot: ReturnType<typeof buildObservabilitySnapshot>): void {
   lines.push("", "Recent Events");
   if (snapshot.recentEvents.length === 0) lines.push("  none");
   for (const event of snapshot.recentEvents) {
     lines.push(`  ${event.timestamp} ${event.actor} ${event.type} ${event.entityType}:${event.entityId}`);
   }
+}
 
-  lines.push("", "Refresh: Ctrl+C to exit. Use --once for scripts/tests.");
-  return lines.join("\n");
+function renderActionSection(lines: string[], view: WatchView, staleCount: number): void {
+  lines.push("", "Operator Actions");
+  lines.push("  watch views: --view all|lanes|agents|blockers|events");
+  if (staleCount > 0) lines.push("  stale runs: swarm recovery scan --mark-stale");
+  lines.push("  recovery: swarm recovery scan --stale-after 300");
+  lines.push("  details: swarm timeline <slice-id> --json | swarm graph --format dot");
+  lines.push(`  refresh: Ctrl+C to exit${view === "all" ? "" : " | --view all to restore full frame"}`);
 }
 
 function countBy(values: string[]): Record<string, number> {
@@ -1157,6 +1206,29 @@ function formatCounts(counts: Record<string, number>): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}:${value}`)
     .join(", ");
+}
+
+function parseWatchView(value: string): WatchView {
+  const allowed = new Set(["all", "lanes", "agents", "blockers", "events"]);
+  if (!allowed.has(value)) throw new Error(`Invalid watch view: ${value}. Expected all, lanes, agents, blockers, or events.`);
+  return value as WatchView;
+}
+
+function shouldRender(current: WatchView, section: Exclude<WatchView, "all">): boolean {
+  return current === "all" || current === section;
+}
+
+function staleRunningAgentRuns(
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  staleAfterSeconds: number,
+): ReturnType<typeof buildObservabilitySnapshot>["agentRuns"] {
+  const now = Date.now();
+  const staleAfterMs = staleAfterSeconds * 1000;
+  return snapshot.agentRuns.filter((run) => {
+    if (run.status !== "running") return false;
+    const heartbeat = snapshot.heartbeats.find((item) => item.actor === run.actor && item.entityId === run.sliceId);
+    return now - Date.parse(heartbeat?.timestamp ?? run.updatedAt) >= staleAfterMs;
+  });
 }
 
 function findStaleAgentRuns(store: SwarmStore, staleAfterSeconds: number): Array<{
