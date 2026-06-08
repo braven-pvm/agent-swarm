@@ -40,3 +40,12 @@ The script writes:
 The summary contains boolean observability assertions so the demo can fail loudly when one surface stops reflecting the run.
 
 During a real Codex run, `swarm watch --view agents` can be opened from `.swarm-demo/observability` to see worker events and heartbeat state update before the Codex process exits. The structured `worker-result.json` file remains the final verification artifact.
+
+To inspect a completed run in the local web viewer:
+
+```powershell
+npm run build
+node dist\cli.js serve --workspace .swarm-demo\observability --host 127.0.0.1 --port 4317
+```
+
+Then open `http://127.0.0.1:4317/`. The first web viewer is read-only and uses the same harness state as `swarm watch`, `swarm observe`, `swarm timeline`, `swarm graph`, and `swarm report`.

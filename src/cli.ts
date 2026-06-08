@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import http, { type ServerResponse } from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { URL } from "node:url";
 import { Command } from "commander";
 import YAML from "yaml";
 import { createEvent } from "./events.js";
@@ -34,6 +36,553 @@ type CodexStreamingResult = {
   stderr: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
 };
+
+const WEB_VIEWER_HTML = String.raw`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Swarm Observability</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Agent Swarm Observability</h1>
+        <p id="workspace">Loading workspace...</p>
+      </div>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <label>
+          <span>Auto</span>
+          <input id="autoRefresh" type="checkbox" checked>
+        </label>
+      </div>
+    </header>
+
+    <main>
+      <section class="metrics" id="metrics"></section>
+
+      <section class="layout">
+        <div class="column wide">
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Lanes</h2>
+              <span id="laneCount"></span>
+            </div>
+            <div id="lanes" class="lane-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Slices</h2>
+              <span id="sliceCount"></span>
+            </div>
+            <div id="slices" class="slice-list"></div>
+          </section>
+        </div>
+
+        <div class="column">
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Agents</h2>
+              <span id="agentCount"></span>
+            </div>
+            <div id="agents" class="stack"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Blockers</h2>
+              <span id="blockerCount"></span>
+            </div>
+            <div id="blockers" class="stack"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="layout">
+        <section class="panel wide">
+          <div class="panel-title">
+            <h2>Recent Events</h2>
+            <span id="updatedAt"></span>
+          </div>
+          <div id="events" class="event-list"></div>
+        </section>
+
+        <section class="panel detail">
+          <div class="panel-title">
+            <h2>Slice Detail</h2>
+            <span id="selectedSliceLabel"></span>
+          </div>
+          <pre id="report">Select a slice to view its report.</pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
+`;
+
+const WEB_VIEWER_CSS = String.raw`:root {
+  color-scheme: light;
+  --bg: #f6f7f4;
+  --panel: #ffffff;
+  --ink: #20231f;
+  --muted: #626860;
+  --line: #d9ded2;
+  --green: #227a4d;
+  --amber: #a45f08;
+  --red: #b33b2e;
+  --blue: #2f6690;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcf8;
+}
+
+h1, h2, p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+#workspace,
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  white-space: nowrap;
+}
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 7px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+main {
+  padding: 22px 28px 32px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.metric,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.metric {
+  padding: 13px 14px;
+}
+
+.metric strong {
+  display: block;
+  font-size: 24px;
+}
+
+.metric span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(340px, 0.9fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.column {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcf8;
+}
+
+.panel-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lane-list,
+.slice-list,
+.stack,
+.event-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.item {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.item.clickable {
+  cursor: pointer;
+}
+
+.item.clickable:hover {
+  border-color: var(--blue);
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.sub {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 650;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.accepted,
+.idle,
+.satisfied,
+.completed {
+  color: var(--green);
+  border-color: #a8d5bd;
+  background: #edf8f1;
+}
+
+.implementing,
+.verifying,
+.thinking,
+.reading,
+.editing,
+.testing,
+.pending,
+.running {
+  color: var(--blue);
+  border-color: #b8d2e6;
+  background: #eef6fb;
+}
+
+.blocked,
+.stale,
+.failed,
+.critical,
+.human_required {
+  color: var(--red);
+  border-color: #e3b5ad;
+  background: #fff1ee;
+}
+
+.warning,
+.waiting {
+  color: var(--amber);
+  border-color: #e4c48d;
+  background: #fff8e9;
+}
+
+.refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ref {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 5px;
+}
+
+.event-list .item {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+pre {
+  margin: 0;
+  padding: 14px;
+  min-height: 280px;
+  max-height: 620px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .topbar,
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    display: grid;
+  }
+}
+`;
+
+const WEB_VIEWER_JS = String.raw`let snapshot = null;
+let selectedSliceId = null;
+let timer = null;
+
+const els = {
+  workspace: document.getElementById("workspace"),
+  metrics: document.getElementById("metrics"),
+  lanes: document.getElementById("lanes"),
+  laneCount: document.getElementById("laneCount"),
+  slices: document.getElementById("slices"),
+  sliceCount: document.getElementById("sliceCount"),
+  agents: document.getElementById("agents"),
+  agentCount: document.getElementById("agentCount"),
+  blockers: document.getElementById("blockers"),
+  blockerCount: document.getElementById("blockerCount"),
+  events: document.getElementById("events"),
+  updatedAt: document.getElementById("updatedAt"),
+  report: document.getElementById("report"),
+  selectedSliceLabel: document.getElementById("selectedSliceLabel"),
+  refresh: document.getElementById("refresh"),
+  autoRefresh: document.getElementById("autoRefresh"),
+};
+
+els.refresh.addEventListener("click", load);
+els.autoRefresh.addEventListener("change", () => {
+  if (els.autoRefresh.checked) startTimer();
+  else stopTimer();
+});
+
+startTimer();
+load();
+
+function startTimer() {
+  stopTimer();
+  timer = window.setInterval(load, 2000);
+}
+
+function stopTimer() {
+  if (timer) window.clearInterval(timer);
+  timer = null;
+}
+
+async function load() {
+  const response = await fetch("/api/snapshot?events=80", { cache: "no-store" });
+  snapshot = await response.json();
+  render();
+  if (selectedSliceId) loadReport(selectedSliceId);
+}
+
+function render() {
+  els.workspace.textContent = snapshot.workspace;
+  els.updatedAt.textContent = "Updated " + new Date(snapshot.generatedAt).toLocaleTimeString();
+  const activeSlices = snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+  const runningAgents = snapshot.agentRuns.filter((run) => run.status === "running");
+  const blockedDependencies = snapshot.dependencies.filter((dependency) => dependency.status === "blocked");
+  renderMetrics([
+    ["Targets", snapshot.targets.length],
+    ["Sources", snapshot.sources.length],
+    ["Lanes", snapshot.lanes.length],
+    ["Slices", snapshot.slices.length],
+    ["Active Work", activeSlices.length],
+    ["Running Agents", runningAgents.length],
+    ["Blockers", snapshot.activeEscalations.length + blockedDependencies.length],
+    ["Events", snapshot.recentEvents.length],
+  ]);
+  renderLanes(activeSlices);
+  renderSlices();
+  renderAgents();
+  renderBlockers(blockedDependencies);
+  renderEvents();
+}
+
+function renderMetrics(items) {
+  els.metrics.innerHTML = items.map(([label, value]) =>
+    '<div class="metric"><strong>' + escapeHtml(value) + '</strong><span>' + escapeHtml(label) + '</span></div>'
+  ).join("");
+}
+
+function renderLanes(activeSlices) {
+  els.laneCount.textContent = snapshot.lanes.length + " total";
+  els.lanes.innerHTML = emptyOr(snapshot.lanes.map((lane) => {
+    const laneSlices = snapshot.slices.filter((slice) => slice.laneId === lane.id);
+    const active = activeSlices.filter((slice) => slice.laneId === lane.id);
+    const refs = unique(laneSlices.flatMap((slice) => slice.frAcRefs));
+    return '<article class="item">' +
+      '<div class="row"><div><div class="title">' + escapeHtml(lane.name) + '</div>' +
+      '<div class="sub">' + escapeHtml(lane.purpose) + '</div></div>' +
+      pill(lane.state) + '</div>' +
+      '<div class="sub">orchestrator: ' + escapeHtml(lane.orchestrator) + '</div>' +
+      '<div class="sub">active slices: ' + active.length + ' | focus: ' + escapeHtml(lane.focusLabels.join(", ")) + '</div>' +
+      refsHtml(refs.slice(0, 10)) +
+      '</article>';
+  }), "No lanes");
+}
+
+function renderSlices() {
+  els.sliceCount.textContent = snapshot.slices.length + " total";
+  els.slices.innerHTML = emptyOr(snapshot.slices.slice().reverse().map((slice) => {
+    const lane = snapshot.lanes.find((item) => item.id === slice.laneId);
+    const evidenceCount = slice.evidence ? slice.evidence.length : 0;
+    return '<article class="item clickable" data-slice="' + escapeHtml(slice.id) + '">' +
+      '<div class="row"><div><div class="title">' + escapeHtml(slice.title) + '</div>' +
+      '<div class="sub">' + escapeHtml(slice.id) + ' | ' + escapeHtml(lane ? lane.name : slice.laneId) + '</div></div>' +
+      pill(slice.status) + '</div>' +
+      '<div class="sub">evidence: ' + evidenceCount + ' | agent runs: ' + (slice.agentRuns ? slice.agentRuns.length : 0) + '</div>' +
+      refsHtml(slice.frAcRefs) +
+      '</article>';
+  }), "No slices");
+  els.slices.querySelectorAll("[data-slice]").forEach((node) => {
+    node.addEventListener("click", () => {
+      selectedSliceId = node.getAttribute("data-slice");
+      loadReport(selectedSliceId);
+    });
+  });
+}
+
+function renderAgents() {
+  els.agentCount.textContent = snapshot.agentRuns.length + " runs";
+  const heartbeats = new Map(snapshot.heartbeats.map((heartbeat) => [heartbeat.actor + ":" + heartbeat.entityId, heartbeat]));
+  els.agents.innerHTML = emptyOr(snapshot.agentRuns.slice().reverse().slice(0, 12).map((run) => {
+    const heartbeat = heartbeats.get(run.actor + ":" + run.sliceId);
+    return '<article class="item">' +
+      '<div class="row"><div><div class="title">' + escapeHtml(run.actor) + '</div>' +
+      '<div class="sub">' + escapeHtml(run.id) + ' | slice ' + escapeHtml(run.sliceId) + '</div></div>' +
+      pill(run.status) + '</div>' +
+      '<div class="sub">driver: ' + escapeHtml(run.driver) + ' | attempt: ' + run.attempt + '</div>' +
+      (run.sessionId ? '<div class="sub">session: ' + escapeHtml(run.sessionId) + '</div>' : '') +
+      (heartbeat ? '<div class="sub">heartbeat: ' + escapeHtml(heartbeat.state) + ' | ' + escapeHtml(heartbeat.detail || "") + '</div>' : '') +
+      '</article>';
+  }), "No agent runs");
+}
+
+function renderBlockers(blockedDependencies) {
+  const items = [];
+  snapshot.activeEscalations.forEach((escalation) => {
+    items.push('<article class="item"><div class="row"><div class="title">' + escapeHtml(escalation.entityType + ":" + escalation.entityId) + '</div>' + pill(escalation.level) + '</div><div class="sub">' + escapeHtml(escalation.message) + '</div></article>');
+  });
+  blockedDependencies.forEach((dependency) => {
+    items.push('<article class="item"><div class="row"><div class="title">' + escapeHtml(dependency.target) + '</div>' + pill(dependency.status) + '</div><div class="sub">' + escapeHtml(dependency.reason) + '</div></article>');
+  });
+  els.blockerCount.textContent = items.length + " active";
+  els.blockers.innerHTML = emptyOr(items, "No blockers");
+}
+
+function renderEvents() {
+  els.events.innerHTML = emptyOr(snapshot.recentEvents.map((event) =>
+    '<article class="item"><div>' + escapeHtml(event.timestamp + " " + event.actor + " " + event.type) + '</div><div class="sub">' + escapeHtml(event.entityType + ":" + event.entityId) + '</div></article>'
+  ), "No events");
+}
+
+async function loadReport(sliceId) {
+  els.selectedSliceLabel.textContent = sliceId;
+  const response = await fetch("/api/report/" + encodeURIComponent(sliceId), { cache: "no-store" });
+  els.report.textContent = await response.text();
+}
+
+function pill(value) {
+  return '<span class="pill ' + escapeHtml(String(value)) + '">' + escapeHtml(String(value)) + '</span>';
+}
+
+function refsHtml(refs) {
+  if (!refs || refs.length === 0) return "";
+  return '<div class="refs">' + refs.map((ref) => '<span class="ref">' + escapeHtml(ref) + '</span>').join("") + '</div>';
+}
+
+function emptyOr(items, emptyText) {
+  return items.length ? items.join("") : '<div class="item muted">' + escapeHtml(emptyText) + '</div>';
+}
+
+function unique(values) {
+  return Array.from(new Set(values));
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
+}
+`;
 
 program
   .name("swarm")
@@ -493,52 +1042,31 @@ program
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const slice = store.listSlices().find((item) => item.id === sliceId);
-      if (!slice) throw new Error(`Slice not found: ${sliceId}`);
-      const lane = store.listLanes().find((item) => item.id === slice.laneId);
-      const leases = store.listLeases().filter((lease) => lease.sliceId === slice.id);
-      const evidence = store.listEvidence(slice.id);
-      const escalations = store.listEscalations("active").filter((item) => item.entityId === slice.id);
-      console.log(`# Slice Report: ${slice.title}`);
-      console.log("");
-      console.log(`Status: ${slice.status}`);
-      console.log(`Slice: ${slice.id}`);
-      console.log(`Lane: ${lane ? `${lane.name} (${lane.id})` : slice.laneId}`);
-      console.log("");
-      console.log("Source refs:");
-      for (const source of slice.sourceRefs) {
-        console.log(`- ${source.title ?? source.uri} (${source.uri})`);
-      }
-      console.log("");
-      console.log("FR/AC coverage:");
-      for (const ref of slice.frAcRefs) {
-        console.log(`- ${ref}`);
-      }
-      console.log("");
-      console.log("Leases:");
-      for (const lease of leases) {
-        console.log(`- ${lease.frAcRef}: ${lease.status}`);
-      }
-      console.log("");
-      console.log("Evidence:");
-      if (evidence.length === 0) console.log("- none");
-      for (const item of evidence) {
-        console.log(`- ${item.kind}: ${item.summary}${item.ref ? ` (${item.ref})` : ""}`);
-      }
-      console.log("");
-      console.log("Active escalations:");
-      if (escalations.length === 0) console.log("- none");
-      for (const escalation of escalations) {
-        console.log(`- ${escalation.level}: ${escalation.message}`);
-      }
-      console.log("");
-      console.log("Verification requirements:");
-      for (const req of slice.verificationRequirements) {
-        console.log(`- ${req}`);
-      }
+      console.log(buildSliceReport(store, sliceId));
     } finally {
       store.close();
     }
+  });
+
+program
+  .command("serve")
+  .description("Serve a local read-only web observability viewer")
+  .option("--workspace <path>", "harness workspace to observe", process.cwd())
+  .option("--host <host>", "bind host", "127.0.0.1")
+  .option("--port <port>", "bind port", parseInteger, 4317)
+  .option("--events <count>", "default snapshot event count", parseInteger, 80)
+  .action((options: { workspace: string; host: string; port: number; events: number }) => {
+    const workspace = path.resolve(options.workspace);
+    ensureInitialized(workspace);
+    const server = createWebViewerServer({ workspace, defaultEventCount: options.events });
+    server.listen(options.port, options.host, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : options.port;
+      console.log("Agent Swarm web observability viewer");
+      console.log(`  workspace: ${workspace}`);
+      console.log(`  url: http://${options.host}:${port}/`);
+      console.log("  mode: read-only");
+    });
   });
 
 const escalations = program.command("escalations").description("Manage scoped escalations");
@@ -1240,6 +1768,149 @@ function printStatus(): void {
   } finally {
     store.close();
   }
+}
+
+function createWebViewerServer(input: { workspace: string; defaultEventCount: number }): http.Server {
+  return http.createServer((request, response) => {
+    try {
+      const requestUrl = new URL(request.url ?? "/", "http://localhost");
+      if (request.method !== "GET") {
+        sendText(response, 405, "Method not allowed", "text/plain");
+        return;
+      }
+
+      if (requestUrl.pathname === "/") {
+        sendText(response, 200, WEB_VIEWER_HTML, "text/html; charset=utf-8");
+        return;
+      }
+      if (requestUrl.pathname === "/assets/styles.css") {
+        sendText(response, 200, WEB_VIEWER_CSS, "text/css; charset=utf-8");
+        return;
+      }
+      if (requestUrl.pathname === "/assets/app.js") {
+        sendText(response, 200, WEB_VIEWER_JS, "text/javascript; charset=utf-8");
+        return;
+      }
+
+      const store = new SwarmStore(input.workspace);
+      try {
+        if (requestUrl.pathname === "/api/snapshot") {
+          const events = parseOptionalPositiveInteger(requestUrl.searchParams.get("events")) ?? input.defaultEventCount;
+          sendJson(response, buildObservabilitySnapshot(store, input.workspace, events));
+          return;
+        }
+        if (requestUrl.pathname.startsWith("/api/timeline/")) {
+          const entityId = decodeURIComponent(requestUrl.pathname.slice("/api/timeline/".length));
+          if (!entityId) {
+            sendJson(response, { error: "Missing timeline entity id" }, 400);
+            return;
+          }
+          sendJson(response, buildTimeline(store, entityId));
+          return;
+        }
+        if (requestUrl.pathname === "/api/graph") {
+          sendJson(response, buildGraph(store));
+          return;
+        }
+        if (requestUrl.pathname.startsWith("/api/report/")) {
+          const sliceId = decodeURIComponent(requestUrl.pathname.slice("/api/report/".length));
+          if (!sliceId) {
+            sendJson(response, { error: "Missing report slice id" }, 400);
+            return;
+          }
+          sendText(response, 200, buildSliceReport(store, sliceId), "text/markdown; charset=utf-8");
+          return;
+        }
+        if (requestUrl.pathname.startsWith("/api/artifacts/")) {
+          const artifactPath = decodeURIComponent(requestUrl.pathname.slice("/api/artifacts/".length));
+          serveArtifact(response, input.workspace, artifactPath);
+          return;
+        }
+      } finally {
+        store.close();
+      }
+
+      sendText(response, 404, "Not found", "text/plain");
+    } catch (error) {
+      sendJson(response, { error: error instanceof Error ? error.message : String(error) }, 500);
+    }
+  });
+}
+
+function sendJson(response: ServerResponse, value: unknown, statusCode = 200): void {
+  sendText(response, statusCode, `${JSON.stringify(value, null, 2)}\n`, "application/json; charset=utf-8");
+}
+
+function sendText(response: ServerResponse, statusCode: number, body: string, contentType: string): void {
+  response.writeHead(statusCode, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
+  response.end(body);
+}
+
+function serveArtifact(response: ServerResponse, workspace: string, relativePath: string): void {
+  const root = artifactsDir(workspace);
+  const resolved = path.resolve(root, relativePath);
+  if (!resolved.toLowerCase().startsWith(`${path.resolve(root).toLowerCase()}${path.sep}`)) {
+    sendJson(response, { error: "Artifact path escapes workspace artifacts directory" }, 400);
+    return;
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    sendJson(response, { error: "Artifact not found" }, 404);
+    return;
+  }
+  sendText(response, 200, fs.readFileSync(resolved, "utf8"), contentTypeForPath(resolved));
+}
+
+function contentTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".json" || ext === ".jsonl") return "application/json; charset=utf-8";
+  if (ext === ".log" || ext === ".txt") return "text/plain; charset=utf-8";
+  if (ext === ".md") return "text/markdown; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function parseOptionalPositiveInteger(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function buildSliceReport(store: SwarmStore, sliceId: string): string {
+  const slice = store.listSlices().find((item) => item.id === sliceId);
+  if (!slice) throw new Error(`Slice not found: ${sliceId}`);
+  const lane = store.listLanes().find((item) => item.id === slice.laneId);
+  const leases = store.listLeases().filter((lease) => lease.sliceId === slice.id);
+  const evidence = store.listEvidence(slice.id);
+  const escalations = store.listEscalations("active").filter((item) => item.entityId === slice.id);
+  const lines = [
+    `# Slice Report: ${slice.title}`,
+    "",
+    `Status: ${slice.status}`,
+    `Slice: ${slice.id}`,
+    `Lane: ${lane ? `${lane.name} (${lane.id})` : slice.laneId}`,
+    "",
+    "Source refs:",
+    ...slice.sourceRefs.map((source) => `- ${source.title ?? source.uri} (${source.uri})`),
+    "",
+    "FR/AC coverage:",
+    ...slice.frAcRefs.map((ref) => `- ${ref}`),
+    "",
+    "Leases:",
+    ...(leases.length > 0 ? leases.map((lease) => `- ${lease.frAcRef}: ${lease.status}`) : ["- none"]),
+    "",
+    "Evidence:",
+    ...(evidence.length > 0 ? evidence.map((item) => `- ${item.kind}: ${item.summary}${item.ref ? ` (${item.ref})` : ""}`) : ["- none"]),
+    "",
+    "Active escalations:",
+    ...(escalations.length > 0 ? escalations.map((escalation) => `- ${escalation.level}: ${escalation.message}`) : ["- none"]),
+    "",
+    "Verification requirements:",
+    ...slice.verificationRequirements.map((req) => `- ${req}`),
+  ];
+  return lines.join("\n");
 }
 
 function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {
