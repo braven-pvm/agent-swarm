@@ -45,7 +45,7 @@ npm run swarm -- recovery scan --stale-after 300
 
 `watch` shows the lightweight terminal operator view: lane purpose, active work, heartbeats, blockers, and recent events. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
 
-`recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool.
+`recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool. `recovery revive <run-id>` resumes the same Codex session when a captured session id is available; starting a fresh agent remains a separate restart action.
 
 The real Codex smoke path is explicit because it spends real agent cycles:
 

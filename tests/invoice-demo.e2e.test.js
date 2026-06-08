@@ -219,6 +219,10 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
   assert.equal(slice.status, "blocked");
   assert.ok(snapshot.activeEscalations.some((item) => item.entityId === sliceId && item.message.includes("RUN-stale001")));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "recovery.marked_stale_run"));
+  assert.throws(
+    () => runSwarm(workspace, ["recovery", "revive", "RUN-stale001"]),
+    /does not have a captured Codex session id/,
+  );
 });
 
 function runSwarm(workspace, args) {

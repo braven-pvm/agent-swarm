@@ -802,6 +802,140 @@ recovery
     }
   });
 
+recovery
+  .command("revive")
+  .description("Resume a stale Codex agent run by captured session id")
+  .argument("<run-id>", "agent run identifier")
+  .option("--actor <actor>", "recovery actor", "recovery-agent")
+  .option("--model <model>", "Codex model override")
+  .action((runId: string, options: { actor: string; model?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const previousRun = store.listAgentRuns().find((run) => run.id === runId);
+      if (!previousRun) throw new Error(`Agent run not found: ${runId}`);
+      if (previousRun.driver !== "codex") throw new Error(`Agent run ${runId} uses ${previousRun.driver}; only Codex runs can be revived.`);
+      if (!previousRun.sessionId) throw new Error(`Agent run ${runId} does not have a captured Codex session id.`);
+      const slice = store.listSlices().find((item) => item.id === previousRun.sliceId);
+      if (!slice) throw new Error(`Slice not found for run ${runId}: ${previousRun.sliceId}`);
+      const target = store.targetById(slice.targetId);
+      if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+
+      const revivedRunId = makeId("agentRun");
+      const now = new Date().toISOString();
+      const attempt = store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === previousRun.actor).length + 1;
+      const artifactPath = path.join(artifactsDir(workspace), slice.id);
+      fs.mkdirSync(artifactPath, { recursive: true });
+      const jsonlPath = path.join(artifactPath, `codex-revive-${revivedRunId}.jsonl`);
+      const lastMessagePath = path.join(artifactPath, `worker-result-${revivedRunId}.json`);
+      const prompt = `Continue the implementation for slice ${slice.id}. Preserve the immutable FR/AC scope and finish with the required worker result JSON if possible.`;
+
+      store.insertAgentRun({
+        id: revivedRunId,
+        sliceId: slice.id,
+        actor: previousRun.actor,
+        driver: "codex",
+        status: "running",
+        sessionId: previousRun.sessionId,
+        attempt,
+        startedAt: now,
+        updatedAt: now,
+      });
+      store.updateSliceStatus(slice.id, "implementing");
+      store.upsertHeartbeat({
+        id: `heartbeat:${previousRun.actor}`,
+        actor: previousRun.actor,
+        state: "thinking",
+        detail: `Reviving Codex session ${previousRun.sessionId}`,
+        entityType: "slice",
+        entityId: slice.id,
+      });
+      store.addEvent(
+        createEvent({
+          actor: options.actor,
+          type: "recovery.revive_started",
+          entityType: "agent_run",
+          entityId: revivedRunId,
+          payload: {
+            previousRunId: previousRun.id,
+            sliceId: slice.id,
+            sessionId: previousRun.sessionId,
+            attempt,
+          },
+        }),
+      );
+
+      const args = ["exec", "resume", "--json", "--skip-git-repo-check", "--output-last-message", lastMessagePath];
+      if (options.model) args.push("--model", options.model);
+      args.push(previousRun.sessionId, prompt);
+      const result = spawnSync("codex", args, {
+        cwd: target.path,
+        shell: false,
+        encoding: "utf8",
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+      const stderrPath = result.stderr ? path.join(artifactPath, `codex-revive-${revivedRunId}-stderr.log`) : undefined;
+      if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+      const workerEvents = ingestWorkerJsonl({
+        store,
+        actor: previousRun.actor,
+        sliceId: slice.id,
+        jsonl: result.stdout ?? "",
+      });
+      store.updateAgentRun(revivedRunId, {
+        status: result.status === 0 ? "completed" : "failed",
+        sessionId: workerEvents.sessionId ?? previousRun.sessionId,
+        eventsPath: jsonlPath,
+        resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
+        stderrPath,
+      });
+      if (fs.existsSync(lastMessagePath)) {
+        store.insertEvidence({
+          id: makeId("evidence"),
+          sliceId: slice.id,
+          kind: "worker_result",
+          summary: "Structured Codex revive result",
+          ref: lastMessagePath,
+          payload: { path: lastMessagePath, revivedFrom: previousRun.id },
+          createdAt: new Date().toISOString(),
+        });
+      }
+      store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
+      store.upsertHeartbeat({
+        id: `heartbeat:${previousRun.actor}`,
+        actor: previousRun.actor,
+        state: result.status === 0 ? "idle" : "blocked",
+        detail: result.status === 0 ? "Codex revive completed" : "Codex revive failed",
+        entityType: "slice",
+        entityId: slice.id,
+      });
+      store.addEvent(
+        createEvent({
+          actor: options.actor,
+          type: "recovery.revive_completed",
+          entityType: "agent_run",
+          entityId: revivedRunId,
+          payload: {
+            previousRunId: previousRun.id,
+            sliceId: slice.id,
+            exitCode: result.status,
+            workerEvents,
+          },
+        }),
+      );
+      console.log(`${result.status === 0 ? "Revived" : "Revive failed"} for ${runId}`);
+      console.log(`  new run: ${revivedRunId}`);
+      console.log(`  session: ${previousRun.sessionId}`);
+      console.log(`  events: ${jsonlPath}`);
+      console.log(`  ingested events: ${workerEvents.eventCount}`);
+      if (result.stderr?.trim()) console.error(result.stderr.trim());
+    } finally {
+      store.close();
+    }
+  });
+
 program
   .command("watch")
   .description("Show a lightweight live terminal dashboard")
