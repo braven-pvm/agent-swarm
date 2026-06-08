@@ -1,0 +1,33 @@
+{
+  "name": "agent-swarm",
+  "version": "0.1.0",
+  "description": "Agentic development harness prototype with planning, lanes, slices, and verification visibility.",
+  "type": "module",
+  "bin": {
+    "swarm": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "demo:invoice": "node scripts/run-invoice-demo.mjs --driver fixture",
+    "demo:invoice:codex": "node scripts/run-invoice-demo.mjs --driver codex",
+    "dev": "tsx src/cli.ts",
+    "swarm": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"tests/**/*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "commander": "^14.0.2",
+    "yaml": "^2.8.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

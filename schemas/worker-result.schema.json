@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkerResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "changedFiles", "commandsRun", "testsRun", "frAcCoverage", "risks", "nextRecommendation"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["passed", "failed", "blocked", "needs_human"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "commandsRun": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "testsRun": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "frAcCoverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "status", "evidence"],
+        "properties": {
+          "ref": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["covered", "not_covered", "blocked"]
+          },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "nextRecommendation": {
+      "type": "string"
+    }
+  }
+}

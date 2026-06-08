@@ -1,0 +1,8 @@
+{
+  "name": "invoice-dashboard-fixture",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

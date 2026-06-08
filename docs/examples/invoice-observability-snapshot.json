@@ -1,0 +1,1423 @@
+{
+  "workspace": "X:\\repositories\\agent-swarm",
+  "generatedAt": "2026-05-26T19:17:59.030Z",
+  "targets": [
+    {
+      "id": "TGT-3aa44e82",
+      "path": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+      "name": "target-app"
+    },
+    {
+      "id": "TGT-4c7453c6",
+      "path": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+      "name": "invoice-api"
+    }
+  ],
+  "sources": [
+    {
+      "id": "SRC-6396842c",
+      "adapterId": "file",
+      "kind": "md",
+      "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\greeter.md",
+      "title": "Greeter Fixture Specification",
+      "hash": "7beac08863e90807d1ace874f2f75b9199d591291d5cb67883f32249412932d5",
+      "createdAt": "2026-05-26T13:34:48.422Z",
+      "updatedAt": "2026-05-26T13:34:48.422Z"
+    },
+    {
+      "id": "SRC-cbc5640c",
+      "adapterId": "file",
+      "kind": "md",
+      "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+      "title": "Invoice Operations Backend Requirements",
+      "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09",
+      "createdAt": "2026-05-26T14:02:04.407Z",
+      "updatedAt": "2026-05-26T14:02:04.407Z"
+    }
+  ],
+  "lanes": [
+    {
+      "id": "LANE-69ccf17d",
+      "name": "Lane: Greeter Fixture Specification",
+      "purpose": "Implement first coherent batch from Greeter Fixture Specification",
+      "focusLabels": [
+        "mvp",
+        "file-source",
+        "md"
+      ],
+      "targetId": "TGT-3aa44e82",
+      "orchestrator": "planning-agent",
+      "worktree": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+      "state": "active",
+      "createdAt": "2026-05-26T13:34:56.153Z",
+      "updatedAt": "2026-05-26T13:34:56.153Z",
+      "activeLeases": []
+    },
+    {
+      "id": "LANE-5596723b",
+      "name": "Backend Lane: Invoice Query Core",
+      "purpose": "Implement verified invoice query capabilities needed before dashboard/UI work",
+      "focusLabels": [
+        "backend",
+        "invoice-api",
+        "query-core"
+      ],
+      "targetId": "TGT-4c7453c6",
+      "orchestrator": "planning-agent/backend",
+      "worktree": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+      "state": "closed",
+      "createdAt": "2026-05-26T14:02:10.416Z",
+      "updatedAt": "2026-05-26T14:06:44.042Z",
+      "activeLeases": []
+    },
+    {
+      "id": "LANE-a71c91ec",
+      "name": "Backend Lane: Invoice Query Core",
+      "purpose": "Implement verified invoice query capabilities needed before dashboard/UI work",
+      "focusLabels": [
+        "backend",
+        "invoice-api",
+        "query-core"
+      ],
+      "targetId": "TGT-4c7453c6",
+      "orchestrator": "planning-agent/backend",
+      "worktree": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+      "state": "active",
+      "createdAt": "2026-05-26T14:02:29.361Z",
+      "updatedAt": "2026-05-26T14:02:29.361Z",
+      "activeLeases": []
+    },
+    {
+      "id": "LANE-4c2a4521",
+      "name": "Backend Lane: Invoice Summary Cards",
+      "purpose": "Implement verified aggregate capabilities that would unblock dashboard cards",
+      "focusLabels": [
+        "backend",
+        "invoice-api",
+        "dashboard-enabler"
+      ],
+      "targetId": "TGT-4c7453c6",
+      "orchestrator": "planning-agent/backend",
+      "worktree": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+      "state": "active",
+      "createdAt": "2026-05-26T14:02:36.749Z",
+      "updatedAt": "2026-05-26T14:02:36.749Z",
+      "activeLeases": []
+    },
+    {
+      "id": "LANE-51556ece",
+      "name": "Backend Lane: Invoice Lookup",
+      "purpose": "Implement verified single-invoice lookup needed by detail views",
+      "focusLabels": [
+        "backend",
+        "invoice-api",
+        "lookup"
+      ],
+      "targetId": "TGT-4c7453c6",
+      "orchestrator": "planning-agent/backend",
+      "worktree": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+      "state": "active",
+      "createdAt": "2026-05-26T14:07:24.296Z",
+      "updatedAt": "2026-05-26T14:07:24.296Z",
+      "activeLeases": []
+    }
+  ],
+  "slices": [
+    {
+      "id": "SLICE-b37c4e4c",
+      "laneId": "LANE-69ccf17d",
+      "targetId": "TGT-3aa44e82",
+      "title": "Implement FR-001, FR-002, AC-001.1",
+      "status": "accepted",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\greeter.md",
+          "title": "Greeter Fixture Specification",
+          "hash": "7beac08863e90807d1ace874f2f75b9199d591291d5cb67883f32249412932d5"
+        }
+      ],
+      "frAcRefs": [
+        "FR-001",
+        "FR-002",
+        "AC-001.1"
+      ],
+      "scope": [
+        "Implement behavior required by FR-001.",
+        "Implement behavior required by FR-002.",
+        "Implement behavior required by AC-001.1."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T13:34:56.153Z",
+      "updatedAt": "2026-05-26T13:42:53.564Z",
+      "leases": [
+        {
+          "id": "LEASE-0cc3c5a9",
+          "frAcRef": "FR-001",
+          "sliceId": "SLICE-b37c4e4c",
+          "laneId": "LANE-69ccf17d",
+          "status": "completed",
+          "createdAt": "2026-05-26T13:34:56.153Z",
+          "updatedAt": "2026-05-26T13:42:27.092Z"
+        },
+        {
+          "id": "LEASE-bd040df6",
+          "frAcRef": "FR-002",
+          "sliceId": "SLICE-b37c4e4c",
+          "laneId": "LANE-69ccf17d",
+          "status": "completed",
+          "createdAt": "2026-05-26T13:34:56.153Z",
+          "updatedAt": "2026-05-26T13:42:27.092Z"
+        },
+        {
+          "id": "LEASE-01d66f5c",
+          "frAcRef": "AC-001.1",
+          "sliceId": "SLICE-b37c4e4c",
+          "laneId": "LANE-69ccf17d",
+          "status": "completed",
+          "createdAt": "2026-05-26T13:34:56.153Z",
+          "updatedAt": "2026-05-26T13:42:27.092Z"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "EVD-6dfcf033",
+          "sliceId": "SLICE-b37c4e4c",
+          "kind": "command",
+          "summary": "Verification command passed: npm run test",
+          "payload": {
+            "command": "npm run test",
+            "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+            "exitCode": 0,
+            "passed": true,
+            "stdout": "> target-app@0.1.0 test\n> node --test\n\n✔ greets the provided name (1.9361ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 114.9404",
+            "stderr": ""
+          },
+          "createdAt": "2026-05-26T13:42:53.564Z"
+        }
+      ]
+    },
+    {
+      "id": "SLICE-661cc0c3",
+      "laneId": "LANE-69ccf17d",
+      "targetId": "TGT-3aa44e82",
+      "title": "Implement FR-001, FR-002, AC-001.1",
+      "status": "closed",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\greeter.md",
+          "title": "Greeter Fixture Specification",
+          "hash": "7beac08863e90807d1ace874f2f75b9199d591291d5cb67883f32249412932d5"
+        }
+      ],
+      "frAcRefs": [
+        "FR-001",
+        "FR-002",
+        "AC-001.1"
+      ],
+      "scope": [
+        "Implement behavior required by FR-001.",
+        "Implement behavior required by FR-002.",
+        "Implement behavior required by AC-001.1."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T13:43:04.564Z",
+      "updatedAt": "2026-05-26T13:44:15.908Z",
+      "leases": [
+        {
+          "id": "LEASE-90bddcb4",
+          "frAcRef": "FR-001",
+          "sliceId": "SLICE-661cc0c3",
+          "laneId": "LANE-69ccf17d",
+          "status": "released",
+          "createdAt": "2026-05-26T13:43:04.564Z",
+          "updatedAt": "2026-05-26T13:44:15.906Z"
+        },
+        {
+          "id": "LEASE-5028a8f0",
+          "frAcRef": "FR-002",
+          "sliceId": "SLICE-661cc0c3",
+          "laneId": "LANE-69ccf17d",
+          "status": "released",
+          "createdAt": "2026-05-26T13:43:04.564Z",
+          "updatedAt": "2026-05-26T13:44:15.906Z"
+        },
+        {
+          "id": "LEASE-4a521c76",
+          "frAcRef": "AC-001.1",
+          "sliceId": "SLICE-661cc0c3",
+          "laneId": "LANE-69ccf17d",
+          "status": "released",
+          "createdAt": "2026-05-26T13:43:04.564Z",
+          "updatedAt": "2026-05-26T13:44:15.906Z"
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "SLICE-6b3ca8ce",
+      "laneId": "LANE-69ccf17d",
+      "targetId": "TGT-3aa44e82",
+      "title": "Implement AC-002.1, AC-002.2",
+      "status": "accepted",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\greeter.md",
+          "title": "Greeter Fixture Specification",
+          "hash": "7beac08863e90807d1ace874f2f75b9199d591291d5cb67883f32249412932d5"
+        }
+      ],
+      "frAcRefs": [
+        "AC-002.1",
+        "AC-002.2"
+      ],
+      "scope": [
+        "Implement behavior required by AC-002.1.",
+        "Implement behavior required by AC-002.2."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T13:44:27.832Z",
+      "updatedAt": "2026-05-26T13:47:23.821Z",
+      "leases": [
+        {
+          "id": "LEASE-810d0968",
+          "frAcRef": "AC-002.1",
+          "sliceId": "SLICE-6b3ca8ce",
+          "laneId": "LANE-69ccf17d",
+          "status": "completed",
+          "createdAt": "2026-05-26T13:44:27.832Z",
+          "updatedAt": "2026-05-26T13:47:23.821Z"
+        },
+        {
+          "id": "LEASE-48516e9d",
+          "frAcRef": "AC-002.2",
+          "sliceId": "SLICE-6b3ca8ce",
+          "laneId": "LANE-69ccf17d",
+          "status": "completed",
+          "createdAt": "2026-05-26T13:44:27.832Z",
+          "updatedAt": "2026-05-26T13:47:23.821Z"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "EVD-3d278324",
+          "sliceId": "SLICE-6b3ca8ce",
+          "kind": "worker_result",
+          "summary": "Structured Codex worker result",
+          "ref": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-6b3ca8ce\\worker-result.json",
+          "payload": {
+            "path": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-6b3ca8ce\\worker-result.json"
+          },
+          "createdAt": "2026-05-26T13:46:54.227Z"
+        },
+        {
+          "id": "EVD-768218dc",
+          "sliceId": "SLICE-6b3ca8ce",
+          "kind": "command",
+          "summary": "Verification command passed: npm run test",
+          "payload": {
+            "command": "npm run test",
+            "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+            "exitCode": 0,
+            "passed": true,
+            "stdout": "> target-app@0.1.0 test\n> node --test\n\n✔ greets the provided name (1.0828ms)\n✔ greets the provided name excitedly (0.3184ms)\nℹ tests 2\nℹ suites 0\nℹ pass 2\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 130.2453",
+            "stderr": ""
+          },
+          "createdAt": "2026-05-26T13:47:23.821Z"
+        }
+      ]
+    },
+    {
+      "id": "SLICE-007d5607",
+      "laneId": "LANE-5596723b",
+      "targetId": "TGT-4c7453c6",
+      "title": "Implement AC-INV, FR-INV",
+      "status": "closed",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+          "title": "Invoice Operations Backend Requirements",
+          "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+        }
+      ],
+      "frAcRefs": [
+        "AC-INV",
+        "FR-INV"
+      ],
+      "scope": [
+        "Implement behavior required by AC-INV.",
+        "Implement behavior required by FR-INV."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T14:02:10.416Z",
+      "updatedAt": "2026-05-26T14:02:23.946Z",
+      "leases": [
+        {
+          "id": "LEASE-6e5e9928",
+          "frAcRef": "AC-INV",
+          "sliceId": "SLICE-007d5607",
+          "laneId": "LANE-5596723b",
+          "status": "released",
+          "createdAt": "2026-05-26T14:02:10.416Z",
+          "updatedAt": "2026-05-26T14:02:23.944Z"
+        },
+        {
+          "id": "LEASE-ccc7b419",
+          "frAcRef": "FR-INV",
+          "sliceId": "SLICE-007d5607",
+          "laneId": "LANE-5596723b",
+          "status": "released",
+          "createdAt": "2026-05-26T14:02:10.416Z",
+          "updatedAt": "2026-05-26T14:02:23.944Z"
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "SLICE-c46749ff",
+      "laneId": "LANE-a71c91ec",
+      "targetId": "TGT-4c7453c6",
+      "title": "Implement AC-INV-001.1, AC-INV-001.2, AC-INV-001.3",
+      "status": "accepted",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+          "title": "Invoice Operations Backend Requirements",
+          "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+        }
+      ],
+      "frAcRefs": [
+        "AC-INV-001.1",
+        "AC-INV-001.2",
+        "AC-INV-001.3"
+      ],
+      "scope": [
+        "Implement behavior required by AC-INV-001.1.",
+        "Implement behavior required by AC-INV-001.2.",
+        "Implement behavior required by AC-INV-001.3."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T14:02:29.361Z",
+      "updatedAt": "2026-05-26T14:05:28.702Z",
+      "leases": [
+        {
+          "id": "LEASE-aa88e295",
+          "frAcRef": "AC-INV-001.1",
+          "sliceId": "SLICE-c46749ff",
+          "laneId": "LANE-a71c91ec",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:02:29.361Z",
+          "updatedAt": "2026-05-26T14:05:28.702Z"
+        },
+        {
+          "id": "LEASE-750b9846",
+          "frAcRef": "AC-INV-001.2",
+          "sliceId": "SLICE-c46749ff",
+          "laneId": "LANE-a71c91ec",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:02:29.361Z",
+          "updatedAt": "2026-05-26T14:05:28.702Z"
+        },
+        {
+          "id": "LEASE-93d23899",
+          "frAcRef": "AC-INV-001.3",
+          "sliceId": "SLICE-c46749ff",
+          "laneId": "LANE-a71c91ec",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:02:29.361Z",
+          "updatedAt": "2026-05-26T14:05:28.702Z"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "EVD-9639b723",
+          "sliceId": "SLICE-c46749ff",
+          "kind": "worker_result",
+          "summary": "Structured Codex worker result",
+          "ref": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-c46749ff\\worker-result.json",
+          "payload": {
+            "path": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-c46749ff\\worker-result.json"
+          },
+          "createdAt": "2026-05-26T14:04:04.908Z"
+        },
+        {
+          "id": "EVD-9adcb0ae",
+          "sliceId": "SLICE-c46749ff",
+          "kind": "command",
+          "summary": "Verification command passed: npm run test",
+          "payload": {
+            "command": "npm run test",
+            "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+            "exitCode": 0,
+            "passed": true,
+            "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.0869ms)\n✔ lists only open invoices when filtered by open status (0.9249ms)\n✔ lists only invoices for the requested customer (0.902ms)\n✔ returns invoice dashboard summary values for seeded data (0.2443ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 107.7853",
+            "stderr": ""
+          },
+          "createdAt": "2026-05-26T14:05:28.702Z"
+        }
+      ]
+    },
+    {
+      "id": "SLICE-84e02687",
+      "laneId": "LANE-4c2a4521",
+      "targetId": "TGT-4c7453c6",
+      "title": "Implement AC-INV-002.1, AC-INV-002.2",
+      "status": "accepted",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+          "title": "Invoice Operations Backend Requirements",
+          "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+        }
+      ],
+      "frAcRefs": [
+        "AC-INV-002.1",
+        "AC-INV-002.2"
+      ],
+      "scope": [
+        "Implement behavior required by AC-INV-002.1.",
+        "Implement behavior required by AC-INV-002.2."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T14:02:36.749Z",
+      "updatedAt": "2026-05-26T14:05:28.909Z",
+      "leases": [
+        {
+          "id": "LEASE-8348c3b4",
+          "frAcRef": "AC-INV-002.1",
+          "sliceId": "SLICE-84e02687",
+          "laneId": "LANE-4c2a4521",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:02:36.749Z",
+          "updatedAt": "2026-05-26T14:05:28.909Z"
+        },
+        {
+          "id": "LEASE-e3e17859",
+          "frAcRef": "AC-INV-002.2",
+          "sliceId": "SLICE-84e02687",
+          "laneId": "LANE-4c2a4521",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:02:36.749Z",
+          "updatedAt": "2026-05-26T14:05:28.909Z"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "EVD-259f2135",
+          "sliceId": "SLICE-84e02687",
+          "kind": "worker_result",
+          "summary": "Structured Codex worker result",
+          "ref": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-84e02687\\worker-result.json",
+          "payload": {
+            "path": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-84e02687\\worker-result.json"
+          },
+          "createdAt": "2026-05-26T14:05:11.621Z"
+        },
+        {
+          "id": "EVD-9133120b",
+          "sliceId": "SLICE-84e02687",
+          "kind": "command",
+          "summary": "Verification command passed: npm run test",
+          "payload": {
+            "command": "npm run test",
+            "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+            "exitCode": 0,
+            "passed": true,
+            "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.0518ms)\n✔ lists only open invoices when filtered by open status (0.6747ms)\n✔ lists only invoices for the requested customer (1.0168ms)\n✔ returns invoice dashboard summary values for seeded data (0.2237ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 120.2498",
+            "stderr": ""
+          },
+          "createdAt": "2026-05-26T14:05:28.909Z"
+        }
+      ]
+    },
+    {
+      "id": "SLICE-09d3be27",
+      "laneId": "LANE-51556ece",
+      "targetId": "TGT-4c7453c6",
+      "title": "Implement AC-INV-003.1, AC-INV-003.2",
+      "status": "accepted",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+          "title": "Invoice Operations Backend Requirements",
+          "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+        }
+      ],
+      "frAcRefs": [
+        "AC-INV-003.1",
+        "AC-INV-003.2"
+      ],
+      "scope": [
+        "Implement behavior required by AC-INV-003.1.",
+        "Implement behavior required by AC-INV-003.2."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T14:07:24.296Z",
+      "updatedAt": "2026-05-26T14:08:47.178Z",
+      "leases": [
+        {
+          "id": "LEASE-7153f97c",
+          "frAcRef": "AC-INV-003.1",
+          "sliceId": "SLICE-09d3be27",
+          "laneId": "LANE-51556ece",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:07:24.296Z",
+          "updatedAt": "2026-05-26T14:08:47.178Z"
+        },
+        {
+          "id": "LEASE-7c21c15d",
+          "frAcRef": "AC-INV-003.2",
+          "sliceId": "SLICE-09d3be27",
+          "laneId": "LANE-51556ece",
+          "status": "completed",
+          "createdAt": "2026-05-26T14:07:24.296Z",
+          "updatedAt": "2026-05-26T14:08:47.178Z"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "EVD-78ccce16",
+          "sliceId": "SLICE-09d3be27",
+          "kind": "worker_result",
+          "summary": "Structured Codex worker result",
+          "ref": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-09d3be27\\worker-result.json",
+          "payload": {
+            "path": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-09d3be27\\worker-result.json"
+          },
+          "createdAt": "2026-05-26T14:08:35.983Z"
+        },
+        {
+          "id": "EVD-6c16e23c",
+          "sliceId": "SLICE-09d3be27",
+          "kind": "command",
+          "summary": "Verification command passed: npm run test",
+          "payload": {
+            "command": "npm run test",
+            "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+            "exitCode": 0,
+            "passed": true,
+            "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.4464ms)\n✔ lists only open invoices when filtered by open status (1.7712ms)\n✔ lists only invoices for the requested customer (0.2352ms)\n✔ returns invoice dashboard summary values for seeded data (0.2708ms)\n✔ fetches a seeded invoice by id (0.1402ms)\n✔ returns null when fetching a missing invoice (0.1444ms)\nℹ tests 6\nℹ suites 0\nℹ pass 6\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 124.9199",
+            "stderr": ""
+          },
+          "createdAt": "2026-05-26T14:08:47.178Z"
+        }
+      ]
+    },
+    {
+      "id": "SLICE-08791323",
+      "laneId": "LANE-a71c91ec",
+      "targetId": "TGT-4c7453c6",
+      "title": "Implement FR-INV-001, FR-INV-002, FR-INV-003",
+      "status": "closed",
+      "sourceRefs": [
+        {
+          "adapterId": "file",
+          "kind": "md",
+          "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+          "title": "Invoice Operations Backend Requirements",
+          "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+        }
+      ],
+      "frAcRefs": [
+        "FR-INV-001",
+        "FR-INV-002",
+        "FR-INV-003"
+      ],
+      "scope": [
+        "Implement behavior required by FR-INV-001.",
+        "Implement behavior required by FR-INV-002.",
+        "Implement behavior required by FR-INV-003."
+      ],
+      "outOfScope": [
+        "Do not mutate source specs.",
+        "Do not implement unrelated FR/ACs."
+      ],
+      "verificationRequirements": [
+        "Run the target test command if configured.",
+        "Provide behavior evidence for each included FR/AC-like reference."
+      ],
+      "createdAt": "2026-05-26T14:09:34.616Z",
+      "updatedAt": "2026-05-26T14:09:47.573Z",
+      "leases": [
+        {
+          "id": "LEASE-689109dc",
+          "frAcRef": "FR-INV-001",
+          "sliceId": "SLICE-08791323",
+          "laneId": "LANE-a71c91ec",
+          "status": "released",
+          "createdAt": "2026-05-26T14:09:34.616Z",
+          "updatedAt": "2026-05-26T14:09:47.571Z"
+        },
+        {
+          "id": "LEASE-6bfee46f",
+          "frAcRef": "FR-INV-002",
+          "sliceId": "SLICE-08791323",
+          "laneId": "LANE-a71c91ec",
+          "status": "released",
+          "createdAt": "2026-05-26T14:09:34.616Z",
+          "updatedAt": "2026-05-26T14:09:47.571Z"
+        },
+        {
+          "id": "LEASE-20cee53a",
+          "frAcRef": "FR-INV-003",
+          "sliceId": "SLICE-08791323",
+          "laneId": "LANE-a71c91ec",
+          "status": "released",
+          "createdAt": "2026-05-26T14:09:34.616Z",
+          "updatedAt": "2026-05-26T14:09:47.571Z"
+        }
+      ],
+      "evidence": []
+    }
+  ],
+  "heartbeats": [
+    {
+      "id": "heartbeat:backend-verifier-lookup",
+      "actor": "backend-verifier-lookup",
+      "state": "idle",
+      "detail": "Verification passed",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "timestamp": "2026-05-26T14:08:47.179Z"
+    },
+    {
+      "id": "heartbeat:backend-worker-lookup",
+      "actor": "backend-worker-lookup",
+      "state": "idle",
+      "detail": "Codex worker completed",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "timestamp": "2026-05-26T14:08:35.983Z"
+    },
+    {
+      "id": "heartbeat:backend-verifier-summary",
+      "actor": "backend-verifier-summary",
+      "state": "idle",
+      "detail": "Verification passed",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "timestamp": "2026-05-26T14:05:28.909Z"
+    },
+    {
+      "id": "heartbeat:backend-verifier-query",
+      "actor": "backend-verifier-query",
+      "state": "idle",
+      "detail": "Verification passed",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "timestamp": "2026-05-26T14:05:28.702Z"
+    },
+    {
+      "id": "heartbeat:backend-worker-summary",
+      "actor": "backend-worker-summary",
+      "state": "idle",
+      "detail": "Codex worker completed",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "timestamp": "2026-05-26T14:05:11.622Z"
+    },
+    {
+      "id": "heartbeat:backend-worker-query",
+      "actor": "backend-worker-query",
+      "state": "idle",
+      "detail": "Codex worker completed",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "timestamp": "2026-05-26T14:04:04.909Z"
+    },
+    {
+      "id": "heartbeat:verifier",
+      "actor": "verifier",
+      "state": "idle",
+      "detail": "Verification passed",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "timestamp": "2026-05-26T13:47:23.822Z"
+    },
+    {
+      "id": "heartbeat:worker",
+      "actor": "worker",
+      "state": "idle",
+      "detail": "Codex worker completed",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "timestamp": "2026-05-26T13:46:54.227Z"
+    }
+  ],
+  "activeEscalations": [],
+  "recentEvents": [
+    {
+      "id": "EVT-b6615847",
+      "timestamp": "2026-05-26T14:09:47.573Z",
+      "actor": "planning-agent/backend",
+      "type": "slice.released",
+      "entityType": "slice",
+      "entityId": "SLICE-08791323",
+      "payload": {
+        "reason": "Validation probe claimed broad FR refs after all invoice ACs were accepted; releasing duplicate broad scope"
+      }
+    },
+    {
+      "id": "EVT-5707b811",
+      "timestamp": "2026-05-26T14:09:34.620Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-08791323",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "FR-INV-001",
+          "FR-INV-002",
+          "FR-INV-003"
+        ],
+        "laneId": "LANE-a71c91ec"
+      }
+    },
+    {
+      "id": "EVT-6749f202",
+      "timestamp": "2026-05-26T14:08:47.179Z",
+      "actor": "backend-verifier-lookup",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.4464ms)\n✔ lists only open invoices when filtered by open status (1.7712ms)\n✔ lists only invoices for the requested customer (0.2352ms)\n✔ returns invoice dashboard summary values for seeded data (0.2708ms)\n✔ fetches a seeded invoice by id (0.1402ms)\n✔ returns null when fetching a missing invoice (0.1444ms)\nℹ tests 6\nℹ suites 0\nℹ pass 6\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 124.9199",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-c247add7",
+      "timestamp": "2026-05-26T14:08:46.547Z",
+      "actor": "backend-verifier-lookup",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api"
+      }
+    },
+    {
+      "id": "EVT-035ba38a",
+      "timestamp": "2026-05-26T14:08:35.983Z",
+      "actor": "backend-worker-lookup",
+      "type": "worker.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "payload": {
+        "exitCode": 0,
+        "eventsPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-09d3be27\\codex-events.jsonl",
+        "resultPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-09d3be27\\worker-result.json",
+        "stderrPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-09d3be27\\codex-stderr.log"
+      }
+    },
+    {
+      "id": "EVT-53c974c5",
+      "timestamp": "2026-05-26T14:07:34.487Z",
+      "actor": "backend-worker-lookup",
+      "type": "worker.started",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "payload": {
+        "targetPath": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "laneId": "LANE-51556ece",
+        "workerActor": "backend-worker-lookup"
+      }
+    },
+    {
+      "id": "EVT-64044a82",
+      "timestamp": "2026-05-26T14:07:24.300Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-09d3be27",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "AC-INV-003.1",
+          "AC-INV-003.2"
+        ],
+        "laneId": "LANE-51556ece"
+      }
+    },
+    {
+      "id": "EVT-ec728d4b",
+      "timestamp": "2026-05-26T14:07:24.299Z",
+      "actor": "planning-agent",
+      "type": "lane.created",
+      "entityType": "lane",
+      "entityId": "LANE-51556ece",
+      "payload": {
+        "reason": "Planner created an explicitly requested lane for the selected source and target.",
+        "purpose": "Implement verified single-invoice lookup needed by detail views"
+      }
+    },
+    {
+      "id": "EVT-84679dd5",
+      "timestamp": "2026-05-26T14:06:55.521Z",
+      "actor": "planning-agent",
+      "type": "escalation.cleared",
+      "entityType": "escalation",
+      "entityId": "ESC-2de3a617",
+      "payload": {
+        "reason": "Legacy greeter demo warning acknowledged; invoice demo uses worker evidence before acceptance"
+      }
+    },
+    {
+      "id": "EVT-963561a4",
+      "timestamp": "2026-05-26T14:06:44.045Z",
+      "actor": "planning-agent/backend",
+      "type": "lane.closed",
+      "entityType": "lane",
+      "entityId": "LANE-5596723b",
+      "payload": {
+        "reason": "Malformed parser-test lane released before worker dispatch; closing to keep active lane dashboard clean"
+      }
+    },
+    {
+      "id": "EVT-d13ba0ee",
+      "timestamp": "2026-05-26T14:05:28.909Z",
+      "actor": "backend-verifier-summary",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.0518ms)\n✔ lists only open invoices when filtered by open status (0.6747ms)\n✔ lists only invoices for the requested customer (1.0168ms)\n✔ returns invoice dashboard summary values for seeded data (0.2237ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 120.2498",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-962754bf",
+      "timestamp": "2026-05-26T14:05:28.702Z",
+      "actor": "backend-verifier-query",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> invoice-api-fixture@0.1.0 test\n> node --test\n\n✔ lists seeded invoices (1.0869ms)\n✔ lists only open invoices when filtered by open status (0.9249ms)\n✔ lists only invoices for the requested customer (0.902ms)\n✔ returns invoice dashboard summary values for seeded data (0.2443ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 107.7853",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-cb894423",
+      "timestamp": "2026-05-26T14:05:28.178Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api"
+      }
+    },
+    {
+      "id": "EVT-8b4449a4",
+      "timestamp": "2026-05-26T14:05:27.980Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api"
+      }
+    },
+    {
+      "id": "EVT-82444bb4",
+      "timestamp": "2026-05-26T14:05:11.622Z",
+      "actor": "backend-worker-summary",
+      "type": "worker.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "payload": {
+        "exitCode": 0,
+        "eventsPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-84e02687\\codex-events.jsonl",
+        "resultPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-84e02687\\worker-result.json",
+        "stderrPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-84e02687\\codex-stderr.log"
+      }
+    },
+    {
+      "id": "EVT-7738cc12",
+      "timestamp": "2026-05-26T14:04:15.165Z",
+      "actor": "worker",
+      "type": "worker.started",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "payload": {
+        "targetPath": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "laneId": "LANE-4c2a4521",
+        "workerActor": "backend-worker-summary"
+      }
+    },
+    {
+      "id": "EVT-e344cc53",
+      "timestamp": "2026-05-26T14:04:04.908Z",
+      "actor": "backend-worker-query",
+      "type": "worker.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "payload": {
+        "exitCode": 0,
+        "eventsPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-c46749ff\\codex-events.jsonl",
+        "resultPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-c46749ff\\worker-result.json",
+        "stderrPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-c46749ff\\codex-stderr.log"
+      }
+    },
+    {
+      "id": "EVT-b7c5c9ac",
+      "timestamp": "2026-05-26T14:02:44.714Z",
+      "actor": "worker",
+      "type": "worker.started",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "payload": {
+        "targetPath": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "laneId": "LANE-a71c91ec",
+        "workerActor": "backend-worker-query"
+      }
+    },
+    {
+      "id": "EVT-e8c64d0e",
+      "timestamp": "2026-05-26T14:02:36.753Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-84e02687",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "AC-INV-002.1",
+          "AC-INV-002.2"
+        ],
+        "laneId": "LANE-4c2a4521"
+      }
+    },
+    {
+      "id": "EVT-8e547a00",
+      "timestamp": "2026-05-26T14:02:36.752Z",
+      "actor": "planning-agent",
+      "type": "lane.created",
+      "entityType": "lane",
+      "entityId": "LANE-4c2a4521",
+      "payload": {
+        "reason": "Planner created an explicitly requested lane for the selected source and target.",
+        "purpose": "Implement verified aggregate capabilities that would unblock dashboard cards"
+      }
+    },
+    {
+      "id": "EVT-93fadf62",
+      "timestamp": "2026-05-26T14:02:29.364Z",
+      "actor": "planning-agent",
+      "type": "lane.created",
+      "entityType": "lane",
+      "entityId": "LANE-a71c91ec",
+      "payload": {
+        "reason": "Planner created an explicitly requested lane for the selected source and target.",
+        "purpose": "Implement verified invoice query capabilities needed before dashboard/UI work"
+      }
+    },
+    {
+      "id": "EVT-c58b4854",
+      "timestamp": "2026-05-26T14:02:29.364Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-c46749ff",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "AC-INV-001.1",
+          "AC-INV-001.2",
+          "AC-INV-001.3"
+        ],
+        "laneId": "LANE-a71c91ec"
+      }
+    },
+    {
+      "id": "EVT-92af5629",
+      "timestamp": "2026-05-26T14:02:23.947Z",
+      "actor": "planning-agent/backend",
+      "type": "slice.released",
+      "entityType": "slice",
+      "entityId": "SLICE-007d5607",
+      "payload": {
+        "reason": "Parser collapsed hyphenated invoice refs; releasing malformed planning slice before worker dispatch"
+      }
+    },
+    {
+      "id": "EVT-68e4de8e",
+      "timestamp": "2026-05-26T14:02:10.418Z",
+      "actor": "planning-agent",
+      "type": "lane.created",
+      "entityType": "lane",
+      "entityId": "LANE-5596723b",
+      "payload": {
+        "reason": "Planner created an explicitly requested lane for the selected source and target.",
+        "purpose": "Implement verified invoice query capabilities needed before dashboard/UI work"
+      }
+    },
+    {
+      "id": "EVT-153fec82",
+      "timestamp": "2026-05-26T14:02:10.418Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-007d5607",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "AC-INV",
+          "FR-INV"
+        ],
+        "laneId": "LANE-5596723b"
+      }
+    },
+    {
+      "id": "EVT-55a44f7f",
+      "timestamp": "2026-05-26T14:02:04.587Z",
+      "actor": "harness",
+      "type": "target.initialized",
+      "entityType": "target",
+      "entityId": "TGT-4c7453c6",
+      "payload": {
+        "path": "X:\\repositories\\agent-swarm\\fixtures\\invoice-api",
+        "wroteTargetConfig": true,
+        "wroteProtocolConfig": true
+      }
+    },
+    {
+      "id": "EVT-41006ed8",
+      "timestamp": "2026-05-26T14:02:04.410Z",
+      "actor": "harness",
+      "type": "source.registered",
+      "entityType": "source",
+      "entityId": "SRC-cbc5640c",
+      "payload": {
+        "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\invoice-api.md",
+        "title": "Invoice Operations Backend Requirements",
+        "hash": "4ae8b9e2518f590feaa602b5fccf197154e6aa59ec94a307d06e8b100fc37a09"
+      }
+    },
+    {
+      "id": "EVT-11547c6e",
+      "timestamp": "2026-05-26T13:47:23.822Z",
+      "actor": "verifier",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> target-app@0.1.0 test\n> node --test\n\n✔ greets the provided name (1.0828ms)\n✔ greets the provided name excitedly (0.3184ms)\nℹ tests 2\nℹ suites 0\nℹ pass 2\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 130.2453",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-fb15c853",
+      "timestamp": "2026-05-26T13:47:21.791Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app"
+      }
+    },
+    {
+      "id": "EVT-f8fecb61",
+      "timestamp": "2026-05-26T13:46:54.227Z",
+      "actor": "worker",
+      "type": "worker.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "payload": {
+        "exitCode": 0,
+        "eventsPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-6b3ca8ce\\codex-events.jsonl",
+        "resultPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-6b3ca8ce\\worker-result.json",
+        "stderrPath": "X:\\repositories\\agent-swarm\\.swarm\\artifacts\\SLICE-6b3ca8ce\\codex-stderr.log"
+      }
+    },
+    {
+      "id": "EVT-bfd3e1a5",
+      "timestamp": "2026-05-26T13:45:07.513Z",
+      "actor": "worker",
+      "type": "worker.started",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "payload": {
+        "targetPath": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+        "laneId": "LANE-69ccf17d"
+      }
+    },
+    {
+      "id": "EVT-8289878c",
+      "timestamp": "2026-05-26T13:44:27.836Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-6b3ca8ce",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "AC-002.1",
+          "AC-002.2"
+        ],
+        "laneId": "LANE-69ccf17d"
+      }
+    },
+    {
+      "id": "EVT-71e93f4f",
+      "timestamp": "2026-05-26T13:44:15.909Z",
+      "actor": "planning-agent",
+      "type": "slice.released",
+      "entityType": "slice",
+      "entityId": "SLICE-661cc0c3",
+      "payload": {
+        "reason": "Planner eligibility bug exposed during MVP verification; duplicate completed FR/AC lease released"
+      }
+    },
+    {
+      "id": "EVT-ce3a1e6c",
+      "timestamp": "2026-05-26T13:43:04.568Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-661cc0c3",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "FR-001",
+          "FR-002",
+          "AC-001.1"
+        ],
+        "laneId": "LANE-69ccf17d"
+      }
+    },
+    {
+      "id": "EVT-9145458d",
+      "timestamp": "2026-05-26T13:42:53.565Z",
+      "actor": "verifier",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> target-app@0.1.0 test\n> node --test\n\n✔ greets the provided name (1.9361ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 114.9404",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-c2c7567c",
+      "timestamp": "2026-05-26T13:42:53.090Z",
+      "actor": "verifier",
+      "type": "escalation.created",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "escalationId": "ESC-2de3a617",
+        "level": "warning",
+        "message": "Demo warning: old slice was accepted before worker-result evidence existed"
+      }
+    },
+    {
+      "id": "EVT-38a6d4a7",
+      "timestamp": "2026-05-26T13:42:52.906Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app"
+      }
+    },
+    {
+      "id": "EVT-9b7d911b",
+      "timestamp": "2026-05-26T13:42:26.292Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app"
+      }
+    },
+    {
+      "id": "EVT-c2a813c1",
+      "timestamp": "2026-05-26T13:36:33.594Z",
+      "actor": "verifier",
+      "type": "verification.completed",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+        "exitCode": 0,
+        "passed": true,
+        "stdout": "> target-app@0.1.0 test\n> node --test\n\n✔ greets the provided name (0.8899ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 108.6931",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "EVT-e5cbfb33",
+      "timestamp": "2026-05-26T13:36:32.764Z",
+      "actor": "verifier",
+      "type": "verification.started",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "command": "npm run test",
+        "cwd": "X:\\repositories\\agent-swarm\\fixtures\\target-app"
+      }
+    },
+    {
+      "id": "EVT-b71d292f",
+      "timestamp": "2026-05-26T13:34:56.157Z",
+      "actor": "planning-agent",
+      "type": "slice.created",
+      "entityType": "slice",
+      "entityId": "SLICE-b37c4e4c",
+      "payload": {
+        "reason": "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
+        "frAcRefs": [
+          "FR-001",
+          "FR-002",
+          "AC-001.1"
+        ],
+        "laneId": "LANE-69ccf17d"
+      }
+    },
+    {
+      "id": "EVT-3d9fe483",
+      "timestamp": "2026-05-26T13:34:56.156Z",
+      "actor": "planning-agent",
+      "type": "lane.created",
+      "entityType": "lane",
+      "entityId": "LANE-69ccf17d",
+      "payload": {
+        "reason": "Initial MVP planner lane for the first available file source.",
+        "purpose": "Implement first coherent batch from Greeter Fixture Specification"
+      }
+    },
+    {
+      "id": "EVT-072f0204",
+      "timestamp": "2026-05-26T13:34:48.426Z",
+      "actor": "harness",
+      "type": "source.registered",
+      "entityType": "source",
+      "entityId": "SRC-6396842c",
+      "payload": {
+        "uri": "X:\\repositories\\agent-swarm\\fixtures\\specs\\greeter.md",
+        "title": "Greeter Fixture Specification",
+        "hash": "7beac08863e90807d1ace874f2f75b9199d591291d5cb67883f32249412932d5"
+      }
+    },
+    {
+      "id": "EVT-9878cf03",
+      "timestamp": "2026-05-26T13:34:48.321Z",
+      "actor": "harness",
+      "type": "target.initialized",
+      "entityType": "target",
+      "entityId": "TGT-3aa44e82",
+      "payload": {
+        "path": "X:\\repositories\\agent-swarm\\fixtures\\target-app",
+        "wroteTargetConfig": true,
+        "wroteProtocolConfig": true
+      }
+    },
+    {
+      "id": "EVT-a7cb53ac",
+      "timestamp": "2026-05-26T13:34:33.118Z",
+      "actor": "harness",
+      "type": "harness.initialized",
+      "entityType": "harness",
+      "entityId": "local",
+      "payload": {
+        "workspace": "X:\\repositories\\agent-swarm",
+        "force": false
+      }
+    }
+  ]
+}
