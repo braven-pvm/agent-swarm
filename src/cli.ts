@@ -516,33 +516,7 @@ program
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const slices = store.listSlices();
-      const evidence = store.listEvidence();
-      const snapshot = JSON.stringify(
-        {
-          workspace,
-          generatedAt: new Date().toISOString(),
-          targets: store.listTargets(),
-          sources: store.listSources(),
-          lanes: store.listLanes().map((lane) => ({
-            ...lane,
-            activeLeases: store
-              .listLeases()
-              .filter((lease) => lease.laneId === lane.id && lease.status === "active")
-              .map((lease) => lease.frAcRef),
-          })),
-          slices: slices.map((slice) => ({
-            ...slice,
-            leases: store.listLeases().filter((lease) => lease.sliceId === slice.id),
-            evidence: evidence.filter((item) => item.sliceId === slice.id),
-          })),
-          heartbeats: store.listHeartbeats(),
-          activeEscalations: store.listEscalations("active"),
-          recentEvents: store.recentEvents(options.events),
-        },
-        null,
-        2,
-      );
+      const snapshot = JSON.stringify(buildObservabilitySnapshot(store, workspace, options.events), null, 2);
       if (options.out) {
         const outPath = path.resolve(options.out);
         fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -733,9 +707,31 @@ escalations
 
 program
   .command("watch")
-  .description("Temporary alias for status until the TUI is implemented")
-  .action(() => {
-    printStatus();
+  .description("Show a lightweight live terminal dashboard")
+  .option("--interval <seconds>", "refresh interval in seconds", parseInteger, 2)
+  .option("--events <count>", "recent event count", parseInteger, 12)
+  .option("--once", "render one frame and exit")
+  .option("--no-clear", "do not clear the terminal between frames")
+  .action(async (options: { interval: number; events: number; once?: boolean; clear?: boolean }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const render = () => {
+      const store = new SwarmStore(workspace);
+      try {
+        const snapshot = buildObservabilitySnapshot(store, workspace, options.events);
+        if (options.clear !== false && !options.once) process.stdout.write("\x1Bc");
+        process.stdout.write(`${renderWatchFrame(snapshot)}\n`);
+      } finally {
+        store.close();
+      }
+    };
+    render();
+    if (options.once) return;
+    const intervalMs = Math.max(options.interval, 1) * 1000;
+    while (true) {
+      await sleep(intervalMs);
+      render();
+    }
   });
 
 program.parseAsync().catch((error: unknown) => {
@@ -813,6 +809,112 @@ function printStatus(): void {
   } finally {
     store.close();
   }
+}
+
+function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {
+  const slices = store.listSlices();
+  const leases = store.listLeases();
+  const evidence = store.listEvidence();
+  return {
+    workspace,
+    generatedAt: new Date().toISOString(),
+    targets: store.listTargets(),
+    sources: store.listSources(),
+    lanes: store.listLanes().map((lane) => ({
+      ...lane,
+      activeLeases: leases.filter((lease) => lease.laneId === lane.id && lease.status === "active").map((lease) => lease.frAcRef),
+    })),
+    slices: slices.map((slice) => ({
+      ...slice,
+      leases: leases.filter((lease) => lease.sliceId === slice.id),
+      evidence: evidence.filter((item) => item.sliceId === slice.id),
+    })),
+    dependencies: store.listDependencies().map((dependency) => ({
+      ...dependency,
+      status: currentDependencyStatus(store, dependency),
+    })),
+    heartbeats: store.listHeartbeats(),
+    activeEscalations: store.listEscalations("active"),
+    recentEvents: store.recentEvents(eventCount),
+  };
+}
+
+function renderWatchFrame(snapshot: ReturnType<typeof buildObservabilitySnapshot>): string {
+  const activeSlices = snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+  const blockedDependencies = snapshot.dependencies.filter((dependency) => dependency.status === "blocked");
+  const sliceStatusCounts = countBy(snapshot.slices.map((slice) => slice.status));
+  const lines = [
+    "Agent Swarm Watch",
+    `Generated: ${snapshot.generatedAt}`,
+    `Workspace: ${snapshot.workspace}`,
+    "",
+    `Targets ${snapshot.targets.length} | Sources ${snapshot.sources.length} | Lanes ${snapshot.lanes.length} | Slices ${snapshot.slices.length} | Active ${activeSlices.length}`,
+    `Slice states: ${formatCounts(sliceStatusCounts) || "none"}`,
+    `Active escalations: ${snapshot.activeEscalations.length} | Blocked dependencies: ${blockedDependencies.length}`,
+    "",
+    "Lanes",
+  ];
+
+  if (snapshot.lanes.length === 0) lines.push("  none");
+  for (const lane of snapshot.lanes) {
+    const laneSlices = snapshot.slices.filter((slice) => slice.laneId === lane.id);
+    const liveSlices = laneSlices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+    lines.push(`  ${lane.name} (${lane.id}) [${lane.state}]`);
+    lines.push(`    purpose: ${lane.purpose}`);
+    lines.push(`    focus: ${lane.focusLabels.join(", ") || "none"}`);
+    lines.push(`    active slices: ${liveSlices.length}; active leases: ${lane.activeLeases.join(", ") || "none"}`);
+  }
+
+  lines.push("", "Active Work");
+  if (activeSlices.length === 0) lines.push("  none");
+  for (const slice of activeSlices) {
+    const lane = snapshot.lanes.find((item) => item.id === slice.laneId);
+    const leaseSummary = slice.leases.map((lease) => `${lease.frAcRef}:${lease.status}`).join(", ") || "no leases";
+    lines.push(`  ${slice.id} [${slice.status}] ${slice.title}`);
+    lines.push(`    lane: ${lane?.name ?? slice.laneId}`);
+    lines.push(`    refs: ${leaseSummary}`);
+  }
+
+  lines.push("", "Heartbeats");
+  if (snapshot.heartbeats.length === 0) lines.push("  none");
+  for (const heartbeat of snapshot.heartbeats.slice(0, 8)) {
+    lines.push(
+      `  ${heartbeat.actor}: ${heartbeat.state} ${heartbeat.entityType ?? "entity"}:${heartbeat.entityId ?? "-"} (${elapsedSince(heartbeat.timestamp)})`,
+    );
+    if (heartbeat.detail) lines.push(`    ${heartbeat.detail}`);
+  }
+
+  lines.push("", "Blockers");
+  if (snapshot.activeEscalations.length === 0 && blockedDependencies.length === 0) lines.push("  none");
+  for (const escalation of snapshot.activeEscalations) {
+    lines.push(`  escalation ${escalation.level} ${escalation.entityType}:${escalation.entityId} - ${escalation.message}`);
+  }
+  for (const dependency of blockedDependencies.slice(0, 8)) {
+    lines.push(`  dependency ${dependency.target} -> ${dependency.fromType}:${dependency.fromId} - ${dependency.reason}`);
+  }
+
+  lines.push("", "Recent Events");
+  if (snapshot.recentEvents.length === 0) lines.push("  none");
+  for (const event of snapshot.recentEvents) {
+    lines.push(`  ${event.timestamp} ${event.actor} ${event.type} ${event.entityType}:${event.entityId}`);
+  }
+
+  lines.push("", "Refresh: Ctrl+C to exit. Use --once for scripts/tests.");
+  return lines.join("\n");
+}
+
+function countBy(values: string[]): Record<string, number> {
+  return values.reduce<Record<string, number>>((result, value) => {
+    result[value] = (result[value] ?? 0) + 1;
+    return result;
+  }, {});
+}
+
+function formatCounts(counts: Record<string, number>): string {
+  return Object.entries(counts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}:${value}`)
+    .join(", ");
 }
 
 function parseEscalationLevel(value: string): "info" | "warning" | "blocker" | "human_required" | "critical" {
@@ -1131,7 +1233,10 @@ function setFrAcNode(
   nodes.set(ref, { id: ref, type: "fr_ac", label: ref, status: store.latestLeaseFor(ref)?.status });
 }
 
-function currentDependencyStatus(store: SwarmStore, dependency: ReturnType<SwarmStore["listDependencies"]>[number]): string {
+function currentDependencyStatus(
+  store: SwarmStore,
+  dependency: ReturnType<SwarmStore["listDependencies"]>[number],
+): "pending" | "satisfied" | "blocked" {
   const targetLease = store.latestLeaseFor(dependency.target);
   if (targetLease?.status === "completed") return "satisfied";
   return dependency.status;
@@ -1156,6 +1261,12 @@ function dotId(value: string): string {
 
 function escapeDot(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, "\\n");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function buildWorkerPrompt(input: {

@@ -83,6 +83,13 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   const dot = runSwarm(workspace, ["graph", "--format", "dot"]);
   assert.match(dot, /digraph swarm/);
   assert.match(dot, /Frontend Lane: Invoice Dashboard/);
+
+  const watch = runSwarm(workspace, ["watch", "--once", "--no-clear", "--events", "8"]);
+  assert.match(watch, /Agent Swarm Watch/);
+  assert.match(watch, /Frontend Lane: Invoice Dashboard/);
+  assert.match(watch, /Heartbeats/);
+  assert.match(watch, /Blocked dependencies: 0/);
+  assert.match(watch, /Recent Events/);
 });
 
 test("verification blocks acceptance when worker coverage evidence is missing", () => {

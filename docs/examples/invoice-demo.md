@@ -36,12 +36,13 @@ After the run, inspect the operational visibility surfaces:
 
 ```powershell
 npm run swarm -- observe --events 60
+npm run swarm -- watch --once --events 12
 npm run swarm -- timeline <slice-id> --json
 npm run swarm -- graph --format json
 npm run swarm -- graph --format dot
 ```
 
-`timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
+`watch` shows the lightweight terminal operator view: lane purpose, active work, heartbeats, blockers, and recent events. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
 
 The real Codex smoke path is explicit because it spends real agent cycles:
 
@@ -85,6 +86,7 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - Recent planning, worker, verifier, lane, and escalation events.
 - Per-entity timelines for slices, lanes, and FR/AC-like refs.
 - A dependency/evidence graph in JSON and DOT formats.
+- A lightweight terminal watch frame for lanes, active work, heartbeats, blockers, and recent events.
 
 ## Observed MVP Lessons
 
