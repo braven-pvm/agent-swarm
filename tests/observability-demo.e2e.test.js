@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -39,4 +40,17 @@ test("observability demo exercises worker, recovery, watch, timeline, graph, and
     graphHasEvidence: true,
     reportMentionsEscalation: true,
   });
+
+  const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
+  const workerResultSchema = JSON.parse(fs.readFileSync(schemaPath, "utf8"));
+  assert.deepEqual(workerResultSchema.required, [
+    "status",
+    "summary",
+    "changedFiles",
+    "commandsRun",
+    "testsRun",
+    "frAcCoverage",
+    "risks",
+    "nextRecommendation",
+  ]);
 });

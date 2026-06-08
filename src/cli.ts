@@ -694,6 +694,8 @@ recovery
       fs.mkdirSync(artifactPath, { recursive: true });
       const jsonlPath = path.join(artifactPath, `codex-revive-${revivedRunId}.jsonl`);
       const lastMessagePath = path.join(artifactPath, `worker-result-${revivedRunId}.json`);
+      const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
+      writeWorkerResultSchema(schemaPath);
       const prompt = `Continue the implementation for slice ${slice.id}. Preserve the immutable FR/AC scope and finish with the required worker result JSON if possible.`;
 
       store.insertAgentRun({
@@ -731,7 +733,16 @@ recovery
         }),
       );
 
-      const args = ["exec", "resume", "--json", "--skip-git-repo-check", "--output-last-message", lastMessagePath];
+      const args = [
+        "exec",
+        "resume",
+        "--json",
+        "--skip-git-repo-check",
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        lastMessagePath,
+      ];
       if (options.model) args.push("--model", options.model);
       args.push(previousRun.sessionId, prompt);
       const result = spawnSync("codex", args, {
@@ -942,6 +953,7 @@ function executeWorkerRun(input: {
   const jsonlPath = path.join(artifactPath, input.reason === "restart" ? `codex-events-${runId}.jsonl` : "codex-events.jsonl");
   const stderrPath = path.join(artifactPath, input.reason === "restart" ? `codex-stderr-${runId}.log` : "codex-stderr.log");
   const schemaPath = path.join(input.workspace, "schemas", "worker-result.schema.json");
+  writeWorkerResultSchema(schemaPath);
   const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
   const now = new Date().toISOString();
   const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
@@ -1773,4 +1785,52 @@ Instructions:
 - Run relevant target tests if available.
 - Return the final answer in the required structured schema.
 `;
+}
+
+function writeWorkerResultSchema(schemaPath: string): void {
+  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+  fs.writeFileSync(
+    schemaPath,
+    `${JSON.stringify(
+      {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "status",
+          "summary",
+          "changedFiles",
+          "commandsRun",
+          "testsRun",
+          "frAcCoverage",
+          "risks",
+          "nextRecommendation",
+        ],
+        properties: {
+          status: { type: "string", enum: ["passed", "failed", "blocked", "needs_human"] },
+          summary: { type: "string" },
+          changedFiles: { type: "array", items: { type: "string" } },
+          commandsRun: { type: "array", items: { type: "string" } },
+          testsRun: { type: "array", items: { type: "string" } },
+          frAcCoverage: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["ref", "status", "evidence"],
+              properties: {
+                ref: { type: "string" },
+                status: { type: "string", enum: ["covered", "not_covered", "blocked"] },
+                evidence: { type: "string" },
+              },
+            },
+          },
+          risks: { type: "array", items: { type: "string" } },
+          nextRecommendation: { type: "string" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
 }
