@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import YAML from "yaml";
 import { createEvent } from "./events.js";
@@ -13,10 +13,27 @@ import { workerResultSchema } from "./schemas.js";
 import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
-import { ingestWorkerJsonl } from "./worker-events.js";
+import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
 
 const program = new Command();
+
+type WorkerRunResult = {
+  sliceId: string;
+  runId: string;
+  exitCode: number | null;
+  eventsPath: string;
+  resultPath: string;
+  workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  stderr?: string;
+};
+
+type CodexStreamingResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+};
 
 program
   .name("swarm")
@@ -256,12 +273,12 @@ program
   .option("--actor <actor>", "worker actor id shown in observability", "worker")
   .option("--driver <driver>", "worker driver: codex or fixture", "codex")
   .option("--model <model>", "Codex model override")
-  .action((sliceId: string, options: { actor: string; driver: string; model?: string }) => {
+  .action(async (sliceId: string, options: { actor: string; driver: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const result = executeWorkerRun({
+      const result = await executeWorkerRun({
         workspace,
         store,
         sliceId,
@@ -673,7 +690,7 @@ recovery
   .argument("<run-id>", "agent run identifier")
   .option("--actor <actor>", "recovery actor", "recovery-agent")
   .option("--model <model>", "Codex model override")
-  .action((runId: string, options: { actor: string; model?: string }) => {
+  .action(async (runId: string, options: { actor: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
@@ -745,21 +762,19 @@ recovery
       ];
       if (options.model) args.push("--model", options.model);
       args.push(previousRun.sessionId, prompt);
-      const result = spawnSync("codex", args, {
+      const codex = codexSpawnSpec();
+      const result = await spawnCodexStreaming({
+        command: codex.command,
+        args: [...codex.args, ...args],
         cwd: target.path,
-        shell: false,
-        encoding: "utf8",
-        maxBuffer: 20 * 1024 * 1024,
-      });
-      fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
-      const stderrPath = result.stderr ? path.join(artifactPath, `codex-revive-${revivedRunId}-stderr.log`) : undefined;
-      if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
-      const workerEvents = ingestWorkerJsonl({
-        store,
+        jsonlPath,
         actor: previousRun.actor,
         sliceId: slice.id,
-        jsonl: result.stdout ?? "",
+        store,
       });
+      const stderrPath = result.stderr ? path.join(artifactPath, `codex-revive-${revivedRunId}-stderr.log`) : undefined;
+      if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+      const workerEvents = result.workerEvents;
       store.updateAgentRun(revivedRunId, {
         status: result.status === 0 ? "completed" : "failed",
         sessionId: workerEvents.sessionId ?? previousRun.sessionId,
@@ -819,7 +834,7 @@ recovery
   .option("--actor <actor>", "replacement worker actor; defaults to the previous actor")
   .option("--driver <driver>", "worker driver: codex or fixture; defaults to previous run driver")
   .option("--model <model>", "Codex model override")
-  .action((runId: string, options: { actor?: string; driver?: string; model?: string }) => {
+  .action(async (runId: string, options: { actor?: string; driver?: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
@@ -841,7 +856,7 @@ recovery
           },
         }),
       );
-      const result = executeWorkerRun({
+      const result = await executeWorkerRun({
         workspace,
         store,
         sliceId: previousRun.sliceId,
@@ -923,7 +938,7 @@ function ensureInitialized(workspace: string): void {
   }
 }
 
-function executeWorkerRun(input: {
+async function executeWorkerRun(input: {
   workspace: string;
   store: SwarmStore;
   sliceId: string;
@@ -932,15 +947,7 @@ function executeWorkerRun(input: {
   model?: string;
   reason: "direct_run" | "restart";
   previousRunId?: string;
-}): {
-  sliceId: string;
-  runId: string;
-  exitCode: number | null;
-  eventsPath: string;
-  resultPath: string;
-  workerEvents: ReturnType<typeof ingestWorkerJsonl>;
-  stderr?: string;
-} {
+}): Promise<WorkerRunResult> {
   const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
   if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
   const target = input.store.targetById(slice.targetId);
@@ -996,7 +1003,12 @@ function executeWorkerRun(input: {
     }),
   );
 
-  let result: { status: number | null; stdout?: string; stderr?: string };
+  let result: {
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+    workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+  };
   if (input.driver === "fixture") {
     const workerResult = runFixtureWorker({ slice, targetPath: target.path });
     fs.writeFileSync(lastMessagePath, `${JSON.stringify(workerResult)}\n`, "utf8");
@@ -1020,22 +1032,28 @@ function executeWorkerRun(input: {
     ];
     if (input.model) args.push("--model", input.model);
     args.push(prompt);
-    result = spawnSync("codex", args, {
+    const codex = codexSpawnSpec();
+    result = await spawnCodexStreaming({
+      command: codex.command,
+      args: [...codex.args, ...args],
       cwd: target.path,
-      shell: false,
-      encoding: "utf8",
-      maxBuffer: 20 * 1024 * 1024,
+      jsonlPath,
+      actor: input.actor,
+      sliceId: slice.id,
+      store: input.store,
     });
   }
 
-  fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
   if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
-  const workerEvents = ingestWorkerJsonl({
-    store: input.store,
-    actor: input.actor,
-    sliceId: slice.id,
-    jsonl: result.stdout ?? "",
-  });
+  const workerEvents =
+    result.workerEvents ??
+    ingestWorkerJsonl({
+      store: input.store,
+      actor: input.actor,
+      sliceId: slice.id,
+      jsonl: result.stdout ?? "",
+    });
   input.store.updateAgentRun(runId, {
     status: result.status === 0 ? "completed" : "failed",
     sessionId: workerEvents.sessionId,
@@ -1093,7 +1111,68 @@ function executeWorkerRun(input: {
   };
 }
 
-function printWorkerRunResult(result: ReturnType<typeof executeWorkerRun>): void {
+function spawnCodexStreaming(input: {
+  command: string;
+  args: string[];
+  cwd: string;
+  jsonlPath: string;
+  actor: string;
+  sliceId: string;
+  store: SwarmStore;
+}): Promise<CodexStreamingResult> {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(path.dirname(input.jsonlPath), { recursive: true });
+    fs.writeFileSync(input.jsonlPath, "", "utf8");
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const ingestor = createWorkerJsonlIngestor({
+      store: input.store,
+      actor: input.actor,
+      sliceId: input.sliceId,
+    });
+    const child = spawn(input.command, input.args, {
+      cwd: input.cwd,
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdoutChunks.push(chunk);
+      fs.appendFileSync(input.jsonlPath, chunk, "utf8");
+      ingestor.ingest(chunk);
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderrChunks.push(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      const workerEvents = ingestor.flush();
+      resolve({
+        status,
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
+        workerEvents,
+      });
+    });
+  });
+}
+
+function codexSpawnSpec(): { command: string; args: string[] } {
+  return {
+    command: process.env.SWARM_CODEX_COMMAND?.trim() || "codex",
+    args: parseCommandPrefix(process.env.SWARM_CODEX_ARGS),
+  };
+}
+
+function parseCommandPrefix(value?: string): string[] {
+  if (!value?.trim()) return [];
+  return JSON.parse(value) as string[];
+}
+
+function printWorkerRunResult(result: WorkerRunResult): void {
   console.log(`Worker ${result.exitCode === 0 ? "completed" : "failed"} for ${result.sliceId}`);
   console.log(`  run: ${result.runId}`);
   console.log(`  events: ${result.eventsPath}`);
