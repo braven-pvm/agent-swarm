@@ -10,6 +10,8 @@
     "build": "tsc",
     "demo:invoice": "node scripts/run-invoice-demo.mjs --driver fixture",
     "demo:invoice:codex": "node scripts/run-invoice-demo.mjs --driver codex",
+    "demo:observability": "npm run build && node scripts/run-observability-demo.mjs --driver fixture",
+    "demo:observability:codex": "npm run build && node scripts/run-observability-demo.mjs --driver codex",
     "dev": "tsx src/cli.ts",
     "swarm": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",

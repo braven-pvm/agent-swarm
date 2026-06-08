@@ -1603,7 +1603,13 @@ function buildTimeline(store: SwarmStore, entityId: string): {
       })),
     ...store
       .listEvents()
-      .filter((event) => event.entityId === entityId || relatedSliceIds.has(event.entityId) || relatedLaneIds.has(event.entityId))
+      .filter(
+        (event) =>
+          event.entityId === entityId ||
+          relatedSliceIds.has(event.entityId) ||
+          relatedLaneIds.has(event.entityId) ||
+          relatedSliceIds.has(String(event.payload.sliceId ?? "")),
+      )
       .map((event) => ({
         timestamp: event.timestamp,
         kind: "event",

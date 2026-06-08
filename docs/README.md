@@ -12,6 +12,7 @@ Start here:
 - [Protocol Configuration](architecture/protocol-config.md) — default YAML protocol, project override, and future trusted TS plugin boundary.
 - [Codex CLI and SDK Research](research/codex-cli-sdk-agent-swarm.md) — research notes on Codex CLI, Agents SDK, workers, and verification strategy.
 - [Orchestra Lessons](research/orchestra-lessons.md) — lessons kept and avoided from the previous `braven-pvm/orchestra` project.
+- [Full Observability Demo](examples/observability-demo.md) — repeatable fixture scenario covering worker, recovery, watch, timeline, graph, and report visibility.
 
 Current thesis:
 
