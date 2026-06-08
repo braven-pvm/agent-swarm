@@ -173,6 +173,19 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
 
   runSwarm(workspace, ["init"]);
   runSwarm(workspace, ["target", "init", target]);
+  fs.writeFileSync(
+    path.join(target, ".swarm", "protocol.yaml"),
+    `protocol:
+  planning:
+    heartbeat:
+      defaultStaleAfterSeconds: 60
+  recovery:
+    reviveRetries: 2
+    highlightFinalAttempt: true
+    releaseAfterRetries: false
+`,
+    "utf8",
+  );
   runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
   const pullOutput = runSwarm(workspace, [
     "slices",
@@ -213,11 +226,12 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
     store.close();
   }
 
-  const scanOutput = runSwarm(workspace, ["recovery", "scan", "--stale-after", "60"]);
+  const scanOutput = runSwarm(workspace, ["recovery", "scan"]);
   assert.match(scanOutput, /Stale agent runs: 1/);
+  assert.match(scanOutput, /stale after: 60s/);
   assert.match(scanOutput, /RUN-stale001/);
 
-  runSwarm(workspace, ["recovery", "scan", "--stale-after", "60", "--mark-stale"]);
+  runSwarm(workspace, ["recovery", "scan", "--mark-stale"]);
   const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "20"]));
   const run = snapshot.agentRuns.find((item) => item.id === "RUN-stale001");
   const slice = snapshot.slices.find((item) => item.id === sliceId);
@@ -229,6 +243,13 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
     () => runSwarm(workspace, ["recovery", "revive", "RUN-stale001"]),
     /does not have a captured Codex session id/,
   );
+
+  const restartOutput = runSwarm(workspace, ["recovery", "restart", "RUN-stale001", "--driver", "fixture"]);
+  assert.match(restartOutput, /Worker completed/);
+  assert.match(restartOutput, /run: RUN-/);
+  const restarted = JSON.parse(runSwarm(workspace, ["observe", "--events", "30"]));
+  assert.ok(restarted.agentRuns.some((item) => item.id !== "RUN-stale001" && item.status === "completed"));
+  assert.ok(restarted.recentEvents.some((event) => event.type === "recovery.restart_completed"));
 });
 
 function runSwarm(workspace, args) {

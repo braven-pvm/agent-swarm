@@ -139,6 +139,7 @@ protocol:
   recovery:
     reviveRetries: 2
     highlightFinalAttempt: true
+    releaseAfterRetries: false
 
   actions:
     allowPrCreate: true

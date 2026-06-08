@@ -14,6 +14,7 @@ import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { ingestWorkerJsonl } from "./worker-events.js";
+import { loadProtocol } from "./protocol.js";
 
 const program = new Command();
 
@@ -260,154 +261,16 @@ program
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const slice = store.listSlices().find((item) => item.id === sliceId);
-      if (!slice) throw new Error(`Slice not found: ${sliceId}`);
-      const target = store.targetById(slice.targetId);
-      if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
-      const lane = store.listLanes().find((item) => item.id === slice.laneId);
-      const artifactPath = path.join(artifactsDir(workspace), slice.id);
-      fs.mkdirSync(artifactPath, { recursive: true });
-      const lastMessagePath = path.join(artifactPath, "worker-result.json");
-      const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
-      const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
-      const driver = parseWorkerDriver(options.driver);
-      const runId = makeId("agentRun");
-      const now = new Date().toISOString();
-      const attempt = store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === options.actor).length + 1;
-
-      store.updateSliceStatus(slice.id, "implementing");
-      store.insertAgentRun({
-        id: runId,
-        sliceId: slice.id,
-        actor: options.actor,
-        driver,
-        status: "running",
-        attempt,
-        startedAt: now,
-        updatedAt: now,
-      });
-      store.upsertHeartbeat({
-        id: `heartbeat:${options.actor}`,
-        actor: options.actor,
-        state: "thinking",
-        detail: "Codex worker process started",
-        entityType: "slice",
-        entityId: slice.id,
-      });
-      store.addEvent(
-        createEvent({
-          actor: options.actor,
-          type: "worker.started",
-          entityType: "slice",
-          entityId: slice.id,
-          payload: {
-            targetPath: target.path,
-            laneId: slice.laneId,
-            workerActor: options.actor,
-            driver: options.driver,
-            model: options.model,
-            runId,
-            attempt,
-          },
-        }),
-      );
-
-      let result: { status: number | null; stdout?: string; stderr?: string };
-      if (driver === "fixture") {
-        const workerResult = runFixtureWorker({ slice, targetPath: target.path });
-        fs.writeFileSync(lastMessagePath, `${JSON.stringify(workerResult)}\n`, "utf8");
-        result = {
-          status: 0,
-          stdout: `${JSON.stringify({ type: "fixture.worker.completed", sliceId: slice.id, actor: options.actor })}\n`,
-        };
-      } else {
-        const args = [
-          "exec",
-          "--json",
-          "--skip-git-repo-check",
-          "--sandbox",
-          "workspace-write",
-          "-C",
-          target.path,
-          "--output-schema",
-          schemaPath,
-          "--output-last-message",
-          lastMessagePath,
-        ];
-        if (options.model) args.push("--model", options.model);
-        args.push(prompt);
-
-        result = spawnSync("codex", args, {
-          cwd: target.path,
-          shell: false,
-          encoding: "utf8",
-          maxBuffer: 20 * 1024 * 1024,
-        });
-      }
-
-      const jsonlPath = path.join(artifactPath, "codex-events.jsonl");
-      fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
-      if (result.stderr) fs.writeFileSync(path.join(artifactPath, "codex-stderr.log"), result.stderr, "utf8");
-      const workerEvents = ingestWorkerJsonl({
+      const result = executeWorkerRun({
+        workspace,
         store,
+        sliceId,
         actor: options.actor,
-        sliceId: slice.id,
-        jsonl: result.stdout ?? "",
+        driver: parseWorkerDriver(options.driver),
+        model: options.model,
+        reason: "direct_run",
       });
-      const stderrPath = result.stderr ? path.join(artifactPath, "codex-stderr.log") : undefined;
-      store.updateAgentRun(runId, {
-        status: result.status === 0 ? "completed" : "failed",
-        sessionId: workerEvents.sessionId,
-        eventsPath: jsonlPath,
-        resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
-        stderrPath,
-      });
-
-      if (fs.existsSync(lastMessagePath)) {
-        store.insertEvidence({
-          id: makeId("evidence"),
-          sliceId: slice.id,
-          kind: "worker_result",
-          summary: "Structured Codex worker result",
-          ref: lastMessagePath,
-          payload: { path: lastMessagePath },
-          createdAt: new Date().toISOString(),
-        });
-      }
-      store.addEvent(
-        createEvent({
-          actor: options.actor,
-          type: "worker.completed",
-          entityType: "slice",
-          entityId: slice.id,
-          payload: {
-            exitCode: result.status,
-            runId,
-            eventsPath: jsonlPath,
-            resultPath: lastMessagePath,
-            stderrPath,
-            workerEvents,
-          },
-        }),
-      );
-
-      store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
-      store.upsertHeartbeat({
-        id: `heartbeat:${options.actor}`,
-        actor: options.actor,
-        state: result.status === 0 ? "idle" : "blocked",
-        detail: result.status === 0 ? `${driver} worker completed` : `${driver} worker failed`,
-        entityType: "slice",
-        entityId: slice.id,
-      });
-      console.log(`Worker ${result.status === 0 ? "completed" : "failed"} for ${slice.id}`);
-      console.log(`  run: ${runId}`);
-      console.log(`  events: ${jsonlPath}`);
-      console.log(`  ingested events: ${workerEvents.eventCount}`);
-      if (workerEvents.sessionId) console.log(`  session: ${workerEvents.sessionId}`);
-      if (workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${workerEvents.parseErrorCount}`);
-      console.log(`  result: ${lastMessagePath}`);
-      if (result.stderr?.trim()) console.error(result.stderr.trim());
+      printWorkerRunResult(result);
     } finally {
       store.close();
     }
@@ -736,17 +599,19 @@ const recovery = program.command("recovery").description("Inspect and recover st
 recovery
   .command("scan")
   .description("Find stale running agent runs")
-  .option("--stale-after <seconds>", "heartbeat age threshold in seconds", parseInteger, 300)
+  .option("--stale-after <seconds>", "heartbeat age threshold in seconds; defaults to target protocol", parseInteger)
   .option("--mark-stale", "mark stale runs blocked/stale and raise scoped blocker escalations")
   .option("--release", "release stale affected slices back to the pool")
   .option("--actor <actor>", "recovery actor", "recovery-agent")
-  .action((options: { staleAfter: number; markStale?: boolean; release?: boolean; actor: string }) => {
+  .action((options: { staleAfter?: number; markStale?: boolean; release?: boolean; actor: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const staleRuns = findStaleAgentRuns(store, options.staleAfter);
+      const staleAfter = options.staleAfter ?? defaultStaleAfterForStore(store);
+      const staleRuns = findStaleAgentRuns(store, staleAfter);
       console.log(`Stale agent runs: ${staleRuns.length}`);
+      console.log(`  stale after: ${staleAfter}s`);
       for (const item of staleRuns) {
         console.log(`  - ${item.run.id} ${item.run.actor} slice:${item.run.sliceId} age:${formatDuration(item.ageMs)}`);
         if (item.heartbeat?.detail) console.log(`    heartbeat: ${item.heartbeat.state} - ${item.heartbeat.detail}`);
@@ -792,7 +657,7 @@ recovery
             payload: {
               sliceId: item.run.sliceId,
               ageMs: item.ageMs,
-              staleAfterSeconds: options.staleAfter,
+              staleAfterSeconds: staleAfter,
             },
           }),
         );
@@ -936,25 +801,86 @@ recovery
     }
   });
 
+recovery
+  .command("restart")
+  .description("Start a fresh worker run for the same slice, using prior run history")
+  .argument("<run-id>", "agent run identifier")
+  .option("--actor <actor>", "replacement worker actor; defaults to the previous actor")
+  .option("--driver <driver>", "worker driver: codex or fixture; defaults to previous run driver")
+  .option("--model <model>", "Codex model override")
+  .action((runId: string, options: { actor?: string; driver?: string; model?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const previousRun = store.listAgentRuns().find((run) => run.id === runId);
+      if (!previousRun) throw new Error(`Agent run not found: ${runId}`);
+      const driver = options.driver ? parseWorkerDriver(options.driver) : previousRun.driver;
+      store.addEvent(
+        createEvent({
+          actor: "recovery-agent",
+          type: "recovery.restart_started",
+          entityType: "agent_run",
+          entityId: previousRun.id,
+          payload: {
+            sliceId: previousRun.sliceId,
+            previousRunId: previousRun.id,
+            previousStatus: previousRun.status,
+            driver,
+          },
+        }),
+      );
+      const result = executeWorkerRun({
+        workspace,
+        store,
+        sliceId: previousRun.sliceId,
+        actor: options.actor ?? previousRun.actor,
+        driver,
+        model: options.model,
+        reason: "restart",
+        previousRunId: previousRun.id,
+      });
+      store.addEvent(
+        createEvent({
+          actor: "recovery-agent",
+          type: "recovery.restart_completed",
+          entityType: "agent_run",
+          entityId: result.runId,
+          payload: {
+            sliceId: result.sliceId,
+            previousRunId: previousRun.id,
+            exitCode: result.exitCode,
+          },
+        }),
+      );
+      printWorkerRunResult(result);
+    } finally {
+      store.close();
+    }
+  });
+
 program
   .command("watch")
   .description("Show a lightweight live terminal dashboard")
   .option("--interval <seconds>", "refresh interval in seconds", parseInteger, 2)
   .option("--events <count>", "recent event count", parseInteger, 12)
-  .option("--stale-after <seconds>", "mark heartbeat/run ages stale after this many seconds", parseInteger, 300)
+  .option("--stale-after <seconds>", "mark heartbeat/run ages stale after this many seconds; defaults to target protocol", parseInteger)
   .option("--view <view>", "all, lanes, agents, blockers, or events", "all")
   .option("--once", "render one frame and exit")
   .option("--no-clear", "do not clear the terminal between frames")
-  .action(async (options: { interval: number; events: number; staleAfter: number; view: string; once?: boolean; clear?: boolean }) => {
+  .action(async (options: { interval: number; events: number; staleAfter?: number; view: string; once?: boolean; clear?: boolean }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const view = parseWatchView(options.view);
+    const initialStore = new SwarmStore(workspace);
+    const staleAfter = options.staleAfter ?? defaultStaleAfterForStore(initialStore);
+    initialStore.close();
     const render = () => {
       const store = new SwarmStore(workspace);
       try {
         const snapshot = buildObservabilitySnapshot(store, workspace, options.events);
         if (options.clear !== false && !options.once) process.stdout.write("\x1Bc");
-        process.stdout.write(`${renderWatchFrame(snapshot, { staleAfterSeconds: options.staleAfter, view })}\n`);
+        process.stdout.write(`${renderWatchFrame(snapshot, { staleAfterSeconds: staleAfter, view })}\n`);
       } finally {
         store.close();
       }
@@ -984,6 +910,186 @@ function ensureInitialized(workspace: string): void {
   } finally {
     store.close();
   }
+}
+
+function executeWorkerRun(input: {
+  workspace: string;
+  store: SwarmStore;
+  sliceId: string;
+  actor: string;
+  driver: "codex" | "fixture";
+  model?: string;
+  reason: "direct_run" | "restart";
+  previousRunId?: string;
+}): {
+  sliceId: string;
+  runId: string;
+  exitCode: number | null;
+  eventsPath: string;
+  resultPath: string;
+  workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  stderr?: string;
+} {
+  const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
+  if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
+  const target = input.store.targetById(slice.targetId);
+  if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+  const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
+  const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
+  fs.mkdirSync(artifactPath, { recursive: true });
+  const runId = makeId("agentRun");
+  const lastMessagePath = path.join(artifactPath, input.reason === "restart" ? `worker-result-${runId}.json` : "worker-result.json");
+  const jsonlPath = path.join(artifactPath, input.reason === "restart" ? `codex-events-${runId}.jsonl` : "codex-events.jsonl");
+  const stderrPath = path.join(artifactPath, input.reason === "restart" ? `codex-stderr-${runId}.log` : "codex-stderr.log");
+  const schemaPath = path.join(input.workspace, "schemas", "worker-result.schema.json");
+  const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
+  const now = new Date().toISOString();
+  const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
+
+  input.store.updateSliceStatus(slice.id, "implementing");
+  input.store.insertAgentRun({
+    id: runId,
+    sliceId: slice.id,
+    actor: input.actor,
+    driver: input.driver,
+    status: "running",
+    attempt,
+    startedAt: now,
+    updatedAt: now,
+  });
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: "thinking",
+    detail: input.reason === "restart" ? "Fresh worker restarted for slice" : "Codex worker process started",
+    entityType: "slice",
+    entityId: slice.id,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: input.reason === "restart" ? "worker.restarted" : "worker.started",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        targetPath: target.path,
+        laneId: slice.laneId,
+        workerActor: input.actor,
+        driver: input.driver,
+        model: input.model,
+        runId,
+        attempt,
+        previousRunId: input.previousRunId,
+      },
+    }),
+  );
+
+  let result: { status: number | null; stdout?: string; stderr?: string };
+  if (input.driver === "fixture") {
+    const workerResult = runFixtureWorker({ slice, targetPath: target.path });
+    fs.writeFileSync(lastMessagePath, `${JSON.stringify(workerResult)}\n`, "utf8");
+    result = {
+      status: 0,
+      stdout: `${JSON.stringify({ type: "fixture.worker.completed", sliceId: slice.id, actor: input.actor })}\n`,
+    };
+  } else {
+    const args = [
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "workspace-write",
+      "-C",
+      target.path,
+      "--output-schema",
+      schemaPath,
+      "--output-last-message",
+      lastMessagePath,
+    ];
+    if (input.model) args.push("--model", input.model);
+    args.push(prompt);
+    result = spawnSync("codex", args, {
+      cwd: target.path,
+      shell: false,
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  }
+
+  fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+  const workerEvents = ingestWorkerJsonl({
+    store: input.store,
+    actor: input.actor,
+    sliceId: slice.id,
+    jsonl: result.stdout ?? "",
+  });
+  input.store.updateAgentRun(runId, {
+    status: result.status === 0 ? "completed" : "failed",
+    sessionId: workerEvents.sessionId,
+    eventsPath: jsonlPath,
+    resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
+    stderrPath: result.stderr ? stderrPath : undefined,
+  });
+
+  if (fs.existsSync(lastMessagePath)) {
+    input.store.insertEvidence({
+      id: makeId("evidence"),
+      sliceId: slice.id,
+      kind: "worker_result",
+      summary: input.reason === "restart" ? "Structured worker restart result" : "Structured Codex worker result",
+      ref: lastMessagePath,
+      payload: { path: lastMessagePath, previousRunId: input.previousRunId },
+      createdAt: new Date().toISOString(),
+    });
+  }
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "worker.completed",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        exitCode: result.status,
+        runId,
+        previousRunId: input.previousRunId,
+        eventsPath: jsonlPath,
+        resultPath: lastMessagePath,
+        stderrPath: result.stderr ? stderrPath : undefined,
+        workerEvents,
+      },
+    }),
+  );
+
+  input.store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: result.status === 0 ? "idle" : "blocked",
+    detail: result.status === 0 ? `${input.driver} worker completed` : `${input.driver} worker failed`,
+    entityType: "slice",
+    entityId: slice.id,
+  });
+  return {
+    sliceId: slice.id,
+    runId,
+    exitCode: result.status,
+    eventsPath: jsonlPath,
+    resultPath: lastMessagePath,
+    workerEvents,
+    stderr: result.stderr,
+  };
+}
+
+function printWorkerRunResult(result: ReturnType<typeof executeWorkerRun>): void {
+  console.log(`Worker ${result.exitCode === 0 ? "completed" : "failed"} for ${result.sliceId}`);
+  console.log(`  run: ${result.runId}`);
+  console.log(`  events: ${result.eventsPath}`);
+  console.log(`  ingested events: ${result.workerEvents.eventCount}`);
+  if (result.workerEvents.sessionId) console.log(`  session: ${result.workerEvents.sessionId}`);
+  if (result.workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.workerEvents.parseErrorCount}`);
+  console.log(`  result: ${result.resultPath}`);
+  if (result.stderr?.trim()) console.error(result.stderr.trim());
 }
 
 function printStatus(): void {
@@ -1206,6 +1312,11 @@ function formatCounts(counts: Record<string, number>): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}:${value}`)
     .join(", ");
+}
+
+function defaultStaleAfterForStore(store: SwarmStore): number {
+  const target = store.listTargets()[0];
+  return loadProtocol(target?.path).protocol.planning.heartbeat.defaultStaleAfterSeconds;
 }
 
 function parseWatchView(value: string): WatchView {

@@ -42,11 +42,12 @@ npm run swarm -- timeline <slice-id> --json
 npm run swarm -- graph --format json
 npm run swarm -- graph --format dot
 npm run swarm -- recovery scan --stale-after 300
+npm run swarm -- recovery restart <run-id>
 ```
 
 `watch` shows the terminal operator view: lane purpose, active work, heartbeats, agent runs, blockers, recent events, and suggested operator actions. Use `--view all|lanes|agents|blockers|events` to focus the frame. `timeline` shows the scoped lifecycle for a slice, lane, or FR/AC-like ref: slice state, leases, dependencies, evidence, heartbeats, escalations, and raw worker/verifier events. `graph` exposes the same run as a machine-readable or DOT dependency/evidence graph across specs, lanes, slices, FR/ACs, actors, heartbeats, blockers, and evidence.
 
-`recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool. `recovery revive <run-id>` resumes the same Codex session when a captured session id is available; starting a fresh agent remains a separate restart action.
+`recovery scan` detects running agent runs whose heartbeat is older than the configured threshold. The default threshold comes from target `.swarm/protocol.yaml` at `protocol.planning.heartbeat.defaultStaleAfterSeconds`, and `--stale-after` overrides it. Add `--mark-stale` to mark affected runs/slices blocked and raise scoped blocker escalations; add `--release` to release stale slice leases back to the pool. `recovery revive <run-id>` resumes the same Codex session when a captured session id is available. `recovery restart <run-id>` starts a fresh worker for the same slice with prior run history linked.
 
 The real Codex smoke path is explicit because it spends real agent cycles:
 
@@ -110,4 +111,4 @@ npm run swarm -- observe --events 60 --out docs\examples\invoice-observability-s
 - A negative verification-gate E2E test proving a slice cannot be accepted without worker-result evidence.
 - A readiness E2E test proving dashboard work is blocked until backend dependencies are completed.
 - Timeline and graph E2E assertions for worker events, evidence, completed leases, dependency blockers, actor nodes, and DOT rendering.
-- Agent-run and recovery E2E assertions for completed runs, stale detection, blocker escalation, and recovery events.
+- Agent-run and recovery E2E assertions for completed runs, protocol-derived stale detection, blocker escalation, restart, and recovery events.

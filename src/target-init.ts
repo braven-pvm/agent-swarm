@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { makeId } from "./ids.js";
+import { defaultProtocol } from "./protocol.js";
 import type { TargetConfig } from "./types.js";
 
 export interface TargetInitResult {
@@ -103,42 +104,4 @@ function writeIfMissing(filePath: string, content: string): boolean {
   if (fs.existsSync(filePath)) return false;
   fs.writeFileSync(filePath, content, "utf8");
   return true;
-}
-
-function defaultProtocol(): Record<string, unknown> {
-  return {
-    protocol: {
-      name: "default",
-      version: "0.1",
-      slice: {
-        preferredBatchSize: 3,
-        maxBatchSize: 5,
-        allowDynamicLeaseExpansion: true,
-      },
-      lanes: {
-        oneOrchestratorPerLane: true,
-        avoidMainWorktree: true,
-        allowPlannerCreateLanes: true,
-        maxActiveLanes: 3,
-        requireName: true,
-        requirePurpose: true,
-        requireFocusLabels: true,
-        requireLifecycleReasons: true,
-      },
-      planning: {
-        allowBackendEnablerSlices: true,
-        allowBackendLaneForFrontendStarvation: true,
-        coordinateLaneReadiness: true,
-        frontendUnblockStrategy: "infer_from_completed_fr_ac",
-        allowFrontendAgainstMocks: false,
-        showLaneStarvationReasons: true,
-        dependencyView: "graph_preferred",
-      },
-      verification: {
-        cadence: "hybrid",
-        behaviorFirst: true,
-        requireEvidencePerAc: true,
-      },
-    },
-  };
 }
