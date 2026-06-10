@@ -210,6 +210,43 @@ test("claude finalize fails on error results and missing structured output", () 
   assert.match(silent.failureReason, /no result event/i);
 });
 
+test("driver args env rejects non-array JSON with a clear error", () => {
+  const dir = tempDir();
+  process.env.SWARM_CODEX_ARGS = JSON.stringify({ not: "an array" });
+  try {
+    assert.throws(() => getWorkerDriver("codex").buildInvocation(baseSpec(dir)), /SWARM_CODEX_ARGS is invalid/);
+  } finally {
+    delete process.env.SWARM_CODEX_ARGS;
+  }
+});
+
+test("codex resume invocation includes a model override when provided", () => {
+  const dir = tempDir();
+  const spec = { ...baseSpec(dir), resumeSessionId: "session-abc", model: "gpt-5.3-codex" };
+  const args = getWorkerDriver("codex").buildInvocation(spec).args;
+  assert.equal(args[args.indexOf("--model") + 1], "gpt-5.3-codex");
+  assert.deepEqual(args.slice(-2), ["session-abc", "Implement the slice"]);
+});
+
+test("claude finalize omits costUsd when total_cost_usd is absent", () => {
+  const dir = tempDir();
+  const spec = baseSpec(dir);
+  const workerResult = {
+    status: "passed",
+    summary: "done",
+    changedFiles: [],
+    commandsRun: [],
+    testsRun: [],
+    frAcCoverage: [],
+    risks: [],
+    nextRecommendation: "continue",
+  };
+  const stdout = JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: workerResult });
+  const finalization = getWorkerDriver("claude").finalize({ exitCode: 0, stdout, spec });
+  assert.equal(finalization.ok, true);
+  assert.equal(finalization.costUsd, undefined);
+});
+
 test("claude heartbeat classifier maps tool use to states", () => {
   const claude = getWorkerDriver("claude");
   const toolEvent = (name) => ({

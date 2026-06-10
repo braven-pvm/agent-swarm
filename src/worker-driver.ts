@@ -36,7 +36,18 @@ export function resolveDriverCommand(id: string, fallback: string): { command: s
   const envKey = id.toUpperCase().replace(/[^A-Z0-9]/g, "_");
   const command = process.env[`SWARM_${envKey}_COMMAND`]?.trim() || fallback;
   const rawArgs = process.env[`SWARM_${envKey}_ARGS`];
-  const prefixArgs = rawArgs?.trim() ? (JSON.parse(rawArgs) as string[]) : [];
+  let prefixArgs: string[] = [];
+  if (rawArgs?.trim()) {
+    try {
+      const parsed = JSON.parse(rawArgs) as unknown;
+      if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+        throw new Error("must be a JSON array of strings");
+      }
+      prefixArgs = parsed;
+    } catch (error) {
+      throw new Error(`SWARM_${envKey}_ARGS is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   return { command, prefixArgs };
 }
 
@@ -109,7 +120,14 @@ const claudeDriver: WorkerDriverAdapter = {
   capabilities: { resume: true },
   buildInvocation(spec) {
     const { command, prefixArgs } = resolveDriverCommand("claude", "claude");
-    const schemaJson = JSON.stringify(JSON.parse(fs.readFileSync(spec.schemaPath, "utf8")) as unknown);
+    let schemaJson: string;
+    try {
+      schemaJson = JSON.stringify(JSON.parse(fs.readFileSync(spec.schemaPath, "utf8")) as unknown);
+    } catch (error) {
+      throw new Error(
+        `Failed to read worker result schema at ${spec.schemaPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const config = spec.driverConfig;
     const args = [...prefixArgs, "-p", "--output-format", "stream-json", "--verbose", "--json-schema", schemaJson];
     args.push("--permission-mode", typeof config.permissionMode === "string" ? config.permissionMode : "acceptEdits");
