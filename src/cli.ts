@@ -18,7 +18,7 @@ import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
-import { getWorkerDriver, workerDriverIds, resolveDriverCommand, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
+import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
@@ -1852,11 +1852,11 @@ program
 
 program
   .command("review")
-  .description("Run an independent Codex reviewer for a slice")
+  .description("Run an independent reviewer for a slice")
   .argument("<slice-id>", "slice identifier")
   .option("--actor <actor>", "reviewer actor id shown in observability", "reviewer")
-  .option("--driver <driver>", "reviewer driver: codex or fixture", "codex")
-  .option("--model <model>", "Codex model override")
+  .option("--driver <driver>", "reviewer driver (fixture or a registered driver)", "codex")
+  .option("--model <model>", "model override passed to the reviewer driver")
   .action(async (sliceId: string, options: { actor: string; driver: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
@@ -2980,6 +2980,7 @@ async function executeReviewRun(input: {
     }),
   );
 
+  let reviewFinalization: WorkerFinalization;
   let result: {
     status: number | null;
     stdout?: string;
@@ -2997,26 +2998,24 @@ async function executeReviewRun(input: {
       status: 0,
       stdout: `${JSON.stringify({ type: "fixture.reviewer.completed", sliceId: slice.id, actor: input.actor })}\n`,
     };
+    reviewFinalization = { ok: true, structuredResultWritten: true };
   } else {
-    const args = [
-      "exec",
-      "--json",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
-      "-C",
-      target.path,
-      "--output-schema",
+    const adapter = getWorkerDriver(input.driver)!;
+    const protocol = loadProtocol(target.path);
+    const spec: WorkerRunSpec = {
+      prompt,
+      targetPath: target.path,
       schemaPath,
-      "--output-last-message",
       resultPath,
-    ];
-    if (input.model) args.push("--model", input.model);
-    args.push(prompt);
-    const codex = resolveDriverCommand("codex", "codex");
+      model: input.model,
+      readOnly: true,
+      resultSchema: reviewResultSchema,
+      driverConfig: protocol.protocol.workers.drivers[input.driver] ?? {},
+    };
+    const invocation = adapter.buildInvocation(spec);
     result = await spawnWorkerStreaming({
-      command: codex.command,
-      args: [...codex.prefixArgs, ...args],
+      command: invocation.command,
+      args: invocation.args,
       cwd: target.path,
       jsonlPath,
       actor: input.actor,
@@ -3024,7 +3023,9 @@ async function executeReviewRun(input: {
       store: input.store,
       driver: input.driver,
       eventPrefix: "reviewer",
+      classify: adapter.classifyHeartbeat?.bind(adapter),
     });
+    reviewFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
 
   if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
@@ -3040,7 +3041,7 @@ async function executeReviewRun(input: {
     });
   const sourceMutationsAfter = inspectSourceMutations(slice);
   const parsedReview = readReviewResultFile(resultPath);
-  const runCompleted = result.status === 0 && parsedReview.ok;
+  const runCompleted = reviewFinalization.ok && parsedReview.ok;
   input.store.updateAgentRun(runId, {
     status: runCompleted ? "completed" : "failed",
     sessionId: reviewerEvents.sessionId,
@@ -3083,6 +3084,9 @@ async function executeReviewRun(input: {
         entityId: slice.id,
         payload: {
           exitCode: result.status,
+          driver: input.driver,
+          ok: reviewFinalization.ok,
+          costUsd: reviewFinalization.costUsd,
           runId,
           eventsPath: jsonlPath,
           resultPath,
