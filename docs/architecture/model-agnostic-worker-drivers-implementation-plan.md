@@ -15,11 +15,11 @@
 The repo currently carries a large uncommitted housekeeping batch that touches `src/cli.ts`, `src/types.ts`, and others. This plan also modifies those files. **Commit the existing in-flight batch as its own baseline commit first** (or have the user do it). Never stage this plan's changes together with pre-existing dirty modifications. Verify a clean start:
 
 ```powershell
-git status --short          # must show no modified files before Task 1
-npm test                    # must show 20/20 passing
+git status --short          # must show no modified files before Task 1 (the parked docs/dieselbrook-overseer/ untracked dir is fine)
+npm test                    # must show 22/22 passing
 ```
 
-If `git status` is not clean, stop and ask the user to commit or approve committing the baseline.
+If `git status` is not clean, stop and ask the user to commit or approve committing the baseline. (Status as of 2026-06-10: the baseline batch is committed as 6f4cf33 and the suite is 22/22 — this prerequisite is satisfied.)
 
 ## Context for a Zero-Context Engineer
 
@@ -1033,7 +1033,7 @@ Expected: all pass. The streaming test still works because `SWARM_CODEX_COMMAND`
 - [ ] **Step 6: Run the full suite**
 
 Run: `npm test`
-Expected: all tests pass (20 pre-existing + 3 new protocol/driver test files' tests so far).
+Expected: all tests pass (22 pre-existing + the new protocol/driver tests so far).
 
 - [ ] **Step 7: Commit**
 
@@ -1363,7 +1363,7 @@ Expected: 2/2 pass.
 - [ ] **Step 3: Run the full suite**
 
 Run: `npm test`
-Expected: all pass — 20 pre-existing + 2 protocol + 10 worker-driver + 2 claude e2e = 34 test blocks total (count may differ by one or two if upstream tests changed; the requirement is zero failures).
+Expected: all pass — 22 pre-existing + 2 protocol + 10 worker-driver + 2 claude e2e = 36 test blocks total (count may differ by one or two if upstream tests changed; the requirement is zero failures).
 
 - [ ] **Step 4: Commit**
 
