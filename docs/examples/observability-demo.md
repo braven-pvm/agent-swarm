@@ -49,3 +49,21 @@ node dist\cli.js serve --workspace .swarm-demo\observability --host 127.0.0.1 --
 ```
 
 Then open `http://127.0.0.1:4317/`. The first web viewer is read-only and uses the same harness state as `swarm watch`, `swarm observe`, `swarm timeline`, `swarm graph`, and `swarm report`.
+
+Current web viewer tabs:
+
+- Overview: domain readiness and active blockers
+- Specs: registered specs, search, selected spec Summary/Sections/Markdown
+- Work: lanes, slices, and rendered slice report
+- Agents: agent runs and heartbeat state
+- Events: recent event stream
+
+Use this demo to verify terminal/API operational visibility, not visual completeness.
+
+The richer web-observability scenario is:
+
+```powershell
+npm run demo:web-observability
+```
+
+See [Web Observability E2E Demo](web-observability-demo.md).

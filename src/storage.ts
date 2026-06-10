@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { artifactsDir, stateDbPath, swarmDir } from "./paths.js";
 import type {
   AgentRunRecord,
+  CheckpointRecord,
   DependencyEdge,
   EscalationRecord,
   EvidenceRecord,
@@ -82,8 +83,14 @@ export class SwarmStore {
         status text not null,
         source_refs_json text not null,
         fr_ac_refs_json text not null,
+        delivery_question text,
+        work_package_type text,
+        minimum_meaningful_outcome text,
+        ac_sized_exception_reason text,
         scope_json text not null,
         out_of_scope_json text not null,
+        expected_evidence_json text,
+        unblock_targets_json text,
         verification_requirements_json text not null,
         created_at text not null,
         updated_at text not null
@@ -172,15 +179,44 @@ export class SwarmStore {
         created_at text not null,
         updated_at text not null
       );
+
+      create table if not exists checkpoints (
+        id text primary key,
+        role text not null,
+        entity_type text not null,
+        entity_id text not null,
+        summary text not null,
+        payload_json text not null,
+        created_by text not null,
+        created_at text not null,
+        updated_at text not null,
+        unique(role, entity_type, entity_id)
+      );
     `);
     this.setMeta("schema_version", "1");
     this.ensureColumn("sources", "metadata_json", "text");
+    this.ensureColumn("slices", "delivery_question", "text");
+    this.ensureColumn("slices", "work_package_type", "text");
+    this.ensureColumn("slices", "minimum_meaningful_outcome", "text");
+    this.ensureColumn("slices", "ac_sized_exception_reason", "text");
+    this.ensureColumn("slices", "expected_evidence_json", "text");
+    this.ensureColumn("slices", "unblock_targets_json", "text");
   }
 
   setMeta(key: string, value: string): void {
     this.db
       .prepare("insert or replace into meta (key, value) values (?, ?)")
       .run(key, value);
+  }
+
+  getMeta(key: string): string | undefined {
+    const row = this.db.prepare("select value from meta where key = ?").get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  listMeta(): Record<string, string> {
+    const rows = this.db.prepare("select key, value from meta order by key asc").all() as Array<{ key: string; value: string }>;
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
   }
 
   addEvent(event: HarnessEvent): void {
@@ -296,8 +332,8 @@ export class SwarmStore {
   insertSlice(slice: SliceRecord): void {
     this.db
       .prepare(
-        `insert into slices (id, lane_id, target_id, title, status, source_refs_json, fr_ac_refs_json, scope_json, out_of_scope_json, verification_requirements_json, created_at, updated_at)
-         values (@id, @laneId, @targetId, @title, @status, @sourceRefsJson, @frAcRefsJson, @scopeJson, @outOfScopeJson, @verificationRequirementsJson, @createdAt, @updatedAt)`,
+        `insert into slices (id, lane_id, target_id, title, status, source_refs_json, fr_ac_refs_json, delivery_question, work_package_type, minimum_meaningful_outcome, ac_sized_exception_reason, scope_json, out_of_scope_json, expected_evidence_json, unblock_targets_json, verification_requirements_json, created_at, updated_at)
+         values (@id, @laneId, @targetId, @title, @status, @sourceRefsJson, @frAcRefsJson, @deliveryQuestion, @workPackageType, @minimumMeaningfulOutcome, @acSizedExceptionReason, @scopeJson, @outOfScopeJson, @expectedEvidenceJson, @unblockTargetsJson, @verificationRequirementsJson, @createdAt, @updatedAt)`,
       )
       .run({
         ...slice,
@@ -305,6 +341,9 @@ export class SwarmStore {
         frAcRefsJson: JSON.stringify(slice.frAcRefs),
         scopeJson: JSON.stringify(slice.scope),
         outOfScopeJson: JSON.stringify(slice.outOfScope),
+        acSizedExceptionReason: slice.acSizedExceptionReason ?? null,
+        expectedEvidenceJson: JSON.stringify(slice.expectedEvidence),
+        unblockTargetsJson: JSON.stringify(slice.unblockTargets),
         verificationRequirementsJson: JSON.stringify(slice.verificationRequirements),
       });
   }
@@ -544,6 +583,54 @@ export class SwarmStore {
       .map((row) => mapEvent(row as Row));
   }
 
+  upsertCheckpoint(checkpoint: CheckpointRecord): CheckpointRecord {
+    const existing = this.db
+      .prepare("select * from checkpoints where role = ? and entity_type = ? and entity_id = ?")
+      .get(checkpoint.role, checkpoint.entityType, checkpoint.entityId) as Row | undefined;
+    const record = existing
+      ? {
+          ...checkpoint,
+          id: String(existing.id),
+          createdAt: String(existing.created_at),
+        }
+      : checkpoint;
+    this.db
+      .prepare(
+        `insert into checkpoints (id, role, entity_type, entity_id, summary, payload_json, created_by, created_at, updated_at)
+         values (@id, @role, @entityType, @entityId, @summary, @payloadJson, @createdBy, @createdAt, @updatedAt)
+         on conflict(role, entity_type, entity_id) do update set
+           summary = excluded.summary,
+           payload_json = excluded.payload_json,
+           created_by = excluded.created_by,
+           updated_at = excluded.updated_at`,
+      )
+      .run({ ...record, payloadJson: JSON.stringify(record.payload) });
+    return record;
+  }
+
+  listCheckpoints(): CheckpointRecord[] {
+    return this.db
+      .prepare("select * from checkpoints order by updated_at desc")
+      .all()
+      .map((row) => mapCheckpoint(row as Row));
+  }
+
+  checkpointById(id: string): CheckpointRecord | undefined {
+    const row = this.db.prepare("select * from checkpoints where id = ?").get(id) as Row | undefined;
+    return row ? mapCheckpoint(row) : undefined;
+  }
+
+  latestCheckpoint(input: {
+    role: CheckpointRecord["role"];
+    entityType: CheckpointRecord["entityType"];
+    entityId: string;
+  }): CheckpointRecord | undefined {
+    const row = this.db
+      .prepare("select * from checkpoints where role = ? and entity_type = ? and entity_id = ?")
+      .get(input.role, input.entityType, input.entityId) as Row | undefined;
+    return row ? mapCheckpoint(row) : undefined;
+  }
+
   private ensureColumn(table: string, column: string, type: string): void {
     const columns = this.db.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>;
     if (columns.some((item) => item.name === column)) return;
@@ -581,6 +668,7 @@ function mapLane(row: Row): LaneRecord {
 }
 
 function mapSlice(row: Row): SliceRecord {
+  const verificationRequirements = JSON.parse(String(row.verification_requirements_json)) as string[];
   return {
     id: String(row.id),
     laneId: String(row.lane_id),
@@ -589,9 +677,33 @@ function mapSlice(row: Row): SliceRecord {
     status: row.status as SliceRecord["status"],
     sourceRefs: JSON.parse(String(row.source_refs_json)),
     frAcRefs: JSON.parse(String(row.fr_ac_refs_json)),
+    deliveryQuestion:
+      row.delivery_question === null || row.delivery_question === undefined
+        ? "What approved FR/AC behavior does this slice advance?"
+        : String(row.delivery_question),
+    workPackageType:
+      row.work_package_type === null || row.work_package_type === undefined
+        ? "component_pack"
+        : (String(row.work_package_type) as SliceRecord["workPackageType"]),
+    minimumMeaningfulOutcome:
+      row.minimum_meaningful_outcome === null || row.minimum_meaningful_outcome === undefined
+        ? "changes_runtime_path"
+        : (String(row.minimum_meaningful_outcome) as SliceRecord["minimumMeaningfulOutcome"]),
+    acSizedExceptionReason:
+      row.ac_sized_exception_reason === null || row.ac_sized_exception_reason === undefined
+        ? undefined
+        : String(row.ac_sized_exception_reason),
     scope: JSON.parse(String(row.scope_json)),
     outOfScope: JSON.parse(String(row.out_of_scope_json)),
-    verificationRequirements: JSON.parse(String(row.verification_requirements_json)),
+    expectedEvidence:
+      row.expected_evidence_json === null || row.expected_evidence_json === undefined
+        ? verificationRequirements
+        : (JSON.parse(String(row.expected_evidence_json)) as string[]),
+    unblockTargets:
+      row.unblock_targets_json === null || row.unblock_targets_json === undefined
+        ? []
+        : (JSON.parse(String(row.unblock_targets_json)) as string[]),
+    verificationRequirements,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -686,6 +798,20 @@ function mapEscalation(row: Row): EscalationRecord {
     reason: row.reason === null || row.reason === undefined ? undefined : String(row.reason),
     createdBy: String(row.created_by),
     clearedBy: row.cleared_by === null || row.cleared_by === undefined ? undefined : String(row.cleared_by),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapCheckpoint(row: Row): CheckpointRecord {
+  return {
+    id: String(row.id),
+    role: row.role as CheckpointRecord["role"],
+    entityType: row.entity_type as CheckpointRecord["entityType"],
+    entityId: String(row.entity_id),
+    summary: String(row.summary),
+    payload: JSON.parse(String(row.payload_json)) as Record<string, unknown>,
+    createdBy: String(row.created_by),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

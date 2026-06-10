@@ -30,7 +30,7 @@ requirements -> slices -> worker run -> verification -> evidence -> decision
 
 Do not start with a complex swarm. Start with one coordinator, one implementer worker, one verifier worker, and a durable evidence model. Scale roles after the loop is boring.
 
-Use real agents from the start. The MVP should not simulate worker runs except in unit tests. Prove the harness with trivial, low-risk implementation slices so Codex worker execution, events, evidence, and verification are real from day one.
+Use real agents from the start. The MVP should not treat simulated worker runs as proof of the product. Fixture runs are acceptable for deterministic CI and UI regression, but the real-world smoke must use real Codex overseer, worker, and verifier/reviewer roles.
 
 The first real-agent target should be a disposable throw-away repository, not the harness repository itself. This keeps early worker behavior low-risk while still exercising real clone/worktree/change/verify/report flows.
 
@@ -113,6 +113,14 @@ MVP can start with a terminal/TUI dashboard for fast local operator monitoring:
 - blockers
 
 The architecture should still assume a web dashboard/report viewer as the natural product surface. Source adapters need to link to canonical slice reports, and those reports are best exposed over HTTP once the harness is shared by a team.
+
+The visibility surface must clearly label run mode:
+
+- `fixture`: deterministic scripted worker/regression mode
+- `scripted-codex`: scripted planning with real Codex workers
+- `live-agent-smoke`: real overseer/planner coordinating real workers and verifiers
+
+Operators must never have to infer whether they are watching a simulated flow or a real agent rehearsal.
 
 ## Repository Shape
 
@@ -211,6 +219,8 @@ Humans steer the rolling plan through instructions/comments rather than direct p
 
 For MVP, store only the latest rolling plan as canonical harness state. Status sinks may publish a summary/link externally, but external systems do not control plan state or versioning.
 
+The live-agent smoke harness is the proving ground for this planner model. It must launch the planner/overseer as an observable agent run, not rely on the outer chat session as the hidden conductor.
+
 ## Spec Repository
 
 The spec repository is the central source of approved immutable specs and slice state. It should serve slices to orchestration agents and accept progress/state/evidence updates from them.
@@ -243,6 +253,10 @@ Leases should be backed by agent/slice heartbeats. On stall or crash, the harnes
 Revive retry count should be configurable. The final automatic attempt should be visibly highlighted in the TUI/dashboard and allow human manual revive or release.
 
 Distinguish recovery actions: `revive` resumes the same session/run where possible; `restart task` starts a fresh agent with previous history and current workspace state.
+
+Recovery and restart should use generated resume packets. A fresh agent must not depend on chat memory, prior compacted context, or the previous agent's private transcript. The harness should synthesize the role-specific context from durable state: source refs, slice/lane/run state, FR/AC scope, evidence, blockers, decisions, artifacts, and next intended action.
+
+The harness should store role-specific checkpoints at meaningful lifecycle transitions. Checkpoints are compact derived memory, not the source of truth. If checkpoint content and harness state disagree, harness state wins.
 
 Individual FR/AC statuses may advance within a multi-FR/AC slice. Closing the slice requires clean scope: blocked or deferred FR/ACs must be split/rescoped out before closure.
 
@@ -327,24 +341,37 @@ TDD red-phase checks must have linked green-phase gates. A slice cannot be accep
 swarm init
 swarm target init <repo>
 swarm sources add-file <path>
+swarm sources add-dir <path>
+swarm sources list
+swarm sources inspect <selector>
+swarm search specs <query> --domain <domain>
+swarm domains list
+swarm domains inspect <domain>
 swarm slices pull
 swarm run <slice-id>
 swarm verify <slice-id>
 swarm status
 swarm watch
+swarm observe --events 80
+swarm timeline <entity-id> --json
+swarm graph --format json
 swarm report <slice-id>
+swarm checkpoint create --entity <type:id> --role <role>
+swarm checkpoint list
+swarm checkpoint show <checkpoint-id>
+swarm resume-context --entity <type:id> --role <role>
+swarm resume-context --run <run-id>
+swarm serve --workspace <path> --host 127.0.0.1 --port 4318
 ```
 
 ## Next Planning Step
 
-Define the first canonical schemas:
+The first canonical schemas, MVP control-plane loop, local web viewer, and Web Observability E2E Harness now exist. The next coherent planning step is the live real-agent smoke harness:
 
-- requirement record
-- acceptance criterion record
-- slice record
-- worker run event
-- worker final result
-- verification result
-- gate result
+- make run modes explicit in state and summaries
+- create a resettable `.swarm-demo/live-agent-smoke` scenario
+- add a real Codex verifier/reviewer path
+- add a visible Codex overseer/planner path
+- show live progress in the current web viewer
 
-Once these schemas exist, the CLI can be scaffolded without guessing the core lifecycle.
+Graph/evidence UI work remains valuable, but it should now be driven by the live-agent smoke state once that state exists.

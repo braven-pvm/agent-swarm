@@ -12,13 +12,20 @@ import { makeId } from "./ids.js";
 import { artifactsDir, resolveWorkspace, swarmDir } from "./paths.js";
 import { pullNextSlice } from "./planner.js";
 import { workerResultSchema } from "./schemas.js";
-import { registerFileSource } from "./source-adapter.js";
+import { readSourceText, registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
+import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
+import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
+import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
+import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, RunMode, SliceRecord } from "./types.js";
 
 const program = new Command();
+
+const RUN_MODE_META_KEY = "run_mode";
+const DEFAULT_RUN_MODE: RunMode = "unspecified";
 
 type WorkerRunResult = {
   sliceId: string;
@@ -63,8 +70,84 @@ const WEB_VIEWER_HTML = String.raw`<!doctype html>
     <main>
       <section class="metrics" id="metrics"></section>
 
-      <section class="layout">
-        <div class="column wide">
+      <nav class="tabs" aria-label="Observability sections">
+        <button class="tab active" type="button" data-tab="overview">Overview</button>
+        <button class="tab" type="button" data-tab="specs">Specs</button>
+        <button class="tab" type="button" data-tab="work">Work</button>
+        <button class="tab" type="button" data-tab="agents">Agents</button>
+        <button class="tab" type="button" data-tab="events">Events</button>
+      </nav>
+
+      <section id="tab-overview" class="tab-panel active">
+        <section class="layout">
+          <section class="panel wide">
+            <div class="panel-title">
+              <h2>Domain Readiness</h2>
+              <span id="domainCount"></span>
+            </div>
+            <div id="domains" class="table-wrap"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Blockers</h2>
+              <span id="blockerCount"></span>
+            </div>
+            <div id="blockers" class="stack"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="tab-specs" class="tab-panel">
+        <section class="split-layout">
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Specs</h2>
+              <span id="sourceCount"></span>
+            </div>
+            <div class="spec-tools">
+              <input id="specSearch" type="search" placeholder="Search specs, refs, sections">
+              <select id="specDomain"></select>
+              <button id="specSearchButton" type="button">Search</button>
+              <button id="specClearButton" type="button">Clear</button>
+            </div>
+            <div class="spec-search-options">
+              <label>
+                <input id="specSelectedOnly" type="checkbox">
+                <span>Selected spec only</span>
+              </label>
+              <span id="specSearchHint">Search spec sections by text or FR/AC ref. Results appear below.</span>
+            </div>
+            <div class="spec-subtitle">
+              <strong>Search Results</strong>
+              <span id="specSearchStatus">No search yet</span>
+            </div>
+            <div id="specSearchResults" class="stack compact"></div>
+            <div class="spec-subtitle">
+              <strong>Registered Specs</strong>
+              <span id="sourceFilterLabel"></span>
+            </div>
+            <div id="sources" class="source-list"></div>
+          </section>
+
+          <section class="panel detail">
+            <div class="panel-title">
+              <h2>Spec Detail</h2>
+              <span id="selectedSourceLabel"></span>
+            </div>
+            <div class="detail-tabs">
+              <button class="detail-tab active" type="button" data-source-view="summary">Summary</button>
+              <button class="detail-tab" type="button" data-source-view="sections">Sections</button>
+              <button class="detail-tab" type="button" data-source-view="markdown">Markdown</button>
+            </div>
+            <div id="sourceDetail" class="rendered-detail muted">Select a spec to view its sections.</div>
+          </section>
+        </section>
+      </section>
+
+      <section id="tab-work" class="tab-panel">
+        <section class="layout">
+          <div class="column wide">
           <section class="panel">
             <div class="panel-title">
               <h2>Lanes</h2>
@@ -80,42 +163,45 @@ const WEB_VIEWER_HTML = String.raw`<!doctype html>
             </div>
             <div id="slices" class="slice-list"></div>
           </section>
-        </div>
+          </div>
 
-        <div class="column">
+          <section class="panel detail">
+            <div class="panel-title">
+              <h2>Slice Detail</h2>
+              <span id="selectedSliceLabel"></span>
+            </div>
+            <div id="report" class="rendered-detail markdown muted">Select a slice to view its report.</div>
+          </section>
+        </section>
+      </section>
+
+      <section id="tab-agents" class="tab-panel">
+        <section class="layout">
           <section class="panel">
             <div class="panel-title">
               <h2>Agents</h2>
               <span id="agentCount"></span>
             </div>
-            <div id="agents" class="stack"></div>
+            <div id="agents" class="table-wrap"></div>
           </section>
 
-          <section class="panel">
+          <section class="panel detail">
             <div class="panel-title">
-              <h2>Blockers</h2>
-              <span id="blockerCount"></span>
+              <h2>Current Heartbeats</h2>
+              <span id="heartbeatCount"></span>
             </div>
-            <div id="blockers" class="stack"></div>
+            <div id="heartbeats" class="table-wrap"></div>
           </section>
-        </div>
+        </section>
       </section>
 
-      <section class="layout">
+      <section id="tab-events" class="tab-panel">
         <section class="panel wide">
           <div class="panel-title">
             <h2>Recent Events</h2>
             <span id="updatedAt"></span>
           </div>
           <div id="events" class="event-list"></div>
-        </section>
-
-        <section class="panel detail">
-          <div class="panel-title">
-            <h2>Slice Detail</h2>
-            <span id="selectedSliceLabel"></span>
-          </div>
-          <pre id="report">Select a slice to view its report.</pre>
         </section>
       </section>
     </main>
@@ -196,8 +282,72 @@ button {
   cursor: pointer;
 }
 
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+  min-width: 0;
+}
+
 main {
   padding: 22px 28px 32px;
+}
+
+.tabs,
+.detail-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tabs {
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab,
+.detail-tab {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 12px;
+  font-weight: 650;
+}
+
+.tab.active,
+.detail-tab.active {
+  color: var(--ink);
+  box-shadow: inset 0 -3px 0 var(--blue);
+}
+
+.detail-tabs {
+  padding: 9px 12px 0;
+}
+
+.detail-tab {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.detail-tab.active {
+  border-color: var(--blue);
+  background: #eef6fb;
+  box-shadow: none;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
 }
 
 .metrics {
@@ -235,6 +385,13 @@ main {
   margin-bottom: 16px;
 }
 
+.split-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(440px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
 .column {
   display: grid;
   gap: 16px;
@@ -263,11 +420,53 @@ main {
 
 .lane-list,
 .slice-list,
+.source-list,
 .stack,
-.event-list {
+.event-list,
+.table-wrap {
   display: grid;
   gap: 10px;
   padding: 12px;
+}
+
+.spec-tools {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 220px) auto auto;
+  gap: 8px;
+  padding: 12px 12px 0;
+}
+
+.spec-search-options,
+.spec-subtitle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spec-search-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.spec-search-options input {
+  width: auto;
+}
+
+.spec-subtitle strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.compact {
+  padding-top: 8px;
+  padding-bottom: 0;
 }
 
 .item {
@@ -283,6 +482,57 @@ main {
 
 .item.clickable:hover {
   border-color: var(--blue);
+}
+
+.item.selected {
+  border-color: var(--blue);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.table-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  background: #fbfcf8;
+  white-space: nowrap;
+}
+
+.data-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.data-table tr.clickable {
+  cursor: pointer;
+}
+
+.data-table tr.clickable:hover td {
+  background: #f5f9fc;
+}
+
+.data-table tr.selected td {
+  background: #eef6fb;
 }
 
 .row {
@@ -376,6 +626,18 @@ main {
   font-size: 12px;
 }
 
+.section-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.section-row {
+  border-left: 3px solid var(--line);
+  padding-left: 8px;
+}
+
+.rendered-detail,
 pre {
   margin: 0;
   padding: 14px;
@@ -388,42 +650,195 @@ pre {
   font-size: 12px;
 }
 
+.rendered-detail {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.detail-field {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #fbfcf8;
+}
+
+.detail-field span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.detail-field strong {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.section-card {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+  margin-top: 10px;
+  background: #ffffff;
+}
+
+.markdown {
+  color: var(--ink);
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 12px 0 6px;
+  line-height: 1.25;
+}
+
+.markdown h1 {
+  font-size: 20px;
+}
+
+.markdown h2 {
+  font-size: 16px;
+}
+
+.markdown h3,
+.markdown h4 {
+  font-size: 14px;
+}
+
+.markdown p,
+.markdown ul {
+  margin: 7px 0;
+}
+
+.markdown ul {
+  padding-left: 20px;
+}
+
+.markdown code,
+.markdown pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.markdown code {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: #f6f7f4;
+}
+
+.markdown pre {
+  min-height: 0;
+  max-height: none;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfcf8;
+}
+
 @media (max-width: 980px) {
   .topbar,
-  .layout {
+  .layout,
+  .split-layout,
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 
   .topbar {
     display: grid;
   }
+
+  .spec-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .spec-search-options,
+  .spec-subtitle {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 `;
 
 const WEB_VIEWER_JS = String.raw`let snapshot = null;
 let selectedSliceId = null;
+let selectedSourceId = null;
+let selectedSourceDetail = null;
+let sourceDetailView = "summary";
 let timer = null;
 
 const els = {
   workspace: document.getElementById("workspace"),
   metrics: document.getElementById("metrics"),
+  tabs: Array.from(document.querySelectorAll("[data-tab]")),
+  tabPanels: Array.from(document.querySelectorAll(".tab-panel")),
+  domains: document.getElementById("domains"),
+  domainCount: document.getElementById("domainCount"),
   lanes: document.getElementById("lanes"),
   laneCount: document.getElementById("laneCount"),
+  sources: document.getElementById("sources"),
+  sourceCount: document.getElementById("sourceCount"),
+  specSearch: document.getElementById("specSearch"),
+  specDomain: document.getElementById("specDomain"),
+  specSearchButton: document.getElementById("specSearchButton"),
+  specClearButton: document.getElementById("specClearButton"),
+  specSelectedOnly: document.getElementById("specSelectedOnly"),
+  specSearchResults: document.getElementById("specSearchResults"),
+  specSearchStatus: document.getElementById("specSearchStatus"),
+  sourceFilterLabel: document.getElementById("sourceFilterLabel"),
   slices: document.getElementById("slices"),
   sliceCount: document.getElementById("sliceCount"),
   agents: document.getElementById("agents"),
   agentCount: document.getElementById("agentCount"),
+  heartbeats: document.getElementById("heartbeats"),
+  heartbeatCount: document.getElementById("heartbeatCount"),
   blockers: document.getElementById("blockers"),
   blockerCount: document.getElementById("blockerCount"),
   events: document.getElementById("events"),
   updatedAt: document.getElementById("updatedAt"),
   report: document.getElementById("report"),
+  sourceDetail: document.getElementById("sourceDetail"),
   selectedSliceLabel: document.getElementById("selectedSliceLabel"),
+  selectedSourceLabel: document.getElementById("selectedSourceLabel"),
+  sourceViewButtons: Array.from(document.querySelectorAll("[data-source-view]")),
   refresh: document.getElementById("refresh"),
   autoRefresh: document.getElementById("autoRefresh"),
 };
 
+els.tabs.forEach((button) => {
+  button.addEventListener("click", () => activateTab(button.getAttribute("data-tab")));
+});
+els.sourceViewButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    sourceDetailView = button.getAttribute("data-source-view") || "summary";
+    renderSourceDetailView();
+  });
+});
 els.refresh.addEventListener("click", load);
+els.specSearchButton.addEventListener("click", runSpecSearch);
+els.specClearButton.addEventListener("click", clearSpecSearch);
+els.specSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") runSpecSearch();
+});
+els.specDomain.addEventListener("change", () => {
+  renderSources();
+  if (els.specSearch.value.trim()) runSpecSearch();
+});
+els.specSelectedOnly.addEventListener("change", () => {
+  if (els.specSearch.value.trim()) runSpecSearch();
+});
 els.autoRefresh.addEventListener("change", () => {
   if (els.autoRefresh.checked) startTimer();
   else stopTimer();
@@ -442,6 +857,15 @@ function stopTimer() {
   timer = null;
 }
 
+function activateTab(tabName) {
+  els.tabs.forEach((button) => {
+    button.classList.toggle("active", button.getAttribute("data-tab") === tabName);
+  });
+  els.tabPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.id === "tab-" + tabName);
+  });
+}
+
 async function load() {
   const response = await fetch("/api/snapshot?events=80", { cache: "no-store" });
   snapshot = await response.json();
@@ -450,14 +874,16 @@ async function load() {
 }
 
 function render() {
-  els.workspace.textContent = snapshot.workspace;
+  els.workspace.textContent = snapshot.workspace + " | mode: " + (snapshot.runMode || "unspecified");
   els.updatedAt.textContent = "Updated " + new Date(snapshot.generatedAt).toLocaleTimeString();
   const activeSlices = snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
   const runningAgents = snapshot.agentRuns.filter((run) => run.status === "running");
   const blockedDependencies = snapshot.dependencies.filter((dependency) => dependency.status === "blocked");
   renderMetrics([
+    ["Run Mode", snapshot.runMode || "unspecified"],
     ["Targets", snapshot.targets.length],
     ["Sources", snapshot.sources.length],
+    ["Domains", snapshot.domains ? snapshot.domains.length : 0],
     ["Lanes", snapshot.lanes.length],
     ["Slices", snapshot.slices.length],
     ["Active Work", activeSlices.length],
@@ -465,9 +891,13 @@ function render() {
     ["Blockers", snapshot.activeEscalations.length + blockedDependencies.length],
     ["Events", snapshot.recentEvents.length],
   ]);
+  renderSpecDomainOptions();
+  renderDomains();
+  renderSources();
   renderLanes(activeSlices);
   renderSlices();
   renderAgents();
+  renderHeartbeats();
   renderBlockers(blockedDependencies);
   renderEvents();
 }
@@ -478,40 +908,226 @@ function renderMetrics(items) {
   ).join("");
 }
 
+function renderDomains() {
+  const domains = (snapshot.domains || []).slice().sort((a, b) => a.domain.localeCompare(b.domain));
+  els.domainCount.textContent = domains.length + " domains";
+  els.domains.innerHTML = tableHtml(
+    ["Domain", "Sources", "Refs", "Available", "Active", "Blocked", "Completed", "Tags"],
+    domains.map((domain) => [
+      '<strong>' + escapeHtml(domain.domain) + '</strong>',
+      escapeHtml(domain.sources),
+      escapeHtml(domain.refs),
+      escapeHtml(domain.available),
+      escapeHtml(domain.active),
+      escapeHtml(domain.blocked),
+      escapeHtml(domain.completed),
+      escapeHtml((domain.tags || []).join(", ") || "none"),
+    ]),
+    "No domains indexed",
+  );
+}
+
+function renderSpecDomainOptions() {
+  const current = els.specDomain.value;
+  const domains = (snapshot.domains || []).map((domain) => domain.domain).sort();
+  els.specDomain.innerHTML = '<option value="">All domains</option>' + domains.map((domain) =>
+    '<option value="' + escapeHtml(domain) + '">' + escapeHtml(domain) + '</option>'
+  ).join("");
+  if (domains.includes(current)) els.specDomain.value = current;
+}
+
+function renderSources() {
+  const selectedDomain = els.specDomain.value;
+  const sources = snapshot.sources
+    .filter((source) => !selectedDomain || sourceDomain(source) === selectedDomain)
+    .sort((a, b) => sourcePriority(a) - sourcePriority(b) || source.title.localeCompare(b.title));
+  els.sourceCount.textContent = sources.length + " shown";
+  els.sourceFilterLabel.textContent = selectedDomain ? "domain: " + selectedDomain : "all domains";
+  els.sources.innerHTML = tableHtml(
+    ["Spec", "Domain", "Refs", "Sections", "Priority", "Tags", "State"],
+    sources.map((source) => {
+    const refs = sourceRefs(source);
+    const sections = sourceSections(source);
+    const domain = sourceDomain(source);
+    const tags = sourceTags(source);
+    const domainSummary = (snapshot.domains || []).find((item) => item.domain === domain);
+    const status = domainSummary
+      ? 'available ' + domainSummary.available + ' | active ' + domainSummary.active + ' | completed ' + domainSummary.completed
+      : 'indexed';
+    return {
+      attrs: 'class="clickable ' + (source.id === selectedSourceId ? 'selected' : '') + '" data-source="' + escapeHtml(source.id) + '"',
+      cells: [
+        '<strong>' + escapeHtml(source.title) + '</strong><div class="sub">' + escapeHtml(source.id) + '</div>',
+        escapeHtml(domain),
+        refsHtml(refs.slice(0, 6)) || escapeHtml(refs.length),
+        escapeHtml(sections.length),
+        escapeHtml(sourcePriority(source)),
+        escapeHtml(tags.join(", ") || "none"),
+        pill(status),
+      ],
+    };
+  }),
+    "No specs registered",
+  );
+  els.sources.querySelectorAll("[data-source]").forEach((node) => {
+    node.addEventListener("click", () => {
+      selectedSourceId = node.getAttribute("data-source");
+      renderSourceDetail(selectedSourceId);
+      renderSources();
+      if (els.specSelectedOnly.checked && els.specSearch.value.trim()) runSpecSearch();
+    });
+  });
+  if (selectedSourceId && sources.some((source) => source.id === selectedSourceId)) renderSourceDetail(selectedSourceId);
+}
+
+async function renderSourceDetail(sourceId) {
+  const source = snapshot.sources.find((item) => item.id === sourceId);
+  if (!source) return;
+  selectedSourceId = sourceId;
+  els.selectedSourceLabel.textContent = source.id;
+  els.sourceDetail.innerHTML = '<div class="muted">Loading source detail...</div>';
+  const response = await fetch("/api/source/" + encodeURIComponent(sourceId), { cache: "no-store" });
+  selectedSourceDetail = response.ok ? await response.json() : { source, markdown: "" };
+  renderSourceDetailView();
+}
+
+function renderSourceDetailView() {
+  els.sourceViewButtons.forEach((button) => {
+    button.classList.toggle("active", button.getAttribute("data-source-view") === sourceDetailView);
+  });
+  if (!selectedSourceId || !selectedSourceDetail) {
+    els.sourceDetail.innerHTML = '<div class="muted">Select a spec to view its sections.</div>';
+    return;
+  }
+  const source = selectedSourceDetail.source;
+  const refs = sourceRefs(source);
+  const sections = sourceSections(source);
+  if (sourceDetailView === "markdown") {
+    els.sourceDetail.classList.add("markdown");
+    els.sourceDetail.innerHTML = renderMarkdown(selectedSourceDetail.markdown || "# " + source.title);
+    return;
+  }
+  els.sourceDetail.classList.remove("markdown");
+  if (sourceDetailView === "sections") {
+    els.sourceDetail.innerHTML = emptyOr(sections.map((section) =>
+      '<article class="section-card">' +
+      '<div class="row"><div><div class="title">' + escapeHtml(section.title) + '</div>' +
+      '<div class="sub">lines ' + section.startLine + '-' + section.endLine + '</div></div>' +
+      (section.refs.length ? '<span class="pill">' + section.refs.length + ' refs</span>' : '<span class="pill">no refs</span>') +
+      '</div>' +
+      refsHtml(section.refs) +
+      '<div class="sub">' + escapeHtml(section.snippet || "No snippet indexed") + '</div>' +
+      '</article>'
+    ), "No sections indexed");
+    return;
+  }
+  els.sourceDetail.innerHTML =
+    '<div class="detail-grid">' +
+    detailField("Title", source.title) +
+    detailField("Domain", sourceDomain(source)) +
+    detailField("Priority", sourcePriority(source)) +
+    detailField("Tags", sourceTags(source).join(", ") || "none") +
+    detailField("Refs", refs.length) +
+    detailField("Sections", sections.length) +
+    detailField("Hash", source.hash) +
+    detailField("URI", source.uri) +
+    '</div>' +
+    '<h3>FR/AC References</h3>' +
+    (refsHtml(refs) || '<p class="muted">No FR/AC references indexed.</p>') +
+    '<h3>Section Overview</h3>' +
+    tableHtml(
+      ["Section", "Lines", "Refs"],
+      sections.map((section) => [
+        '<strong>' + escapeHtml(section.title) + '</strong>',
+        escapeHtml(section.startLine + "-" + section.endLine),
+        refsHtml(section.refs) || "none",
+      ]),
+      "No sections indexed",
+    );
+}
+
+function clearSpecSearch() {
+  els.specSearch.value = "";
+  els.specSearchResults.innerHTML = "";
+  els.specSearchStatus.textContent = "Search cleared";
+}
+
+async function runSpecSearch() {
+  const query = els.specSearch.value.trim();
+  if (!query) {
+    els.specSearchResults.innerHTML = "";
+    els.specSearchStatus.textContent = "Enter a search term";
+    return;
+  }
+  if (els.specSelectedOnly.checked && !selectedSourceId) {
+    els.specSearchResults.innerHTML = "";
+    els.specSearchStatus.textContent = "Select a spec before using selected-spec search";
+    return;
+  }
+  const params = new URLSearchParams({ q: query, limit: "8" });
+  if (els.specDomain.value) params.set("domain", els.specDomain.value);
+  if (els.specSelectedOnly.checked && selectedSourceId) params.set("source", selectedSourceId);
+  els.specSearchStatus.textContent = "Searching...";
+  const response = await fetch("/api/search/specs?" + params.toString(), { cache: "no-store" });
+  const result = await response.json();
+  const scope = result.source ? " in " + result.source.title : (els.specDomain.value ? " in " + els.specDomain.value : " across all specs");
+  els.specSearchStatus.textContent = result.matches.length + " match(es) for \"" + result.query + "\"" + scope;
+  els.specSearchResults.innerHTML = emptyOr(result.matches.map((match) =>
+    '<article class="item clickable" data-search-source="' + escapeHtml(match.source.id) + '">' +
+    '<div class="title">' + escapeHtml(match.source.title + " > " + match.section.title) + '</div>' +
+    '<div class="sub">domain: ' + escapeHtml(match.source.domain) + ' | lines ' + match.section.startLine + '-' + match.section.endLine + ' | score ' + match.score + '</div>' +
+    refsHtml(match.section.refs) +
+    '<div class="sub">' + escapeHtml(match.snippet) + '</div>' +
+    '</article>'
+  ), "No spec matches");
+  els.specSearchResults.querySelectorAll("[data-search-source]").forEach((node) => {
+    node.addEventListener("click", () => {
+      selectedSourceId = node.getAttribute("data-search-source");
+      renderSourceDetail(selectedSourceId);
+      renderSources();
+    });
+  });
+}
+
 function renderLanes(activeSlices) {
   els.laneCount.textContent = snapshot.lanes.length + " total";
-  els.lanes.innerHTML = emptyOr(snapshot.lanes.map((lane) => {
+  els.lanes.innerHTML = tableHtml(["Lane", "State", "Orchestrator", "Active", "Focus", "Refs"], snapshot.lanes.map((lane) => {
     const laneSlices = snapshot.slices.filter((slice) => slice.laneId === lane.id);
     const active = activeSlices.filter((slice) => slice.laneId === lane.id);
     const refs = unique(laneSlices.flatMap((slice) => slice.frAcRefs));
-    return '<article class="item">' +
-      '<div class="row"><div><div class="title">' + escapeHtml(lane.name) + '</div>' +
-      '<div class="sub">' + escapeHtml(lane.purpose) + '</div></div>' +
-      pill(lane.state) + '</div>' +
-      '<div class="sub">orchestrator: ' + escapeHtml(lane.orchestrator) + '</div>' +
-      '<div class="sub">active slices: ' + active.length + ' | focus: ' + escapeHtml(lane.focusLabels.join(", ")) + '</div>' +
-      refsHtml(refs.slice(0, 10)) +
-      '</article>';
+    return [
+      '<strong>' + escapeHtml(lane.name) + '</strong><div class="sub">' + escapeHtml(lane.purpose) + '</div>',
+      pill(lane.state),
+      escapeHtml(lane.orchestrator),
+      escapeHtml(active.length),
+      escapeHtml(lane.focusLabels.join(", ") || "none"),
+      refsHtml(refs.slice(0, 10)) || "none",
+    ];
   }), "No lanes");
 }
 
 function renderSlices() {
   els.sliceCount.textContent = snapshot.slices.length + " total";
-  els.slices.innerHTML = emptyOr(snapshot.slices.slice().reverse().map((slice) => {
+  els.slices.innerHTML = tableHtml(["Slice", "Status", "Lane", "Refs", "Evidence", "Agents"], snapshot.slices.slice().reverse().map((slice) => {
     const lane = snapshot.lanes.find((item) => item.id === slice.laneId);
     const evidenceCount = slice.evidence ? slice.evidence.length : 0;
-    return '<article class="item clickable" data-slice="' + escapeHtml(slice.id) + '">' +
-      '<div class="row"><div><div class="title">' + escapeHtml(slice.title) + '</div>' +
-      '<div class="sub">' + escapeHtml(slice.id) + ' | ' + escapeHtml(lane ? lane.name : slice.laneId) + '</div></div>' +
-      pill(slice.status) + '</div>' +
-      '<div class="sub">evidence: ' + evidenceCount + ' | agent runs: ' + (slice.agentRuns ? slice.agentRuns.length : 0) + '</div>' +
-      refsHtml(slice.frAcRefs) +
-      '</article>';
+    return {
+      attrs: 'class="clickable ' + (slice.id === selectedSliceId ? 'selected' : '') + '" data-slice="' + escapeHtml(slice.id) + '"',
+      cells: [
+        '<strong>' + escapeHtml(slice.title) + '</strong><div class="sub">' + escapeHtml(slice.id) + '</div>',
+        pill(slice.status),
+        escapeHtml(lane ? lane.name : slice.laneId),
+        refsHtml(slice.frAcRefs) || "none",
+        escapeHtml(evidenceCount),
+        escapeHtml(slice.agentRuns ? slice.agentRuns.length : 0),
+      ],
+    };
   }), "No slices");
   els.slices.querySelectorAll("[data-slice]").forEach((node) => {
     node.addEventListener("click", () => {
       selectedSliceId = node.getAttribute("data-slice");
       loadReport(selectedSliceId);
+      renderSlices();
     });
   });
 }
@@ -519,17 +1135,29 @@ function renderSlices() {
 function renderAgents() {
   els.agentCount.textContent = snapshot.agentRuns.length + " runs";
   const heartbeats = new Map(snapshot.heartbeats.map((heartbeat) => [heartbeat.actor + ":" + heartbeat.entityId, heartbeat]));
-  els.agents.innerHTML = emptyOr(snapshot.agentRuns.slice().reverse().slice(0, 12).map((run) => {
+  els.agents.innerHTML = tableHtml(["Agent", "Status", "Slice", "Driver", "Attempt", "Heartbeat", "Session"], snapshot.agentRuns.slice().reverse().slice(0, 30).map((run) => {
     const heartbeat = heartbeats.get(run.actor + ":" + run.sliceId);
-    return '<article class="item">' +
-      '<div class="row"><div><div class="title">' + escapeHtml(run.actor) + '</div>' +
-      '<div class="sub">' + escapeHtml(run.id) + ' | slice ' + escapeHtml(run.sliceId) + '</div></div>' +
-      pill(run.status) + '</div>' +
-      '<div class="sub">driver: ' + escapeHtml(run.driver) + ' | attempt: ' + run.attempt + '</div>' +
-      (run.sessionId ? '<div class="sub">session: ' + escapeHtml(run.sessionId) + '</div>' : '') +
-      (heartbeat ? '<div class="sub">heartbeat: ' + escapeHtml(heartbeat.state) + ' | ' + escapeHtml(heartbeat.detail || "") + '</div>' : '') +
-      '</article>';
+    return [
+      '<strong>' + escapeHtml(run.actor) + '</strong><div class="sub">' + escapeHtml(run.id) + '</div>',
+      pill(run.status),
+      escapeHtml(run.sliceId),
+      escapeHtml(run.driver),
+      escapeHtml(run.attempt),
+      heartbeat ? pill(heartbeat.state) + '<div class="sub">' + escapeHtml(heartbeat.detail || "") + '</div>' : '<span class="muted">none</span>',
+      escapeHtml(run.sessionId || "none"),
+    ];
   }), "No agent runs");
+}
+
+function renderHeartbeats() {
+  els.heartbeatCount.textContent = snapshot.heartbeats.length + " current";
+  els.heartbeats.innerHTML = tableHtml(["Actor", "State", "Entity", "Detail", "Updated"], snapshot.heartbeats.map((heartbeat) => [
+    '<strong>' + escapeHtml(heartbeat.actor) + '</strong>',
+    pill(heartbeat.state),
+    escapeHtml((heartbeat.entityType || "entity") + ":" + (heartbeat.entityId || "-")),
+    escapeHtml(heartbeat.detail || ""),
+    escapeHtml(new Date(heartbeat.timestamp).toLocaleTimeString()),
+  ]), "No heartbeats");
 }
 
 function renderBlockers(blockedDependencies) {
@@ -545,15 +1173,20 @@ function renderBlockers(blockedDependencies) {
 }
 
 function renderEvents() {
-  els.events.innerHTML = emptyOr(snapshot.recentEvents.map((event) =>
-    '<article class="item"><div>' + escapeHtml(event.timestamp + " " + event.actor + " " + event.type) + '</div><div class="sub">' + escapeHtml(event.entityType + ":" + event.entityId) + '</div></article>'
-  ), "No events");
+  els.events.innerHTML = tableHtml(["Time", "Actor", "Type", "Entity"], snapshot.recentEvents.map((event) => [
+    escapeHtml(new Date(event.timestamp).toLocaleTimeString()),
+    '<strong>' + escapeHtml(event.actor) + '</strong>',
+    escapeHtml(event.type),
+    escapeHtml(event.entityType + ":" + event.entityId),
+  ]), "No events");
 }
 
 async function loadReport(sliceId) {
   els.selectedSliceLabel.textContent = sliceId;
   const response = await fetch("/api/report/" + encodeURIComponent(sliceId), { cache: "no-store" });
-  els.report.textContent = await response.text();
+  const markdown = await response.text();
+  els.report.classList.remove("muted");
+  els.report.innerHTML = renderMarkdown(markdown);
 }
 
 function pill(value) {
@@ -569,8 +1202,115 @@ function emptyOr(items, emptyText) {
   return items.length ? items.join("") : '<div class="item muted">' + escapeHtml(emptyText) + '</div>';
 }
 
+function tableHtml(headers, rows, emptyText) {
+  if (!rows || rows.length === 0) return '<div class="item muted">' + escapeHtml(emptyText) + '</div>';
+  return '<div class="table-scroll"><table class="data-table"><thead><tr>' +
+    headers.map((header) => '<th>' + escapeHtml(header) + '</th>').join("") +
+    '</tr></thead><tbody>' +
+    rows.map((row) => {
+      const cells = Array.isArray(row) ? row : row.cells;
+      const attrs = Array.isArray(row) ? "" : " " + row.attrs;
+      return '<tr' + attrs + '>' + cells.map((cell) => '<td>' + cell + '</td>').join("") + '</tr>';
+    }).join("") +
+    '</tbody></table></div>';
+}
+
+function detailField(label, value) {
+  return '<div class="detail-field"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
+}
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  const fence = String.fromCharCode(96, 96, 96);
+  let inList = false;
+  let inCode = false;
+  let codeLines = [];
+  const closeList = () => {
+    if (inList) {
+      html.push("</ul>");
+      inList = false;
+    }
+  };
+  const closeCode = () => {
+    if (inCode) {
+      html.push("<pre><code>" + escapeHtml(codeLines.join("\n")) + "</code></pre>");
+      codeLines = [];
+      inCode = false;
+    }
+  };
+  for (const line of lines) {
+    if (line.trim().startsWith(fence)) {
+      if (inCode) closeCode();
+      else {
+        closeList();
+        inCode = true;
+        codeLines = [];
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push("<h" + level + ">" + inlineMarkdown(heading[2]) + "</h" + level + ">");
+      continue;
+    }
+    const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+    if (bullet) {
+      if (!inList) {
+        html.push("<ul>");
+        inList = true;
+      }
+      html.push("<li>" + inlineMarkdown(bullet[1]) + "</li>");
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    closeList();
+    html.push("<p>" + inlineMarkdown(line) + "</p>");
+  }
+  closeList();
+  closeCode();
+  return '<div class="markdown">' + html.join("") + '</div>';
+}
+
+function inlineMarkdown(value) {
+  const tick = String.fromCharCode(96);
+  const inlineCodePattern = new RegExp(tick + "([^" + tick + "]+)" + tick, "g");
+  return escapeHtml(value)
+    .replace(inlineCodePattern, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
 function unique(values) {
   return Array.from(new Set(values));
+}
+
+function sourceDomain(source) {
+  return source.metadata && source.metadata.domain ? String(source.metadata.domain) : "Unassigned";
+}
+
+function sourceTags(source) {
+  return source.metadata && Array.isArray(source.metadata.tags) ? source.metadata.tags.map(String) : [];
+}
+
+function sourcePriority(source) {
+  return source.metadata && Number.isFinite(source.metadata.priority) ? Number(source.metadata.priority) : 100;
+}
+
+function sourceRefs(source) {
+  return source.metadata && Array.isArray(source.metadata.frAcRefs) ? source.metadata.frAcRefs.map(String) : [];
+}
+
+function sourceSections(source) {
+  return source.metadata && Array.isArray(source.metadata.sections) ? source.metadata.sections : [];
 }
 
 function escapeHtml(value) {
@@ -618,6 +1358,48 @@ program
   .description("Show current harness status")
   .action(() => {
     printStatus();
+  });
+
+const runModeCommand = program.command("run-mode").description("Manage the current harness run mode label");
+
+runModeCommand
+  .command("set")
+  .description("Set the current run mode shown in observability")
+  .argument("<mode>", "fixture, scripted-codex, live-agent-smoke, or unspecified")
+  .action((mode: string) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const parsed = parseRunMode(mode);
+      store.setMeta(RUN_MODE_META_KEY, parsed);
+      store.addEvent(
+        createEvent({
+          actor: "harness",
+          type: "run_mode.set",
+          entityType: "harness",
+          entityId: "local",
+          payload: { runMode: parsed },
+        }),
+      );
+      console.log(`Run mode set to ${parsed}`);
+    } finally {
+      store.close();
+    }
+  });
+
+runModeCommand
+  .command("show")
+  .description("Show the current run mode")
+  .action(() => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      console.log(currentRunMode(store));
+    } finally {
+      store.close();
+    }
   });
 
 const target = program.command("target").description("Manage target repositories");
@@ -706,12 +1488,19 @@ sources
   .command("add-file")
   .description("Register a local Markdown/text source file")
   .argument("<path>", "source file path")
-  .action((filePath: string) => {
+  .option("--domain <domain>", "domain label for planning and reporting")
+  .option("--tags <tags>", "comma-separated tags for planning filters")
+  .option("--priority <number>", "lower numbers are planned first inside a filtered source set", parseInteger)
+  .action((filePath: string, options: { domain?: string; tags?: string; priority?: number }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const source = registerFileSource(filePath);
+      const source = registerFileSource(filePath, {
+        domain: options.domain,
+        tags: parseCsv(options.tags),
+        priority: options.priority,
+      });
       store.addOrUpdateSource(source);
       store.addEvent(
         createEvent({
@@ -723,12 +1512,211 @@ sources
             uri: source.uri,
             title: source.title,
             hash: source.hash,
+            domain: sourceDomain(source),
+            tags: sourceTags(source),
+            priority: sourcePriority(source),
+            frAcRefs: sourceFrAcRefs(source),
           },
         }),
       );
       console.log(`Registered source ${source.title}`);
       console.log(`  uri: ${source.uri}`);
       console.log(`  hash: ${source.hash}`);
+      console.log(`  domain: ${sourceDomain(source)}`);
+      console.log(`  tags: ${sourceTags(source).join(", ") || "none"}`);
+      console.log(`  priority: ${sourcePriority(source)}`);
+      console.log(`  refs indexed: ${sourceFrAcRefs(source).length}`);
+    } finally {
+      store.close();
+    }
+  });
+
+sources
+  .command("add-dir")
+  .description("Register Markdown/text source files from a directory")
+  .argument("<path>", "source directory")
+  .option("--domain <domain>", "domain label for planning and reporting")
+  .option("--tags <tags>", "comma-separated tags for planning filters")
+  .option("--priority <number>", "lower numbers are planned first inside a filtered source set", parseInteger)
+  .action((dirPath: string, options: { domain?: string; tags?: string; priority?: number }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const files = listSourceFiles(dirPath);
+      for (const file of files) {
+        const source = registerFileSource(file, {
+          domain: options.domain,
+          tags: parseCsv(options.tags),
+          priority: options.priority,
+        });
+        store.addOrUpdateSource(source);
+        store.addEvent(
+          createEvent({
+            actor: "harness",
+            type: "source.registered",
+            entityType: "source",
+            entityId: source.id,
+            payload: {
+              uri: source.uri,
+              title: source.title,
+              hash: source.hash,
+              domain: sourceDomain(source),
+              tags: sourceTags(source),
+              priority: sourcePriority(source),
+              frAcRefs: sourceFrAcRefs(source),
+            },
+          }),
+        );
+      }
+      console.log(`Registered ${files.length} source file(s) from ${path.resolve(dirPath)}`);
+    } finally {
+      store.close();
+    }
+  });
+
+sources
+  .command("list")
+  .description("List registered immutable source specs with derived planning metadata")
+  .option("--domain <domain>", "filter by domain")
+  .option("--tag <tag>", "filter by tag")
+  .action((options: { domain?: string; tag?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const sources = store
+        .listSources()
+        .filter((source) => !options.domain || sourceDomain(source).toLowerCase() === options.domain.toLowerCase())
+        .filter((source) => !options.tag || sourceTags(source).map((tag) => tag.toLowerCase()).includes(options.tag.toLowerCase()))
+        .sort((a, b) => sourcePriority(a) - sourcePriority(b) || a.title.localeCompare(b.title));
+      console.log(`Sources: ${sources.length}`);
+      for (const source of sources) {
+        console.log(`${source.id} ${source.title}`);
+        console.log(`  domain: ${sourceDomain(source)} | priority: ${sourcePriority(source)} | tags: ${sourceTags(source).join(", ") || "none"}`);
+        console.log(`  refs: ${sourceFrAcRefs(source).length} | hash: ${source.hash.slice(0, 12)} | uri: ${source.uri}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+sources
+  .command("inspect")
+  .description("Inspect one source's derived section and FR/AC index")
+  .argument("<selector>", "source id, title, basename, or path")
+  .action((selector: string) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const source = findSource(store, selector);
+      if (!source) throw new Error(`Source not found: ${selector}`);
+      const sections = sourceSections(source);
+      console.log(`Source: ${source.title}`);
+      console.log(`ID: ${source.id}`);
+      console.log(`URI: ${source.uri}`);
+      console.log(`Hash: ${source.hash}`);
+      console.log(`Domain: ${sourceDomain(source)} | Priority: ${sourcePriority(source)} | Tags: ${sourceTags(source).join(", ") || "none"}`);
+      console.log(`FR/AC refs: ${sourceFrAcRefs(source).join(", ") || "none"}`);
+      console.log("");
+      console.log(`Sections: ${sections.length}`);
+      for (const section of sections) {
+        console.log(`  ${section.id}`);
+        console.log(`    ${"#".repeat(Math.max(1, section.level))} ${section.title} (lines ${section.startLine}-${section.endLine})`);
+        console.log(`    refs: ${section.refs.join(", ") || "none"}`);
+        console.log(`    snippet: ${section.snippet || "none"}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+const search = program.command("search").description("Search indexed harness content");
+
+search
+  .command("specs")
+  .description("Search registered immutable source specs with lightweight text matching")
+  .argument("<query>", "keyword or phrase")
+  .option("--domain <domain>", "filter by domain")
+  .option("--tag <tag>", "filter by tag")
+  .option("--limit <count>", "maximum matching sections", parseInteger, 10)
+  .action((query: string, options: { domain?: string; tag?: string; limit: number }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const matches = searchSpecSections(store, query, {
+        domain: options.domain,
+        tag: options.tag,
+        limit: options.limit,
+      });
+      console.log(`Spec matches: ${matches.length}`);
+      for (const match of matches) {
+        console.log(`${match.source.title} > ${match.section.title}`);
+        console.log(`  source: ${match.source.id} | domain: ${sourceDomain(match.source)} | lines: ${match.section.startLine}-${match.section.endLine}`);
+        console.log(`  refs: ${match.section.refs.join(", ") || "none"}`);
+        console.log(`  score: ${match.score} | ${match.snippet}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+const domains = program.command("domains").description("Inspect derived domain planning state");
+
+domains
+  .command("list")
+  .description("List source domains and FR/AC availability")
+  .action(() => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const summaries = buildDomainSummaries(store);
+      console.log(`Domains: ${summaries.length}`);
+      for (const domain of summaries) {
+        console.log(`${domain.domain}`);
+        console.log(
+          `  sources: ${domain.sources} | refs: ${domain.refs} | available: ${domain.available} | active: ${domain.active} | blocked: ${domain.blocked} | completed: ${domain.completed}`,
+        );
+        console.log(
+          `  slices: active ${domain.activeSlices}, blocked ${domain.blockedSlices}, accepted ${domain.acceptedSlices} | tags: ${domain.tags.join(", ") || "none"}`,
+        );
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+domains
+  .command("inspect")
+  .description("Inspect one source domain")
+  .argument("<domain>", "domain label")
+  .action((domainName: string) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const detail = buildDomainDetail(store, domainName);
+      if (!detail) throw new Error(`Domain not found: ${domainName}`);
+      console.log(`Domain: ${detail.domain}`);
+      console.log(
+        `Sources: ${detail.sources} | Refs: ${detail.refs} | Available: ${detail.available} | Active: ${detail.active} | Blocked: ${detail.blocked} | Completed: ${detail.completed}`,
+      );
+      console.log(`Slices: active ${detail.activeSlices}, blocked ${detail.blockedSlices}, accepted ${detail.acceptedSlices}`);
+      console.log("");
+      console.log("Sources");
+      for (const source of detail.sourceDetails) {
+        console.log(`  ${source.id} ${source.title}`);
+        console.log(`    priority: ${source.priority} | tags: ${source.tags.join(", ") || "none"} | refs: ${source.refs.length}`);
+        console.log(`    uri: ${source.uri}`);
+      }
+      console.log("");
+      console.log("FR/AC Status");
+      for (const item of detail.refStatuses) {
+        console.log(`  ${item.ref}: ${item.status}${item.sliceId ? ` (${item.sliceId})` : ""}`);
+      }
     } finally {
       store.close();
     }
@@ -741,6 +1729,8 @@ slices
   .description("Create the next available MVP slice from registered sources")
   .option("--target <selector>", "target id, name, basename, or path")
   .option("--source <selector>", "source id, title, basename, or path")
+  .option("--domain <domain>", "pull from the next available source in a domain")
+  .option("--tag <tag>", "pull from sources carrying this tag")
   .option("--new-lane", "create a new lane instead of reusing an active lane")
   .option("--lane-name <name>", "lane name")
   .option("--lane-purpose <purpose>", "lane purpose")
@@ -750,6 +1740,8 @@ slices
   .action((options: {
     target?: string;
     source?: string;
+    domain?: string;
+    tag?: string;
     newLane?: boolean;
     laneName?: string;
     lanePurpose?: string;
@@ -764,6 +1756,8 @@ slices
       const result = pullNextSlice(store, {
         target: options.target,
         source: options.source,
+        domain: options.domain,
+        tags: options.tag ? [options.tag] : undefined,
         newLane: options.newLane,
         laneName: options.laneName,
         lanePurpose: options.lanePurpose,
@@ -900,15 +1894,24 @@ program
         encoding: "utf8",
       });
       const commandPassed = result.status === 0;
-      const workerGate = readAndValidateWorkerResult(store, slice);
-      const passed = commandPassed && workerGate.passed;
+      const workerGate = readAndValidateWorkerResult(store, slice, options.actor);
+      const verificationEvidenceId = makeId("evidence");
+      const frAcResults = buildFrAcResults({
+        slice,
+        verifier: options.actor,
+        commandPassed,
+        workerGate,
+        verificationEvidenceId,
+      });
+      const perRefPassed = frAcResults.every((result) => result.status === "passed" || result.status === "overridden");
+      const passed = commandPassed && workerGate.passed && perRefPassed;
       store.updateSliceStatus(slice.id, passed ? "accepted" : "blocked");
       if (passed) {
         store.completeLeasesForSlice(slice.id);
       }
       store.updateDependenciesFor("slice", slice.id, passed ? "satisfied" : "blocked");
       store.insertEvidence({
-        id: makeId("evidence"),
+        id: verificationEvidenceId,
         sliceId: slice.id,
         kind: "command",
         summary: `Verification command ${passed ? "passed" : "failed"}: ${command}`,
@@ -919,6 +1922,9 @@ program
           passed,
           commandPassed,
           workerGate,
+          frAcResults,
+          missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
+          failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
           stdout: trimOutput(result.stdout),
           stderr: trimOutput(result.stderr),
         },
@@ -945,15 +1951,33 @@ program
             passed,
             commandPassed,
             workerGate,
+            frAcResults,
+            missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
+            failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
             stdout: trimOutput(result.stdout),
             stderr: trimOutput(result.stderr),
           },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "verifier",
+        entityType: "slice",
+        entityId: slice.id,
+        actor: options.actor,
+        reason: "Verification completed.",
+      });
+      if (passed) {
+        detectAndRecordLowSignalWork(store, slice);
+      }
       console.log(`Verification ${passed ? "passed" : "failed"} for ${slice.id}`);
       console.log(`  command: ${command}`);
       console.log(`  exit code: ${result.status}`);
       if (!workerGate.passed) console.log(`  worker gate: ${workerGate.reason}`);
+      const missingRefs = frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref);
+      const failedRefs = frAcResults.filter((item) => item.status === "failed").map((item) => item.ref);
+      if (missingRefs.length > 0) console.log(`  missing FR/AC evidence: ${missingRefs.join(", ")}`);
+      if (failedRefs.length > 0) console.log(`  failed FR/AC evidence: ${failedRefs.join(", ")}`);
       if (result.stdout.trim()) console.log(result.stdout.trim());
       if (result.stderr.trim()) console.error(result.stderr.trim());
     } finally {
@@ -1048,17 +2072,123 @@ program
     }
   });
 
+const checkpoint = program.command("checkpoint").description("Manage latest role/entity checkpoints");
+
+checkpoint
+  .command("create")
+  .description("Create or refresh a latest checkpoint for a role/entity")
+  .requiredOption("--entity <selector>", "entity selector like slice:SLICE-id, lane:LANE-id, or agent_run:RUN-id")
+  .requiredOption("--role <role>", "planner, worker, verifier, reviewer, recovery, or overseer")
+  .option("--actor <actor>", "checkpoint creator", "checkpoint-agent")
+  .action((options: { entity: string; role: string; actor: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const entity = parseEntitySelector(options.entity);
+      ensureEntityExists(store, entity.entityType, entity.entityId);
+      const record = refreshCheckpoint({
+        store,
+        role: parseCheckpointRole(options.role),
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        actor: options.actor,
+        reason: "Manual checkpoint command.",
+      });
+      console.log(`Refreshed checkpoint ${record.id}`);
+      console.log(`  role: ${record.role}`);
+      console.log(`  entity: ${record.entityType}:${record.entityId}`);
+      console.log(`  summary: ${record.summary}`);
+    } finally {
+      store.close();
+    }
+  });
+
+checkpoint
+  .command("list")
+  .description("List latest checkpoints")
+  .action(() => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const checkpoints = store.listCheckpoints();
+      console.log(`Checkpoints: ${checkpoints.length}`);
+      for (const item of checkpoints) {
+        console.log(`${item.id} ${item.role} ${item.entityType}:${item.entityId} ${item.updatedAt}`);
+        console.log(`  ${item.summary}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+checkpoint
+  .command("show")
+  .description("Show a checkpoint")
+  .argument("<checkpoint-id>", "checkpoint identifier")
+  .action((checkpointId: string) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const record = store.checkpointById(checkpointId);
+      if (!record) throw new Error(`Checkpoint not found: ${checkpointId}`);
+      console.log(renderCheckpoint(record));
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command("resume-context")
+  .description("Generate a role-specific resume packet from durable harness state")
+  .option("--entity <selector>", "entity selector like slice:SLICE-id, lane:LANE-id, or agent_run:RUN-id")
+  .option("--role <role>", "planner, worker, verifier, reviewer, recovery, or overseer")
+  .option("--run <run-id>", "agent run id; defaults role to recovery")
+  .action((options: { entity?: string; role?: string; run?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const entity = options.run
+        ? { entityType: "agent_run" as const, entityId: options.run }
+        : options.entity
+          ? parseEntitySelector(options.entity)
+          : undefined;
+      if (!entity) throw new Error("Provide --entity <type:id> or --run <run-id>.");
+      ensureEntityExists(store, entity.entityType, entity.entityId);
+      const role = parseCheckpointRole(options.role ?? (options.run ? "recovery" : "worker"));
+      console.log(buildResumePacket({ store, role, entityType: entity.entityType, entityId: entity.entityId }));
+    } finally {
+      store.close();
+    }
+  });
+
 program
   .command("serve")
   .description("Serve a local read-only web observability viewer")
   .option("--workspace <path>", "harness workspace to observe", process.cwd())
   .option("--host <host>", "bind host", "127.0.0.1")
-  .option("--port <port>", "bind port", parseInteger, 4317)
+  .option("--port <port>", "bind port; use 0 to choose a free port", parsePort, 4317)
   .option("--events <count>", "default snapshot event count", parseInteger, 80)
   .action((options: { workspace: string; host: string; port: number; events: number }) => {
     const workspace = path.resolve(options.workspace);
     ensureInitialized(workspace);
     const server = createWebViewerServer({ workspace, defaultEventCount: options.events });
+    server.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") {
+        console.error(`Port ${options.port} is already in use on ${options.host}.`);
+        console.error("Try a different port, for example:");
+        console.error(`  swarm serve --workspace ${workspace} --host ${options.host} --port 4318`);
+        console.error("Or let the OS choose a free port:");
+        console.error(`  swarm serve --workspace ${workspace} --host ${options.host} --port 0`);
+        process.exitCode = 1;
+        return;
+      }
+      console.error(`Failed to start web viewer: ${error.message}`);
+      process.exitCode = 1;
+    });
     server.listen(options.port, options.host, () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : options.port;
@@ -1106,6 +2236,14 @@ escalations
           payload: { escalationId: escalation.id, level: escalation.level, message: escalation.message },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "overseer",
+        entityType: escalation.entityType,
+        entityId: escalation.entityId,
+        actor: options.actor,
+        reason: "Escalation created.",
+      });
       console.log(`Created escalation ${escalation.id}`);
     } finally {
       store.close();
@@ -1206,6 +2344,14 @@ recovery
             },
           }),
         );
+        refreshCheckpoint({
+          store,
+          role: "recovery",
+          entityType: "agent_run",
+          entityId: item.run.id,
+          actor: options.actor,
+          reason: options.release ? "Stale run released by recovery scan." : "Stale run marked for recovery.",
+        });
       }
     } finally {
       store.close();
@@ -1277,6 +2423,14 @@ recovery
           },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "recovery",
+        entityType: "agent_run",
+        entityId: revivedRunId,
+        actor: options.actor,
+        reason: "Revive started.",
+      });
 
       const args = [
         "exec",
@@ -1344,6 +2498,14 @@ recovery
           },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "recovery",
+        entityType: "agent_run",
+        entityId: revivedRunId,
+        actor: options.actor,
+        reason: "Revive completed.",
+      });
       console.log(`${result.status === 0 ? "Revived" : "Revive failed"} for ${runId}`);
       console.log(`  new run: ${revivedRunId}`);
       console.log(`  session: ${previousRun.sessionId}`);
@@ -1384,6 +2546,14 @@ recovery
           },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "recovery",
+        entityType: "agent_run",
+        entityId: previousRun.id,
+        actor: "recovery-agent",
+        reason: "Restart started.",
+      });
       const result = await executeWorkerRun({
         workspace,
         store,
@@ -1407,6 +2577,14 @@ recovery
           },
         }),
       );
+      refreshCheckpoint({
+        store,
+        role: "recovery",
+        entityType: "agent_run",
+        entityId: result.runId,
+        actor: "recovery-agent",
+        reason: "Restart completed.",
+      });
       printWorkerRunResult(result);
     } finally {
       store.close();
@@ -1478,6 +2656,7 @@ async function executeWorkerRun(input: {
 }): Promise<WorkerRunResult> {
   const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
   if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
+  validateSliceDispatchContract(slice);
   const target = input.store.targetById(slice.targetId);
   if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
   const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
@@ -1618,7 +2797,6 @@ async function executeWorkerRun(input: {
       },
     }),
   );
-
   input.store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
   input.store.upsertHeartbeat({
     id: `heartbeat:${input.actor}`,
@@ -1627,6 +2805,22 @@ async function executeWorkerRun(input: {
     detail: result.status === 0 ? `${input.driver} worker completed` : `${input.driver} worker failed`,
     entityType: "slice",
     entityId: slice.id,
+  });
+  refreshCheckpoint({
+    store: input.store,
+    role: "worker",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: input.actor,
+    reason: "Worker run completed.",
+  });
+  refreshCheckpoint({
+    store: input.store,
+    role: "recovery",
+    entityType: "agent_run",
+    entityId: runId,
+    actor: input.actor,
+    reason: input.reason === "restart" ? "Restart worker run completed." : "Worker run available for recovery context.",
   });
   return {
     sliceId: slice.id,
@@ -1727,6 +2921,7 @@ function printStatus(): void {
 
     console.log("Harness status");
     console.log(`Workspace: ${workspace}`);
+    console.log(`Run mode: ${currentRunMode(store)}`);
     console.log(`Targets: ${targets.length}`);
     for (const target of targets) {
       console.log(`  - ${target.name} (${target.id}) ${target.path}`);
@@ -1812,6 +3007,44 @@ function createWebViewerServer(input: { workspace: string; defaultEventCount: nu
           sendJson(response, buildGraph(store));
           return;
         }
+        if (requestUrl.pathname.startsWith("/api/source/")) {
+          const selector = decodeURIComponent(requestUrl.pathname.slice("/api/source/".length));
+          const source = selector ? findSource(store, selector) : undefined;
+          if (!source) {
+            sendJson(response, { error: "Source not found" }, 404);
+            return;
+          }
+          sendJson(response, {
+            source,
+            markdown: readSourceText(source),
+          });
+          return;
+        }
+        if (requestUrl.pathname === "/api/search/specs") {
+          const query = requestUrl.searchParams.get("q") ?? "";
+          const limit = parseOptionalPositiveInteger(requestUrl.searchParams.get("limit")) ?? 8;
+          const domain = requestUrl.searchParams.get("domain") ?? undefined;
+          const tag = requestUrl.searchParams.get("tag") ?? undefined;
+          const source = requestUrl.searchParams.get("source") ?? undefined;
+          const matches = query.trim()
+            ? searchSpecSections(store, query, { domain, tag, source, limit }).map((match) => ({
+                source: {
+                  id: match.source.id,
+                  title: match.source.title,
+                  uri: match.source.uri,
+                  domain: sourceDomain(match.source),
+                  tags: sourceTags(match.source),
+                  priority: sourcePriority(match.source),
+                },
+                section: match.section,
+                score: match.score,
+                snippet: match.snippet,
+              }))
+            : [];
+          const selectedSource = source ? findSource(store, source) : undefined;
+          sendJson(response, { query, source: selectedSource ? { id: selectedSource.id, title: selectedSource.title } : undefined, matches });
+          return;
+        }
         if (requestUrl.pathname.startsWith("/api/report/")) {
           const sliceId = decodeURIComponent(requestUrl.pathname.slice("/api/report/".length));
           if (!sliceId) {
@@ -1885,18 +3118,34 @@ function buildSliceReport(store: SwarmStore, sliceId: string): string {
   const leases = store.listLeases().filter((lease) => lease.sliceId === slice.id);
   const evidence = store.listEvidence(slice.id);
   const escalations = store.listEscalations("active").filter((item) => item.entityId === slice.id);
+  const frAcResults = latestFrAcResults(evidence);
   const lines = [
     `# Slice Report: ${slice.title}`,
     "",
     `Status: ${slice.status}`,
     `Slice: ${slice.id}`,
     `Lane: ${lane ? `${lane.name} (${lane.id})` : slice.laneId}`,
+    `Delivery question: ${slice.deliveryQuestion}`,
+    `Work package: ${slice.workPackageType}`,
+    `Minimum meaningful outcome: ${slice.minimumMeaningfulOutcome}`,
+    ...(slice.acSizedExceptionReason ? [`AC-sized exception: ${slice.acSizedExceptionReason}`] : []),
     "",
     "Source refs:",
     ...slice.sourceRefs.map((source) => `- ${source.title ?? source.uri} (${source.uri})`),
     "",
     "FR/AC coverage:",
-    ...slice.frAcRefs.map((ref) => `- ${ref}`),
+    ...slice.frAcRefs.map((ref) => {
+      const result = frAcResults.find((item) => item.ref === ref);
+      return result
+        ? `- ${ref}: ${result.status} (${result.proof})`
+        : `- ${ref}: unverified`;
+    }),
+    "",
+    "Expected evidence:",
+    ...slice.expectedEvidence.map((item) => `- ${item}`),
+    "",
+    "Unblock targets:",
+    ...(slice.unblockTargets.length > 0 ? slice.unblockTargets.map((item) => `- ${item}`) : ["- none declared"]),
     "",
     "Leases:",
     ...(leases.length > 0 ? leases.map((lease) => `- ${lease.frAcRef}: ${lease.status}`) : ["- none"]),
@@ -1913,15 +3162,25 @@ function buildSliceReport(store: SwarmStore, sliceId: string): string {
   return lines.join("\n");
 }
 
+function latestFrAcResults(evidence: Array<ReturnType<SwarmStore["listEvidence"]>[number]>): FrAcVerificationResult[] {
+  const commandEvidence = evidence
+    .filter((item) => item.kind === "command" && Array.isArray(item.payload.frAcResults))
+    .at(-1);
+  if (!commandEvidence) return [];
+  return commandEvidence.payload.frAcResults as unknown as FrAcVerificationResult[];
+}
+
 function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {
   const slices = store.listSlices();
   const leases = store.listLeases();
   const evidence = store.listEvidence();
   return {
     workspace,
+    runMode: currentRunMode(store),
     generatedAt: new Date().toISOString(),
     targets: store.listTargets(),
     sources: store.listSources(),
+    domains: buildDomainSummaries(store),
     lanes: store.listLanes().map((lane) => ({
       ...lane,
       activeLeases: leases.filter((lease) => lease.laneId === lane.id && lease.status === "active").map((lease) => lease.frAcRef),
@@ -1930,6 +3189,7 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
       ...slice,
       leases: leases.filter((lease) => lease.sliceId === slice.id),
       evidence: evidence.filter((item) => item.sliceId === slice.id),
+      frAcResults: latestFrAcResults(evidence.filter((item) => item.sliceId === slice.id)),
       agentRuns: store.listAgentRuns().filter((run) => run.sliceId === slice.id),
     })),
     dependencies: store.listDependencies().map((dependency) => ({
@@ -1939,6 +3199,7 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
     agentRuns: store.listAgentRuns(),
     heartbeats: store.listHeartbeats(),
     activeEscalations: store.listEscalations("active"),
+    checkpoints: store.listCheckpoints(),
     recentEvents: store.recentEvents(eventCount),
   };
 }
@@ -1958,6 +3219,7 @@ function renderWatchFrame(
     "Agent Swarm Watch",
     `Generated: ${snapshot.generatedAt}`,
     `Workspace: ${snapshot.workspace}`,
+    `Run mode: ${snapshot.runMode}`,
     `View: ${options.view} | Stale threshold: ${options.staleAfterSeconds}s`,
     "",
     `Targets ${snapshot.targets.length} | Sources ${snapshot.sources.length} | Lanes ${snapshot.lanes.length} | Slices ${snapshot.slices.length} | Active ${activeSlices.length}`,
@@ -2144,6 +3406,14 @@ function parseEscalationLevel(value: string): "info" | "warning" | "blocker" | "
   return value as "info" | "warning" | "blocker" | "human_required" | "critical";
 }
 
+function parseCheckpointRole(value: string): CheckpointRole {
+  const allowed = new Set(["planner", "worker", "verifier", "reviewer", "recovery", "overseer"]);
+  if (!allowed.has(value)) {
+    throw new Error(`Invalid checkpoint role: ${value}`);
+  }
+  return value as CheckpointRole;
+}
+
 function parseEntityType(value: string): ReturnType<typeof createEvent>["entityType"] {
   const allowed = new Set([
     "harness",
@@ -2162,6 +3432,47 @@ function parseEntityType(value: string): ReturnType<typeof createEvent>["entityT
     throw new Error(`Invalid entity type: ${value}`);
   }
   return value as ReturnType<typeof createEvent>["entityType"];
+}
+
+function parseEntitySelector(value: string): { entityType: EntityType; entityId: string } {
+  const match = /^([^:]+):(.+)$/.exec(value);
+  if (!match) throw new Error(`Invalid entity selector: ${value}. Expected <type>:<id>.`);
+  return {
+    entityType: parseEntityType(match[1]),
+    entityId: match[2],
+  };
+}
+
+function ensureEntityExists(store: SwarmStore, entityType: EntityType, entityId: string): void {
+  const exists =
+    (entityType === "slice" && store.listSlices().some((item) => item.id === entityId)) ||
+    (entityType === "lane" && store.listLanes().some((item) => item.id === entityId)) ||
+    (entityType === "agent_run" && store.listAgentRuns().some((item) => item.id === entityId)) ||
+    (entityType === "target" && store.listTargets().some((item) => item.id === entityId)) ||
+    (entityType === "source" && store.listSources().some((item) => item.id === entityId)) ||
+    (entityType === "escalation" && store.listEscalations().some((item) => item.id === entityId)) ||
+    (entityType === "dependency" && store.listDependencies().some((item) => item.id === entityId)) ||
+    (entityType === "evidence" && store.listEvidence().some((item) => item.id === entityId)) ||
+    entityType === "harness";
+  if (!exists) throw new Error(`Entity not found: ${entityType}:${entityId}`);
+}
+
+function renderCheckpoint(checkpoint: CheckpointRecord): string {
+  const lines = [
+    `# Checkpoint ${checkpoint.id}`,
+    "",
+    `Role: ${checkpoint.role}`,
+    `Entity: ${checkpoint.entityType}:${checkpoint.entityId}`,
+    `Updated: ${checkpoint.updatedAt}`,
+    `Created by: ${checkpoint.createdBy}`,
+    "",
+    "Summary:",
+    checkpoint.summary,
+    "",
+    "Payload:",
+    JSON.stringify(checkpoint.payload, null, 2),
+  ];
+  return lines.join("\n");
 }
 
 function elapsedSince(timestamp: string): string {
@@ -2197,6 +3508,136 @@ function parseInteger(value: string): number {
   return parsed;
 }
 
+function parsePort(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error(`Expected a port between 0 and 65535, got ${value}`);
+  }
+  return parsed;
+}
+
+function listSourceFiles(dirInput: string): string[] {
+  const root = path.resolve(dirInput);
+  if (!fs.existsSync(root)) throw new Error(`Source directory does not exist: ${root}`);
+  const stat = fs.statSync(root);
+  if (!stat.isDirectory()) throw new Error(`Source path is not a directory: ${root}`);
+  const allowed = new Set([".md", ".markdown", ".txt"]);
+  const results: string[] = [];
+  const visit = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".swarm") continue;
+        visit(fullPath);
+        continue;
+      }
+      if (entry.isFile() && allowed.has(path.extname(entry.name).toLowerCase())) results.push(fullPath);
+    }
+  };
+  visit(root);
+  return results.sort((a, b) => a.localeCompare(b));
+}
+
+function findSource(store: SwarmStore, selector: string) {
+  const raw = selector.toLowerCase();
+  const normalized = path.resolve(selector).toLowerCase();
+  return store.listSources().find(
+    (source) =>
+      source.id.toLowerCase() === raw ||
+      source.title.toLowerCase() === raw ||
+      source.uri.toLowerCase() === raw ||
+      source.uri.toLowerCase() === normalized ||
+      path.basename(source.uri).toLowerCase() === raw,
+  );
+}
+
+function searchSpecSections(
+  store: SwarmStore,
+  query: string,
+  options: { domain?: string; tag?: string; source?: string; limit: number },
+): Array<{
+  source: ReturnType<SwarmStore["listSources"]>[number];
+  section: ReturnType<typeof sourceSections>[number];
+  score: number;
+  snippet: string;
+}> {
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  if (terms.length === 0) return [];
+  return store
+    .listSources()
+    .filter((source) => !options.domain || sourceDomain(source).toLowerCase() === options.domain.toLowerCase())
+    .filter((source) => !options.tag || sourceTags(source).map((tag) => tag.toLowerCase()).includes(options.tag.toLowerCase()))
+    .filter((source) => !options.source || sourceMatchesSelector(source, options.source))
+    .flatMap((source) => {
+      const text = readSourceText(source);
+      const sections = sourceSections(source).length > 0 ? sourceSections(source) : extractMarkdownSections(text, source.id);
+      return sections
+        .map((section) => {
+          const haystack = [
+            source.title,
+            sourceDomain(source),
+            ...sourceTags(source),
+            section.title,
+            section.snippet,
+            ...section.refs,
+          ]
+            .join(" ")
+            .toLowerCase();
+          const score = terms.reduce((total, term) => total + countOccurrences(haystack, term), 0);
+          return {
+            source,
+            section,
+            score,
+            snippet: highlightSnippet(section.snippet || section.title, terms),
+          };
+        })
+        .filter((match) => match.score > 0);
+    })
+    .sort((a, b) => b.score - a.score || sourcePriority(a.source) - sourcePriority(b.source))
+    .slice(0, options.limit);
+}
+
+function sourceMatchesSelector(source: ReturnType<SwarmStore["listSources"]>[number], selector: string): boolean {
+  const raw = selector.toLowerCase();
+  const normalized = path.resolve(selector).toLowerCase();
+  return (
+    source.id.toLowerCase() === raw ||
+    source.title.toLowerCase() === raw ||
+    source.uri.toLowerCase() === raw ||
+    source.uri.toLowerCase() === normalized ||
+    path.basename(source.uri).toLowerCase() === raw
+  );
+}
+
+function countOccurrences(value: string, term: string): number {
+  if (!term) return 0;
+  let count = 0;
+  let index = value.indexOf(term);
+  while (index !== -1) {
+    count += 1;
+    index = value.indexOf(term, index + term.length);
+  }
+  return count;
+}
+
+function highlightSnippet(value: string, terms: string): string;
+function highlightSnippet(value: string, terms: string[]): string;
+function highlightSnippet(value: string, terms: string | string[]): string {
+  const termList = Array.isArray(terms) ? terms : [terms];
+  const lower = value.toLowerCase();
+  const firstIndex = termList
+    .map((term) => lower.indexOf(term.toLowerCase()))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0];
+  if (firstIndex === undefined) return value.slice(0, 220);
+  const start = Math.max(0, firstIndex - 80);
+  return `${start > 0 ? "..." : ""}${value.slice(start, start + 220)}${start + 220 < value.length ? "..." : ""}`;
+}
+
 function parseGraphFormat(value: string): "json" | "dot" {
   if (value !== "json" && value !== "dot") {
     throw new Error(`Invalid graph format: ${value}. Expected json or dot.`);
@@ -2211,19 +3652,64 @@ function parseWorkerDriver(value: string): "codex" | "fixture" {
   return value;
 }
 
+function parseRunMode(value: string): RunMode {
+  const allowed: RunMode[] = ["unspecified", "fixture", "scripted-codex", "live-agent-smoke"];
+  if (!allowed.includes(value as RunMode)) {
+    throw new Error(`Invalid run mode: ${value}. Expected ${allowed.join(", ")}.`);
+  }
+  return value as RunMode;
+}
+
+function currentRunMode(store: SwarmStore): RunMode {
+  const value = store.getMeta(RUN_MODE_META_KEY);
+  return value ? parseRunMode(value) : DEFAULT_RUN_MODE;
+}
+
+function validateSliceDispatchContract(slice: SliceRecord): void {
+  const missing: string[] = [];
+  if (slice.frAcRefs.length === 0) missing.push("frAcRefs");
+  if (!slice.deliveryQuestion.trim()) missing.push("deliveryQuestion");
+  if (slice.expectedEvidence.length === 0) missing.push("expectedEvidence");
+  if (missing.length > 0) {
+    throw new Error(`Slice ${slice.id} is missing required planning fields: ${missing.join(", ")}`);
+  }
+  const proofLike = slice.workPackageType === "proof_pack" || slice.workPackageType === "diagnostic";
+  if (proofLike && slice.frAcRefs.length === 1 && !slice.acSizedExceptionReason?.trim()) {
+    throw new Error(
+      `Slice ${slice.id} is AC-sized ${slice.workPackageType} work without an exception reason. Create a component/readiness pack or record acSizedExceptionReason.`,
+    );
+  }
+  if (proofLike && slice.frAcRefs.length < 2 && slice.unblockTargets.length === 0 && !slice.acSizedExceptionReason?.trim()) {
+    throw new Error(
+      `Slice ${slice.id} does not declare a meaningful unblock/readiness target. Add unblockTargets or use a multi-AC readiness pack.`,
+    );
+  }
+}
+
 function readAndValidateWorkerResult(
   store: SwarmStore,
-  slice: ReturnType<SwarmStore["listSlices"]>[number],
-): { passed: boolean; reason: string; coveredRefs: string[] } {
+  slice: SliceRecord,
+  verifier: string,
+): { passed: boolean; reason: string; coveredRefs: string[]; frAcResults: FrAcVerificationResult[] } {
   const workerEvidence = store
     .listEvidence(slice.id)
     .filter((item) => item.kind === "worker_result" && item.ref)
     .at(-1);
   if (!workerEvidence?.ref) {
-    return { passed: false, reason: "missing worker_result evidence", coveredRefs: [] };
+    return {
+      passed: false,
+      reason: "missing worker_result evidence",
+      coveredRefs: [],
+      frAcResults: missingEvidenceResults(slice, verifier, "No structured worker result was recorded."),
+    };
   }
   if (!fs.existsSync(workerEvidence.ref)) {
-    return { passed: false, reason: `worker_result file missing: ${workerEvidence.ref}`, coveredRefs: [] };
+    return {
+      passed: false,
+      reason: `worker_result file missing: ${workerEvidence.ref}`,
+      coveredRefs: [],
+      frAcResults: missingEvidenceResults(slice, verifier, `Worker result file was missing: ${workerEvidence.ref}`),
+    };
   }
   let parsed: unknown;
   try {
@@ -2233,23 +3719,204 @@ function readAndValidateWorkerResult(
       passed: false,
       reason: `worker_result JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
       coveredRefs: [],
+      frAcResults: missingEvidenceResults(slice, verifier, "Worker result could not be parsed as JSON."),
     };
   }
   const result = workerResultSchema.safeParse(parsed);
   if (!result.success) {
-    return { passed: false, reason: `worker_result schema failed: ${result.error.message}`, coveredRefs: [] };
+    return {
+      passed: false,
+      reason: `worker_result schema failed: ${result.error.message}`,
+      coveredRefs: [],
+      frAcResults: missingEvidenceResults(slice, verifier, "Worker result did not match the required schema."),
+    };
   }
   if (result.data.status !== "passed") {
-    return { passed: false, reason: `worker_result status is ${result.data.status}`, coveredRefs: [] };
+    return {
+      passed: false,
+      reason: `worker_result status is ${result.data.status}`,
+      coveredRefs: [],
+      frAcResults: slice.frAcRefs.map((ref) => ({
+        ref,
+        status: result.data.frAcCoverage.some((item) => item.ref === ref) ? "failed" : "missing_evidence",
+        evidenceIds: [workerEvidence.id],
+        proof: `Worker result status is ${result.data.status}.`,
+        verifiedBy: verifier,
+      })),
+    };
   }
   const coveredRefs = result.data.frAcCoverage
     .filter((item) => item.status === "covered")
     .map((item) => item.ref);
   const missingRefs = slice.frAcRefs.filter((ref) => !coveredRefs.includes(ref));
+  const workerResults: FrAcVerificationResult[] = slice.frAcRefs.map((ref) => {
+    const coverage = result.data.frAcCoverage.find((item) => item.ref === ref);
+    if (!coverage) {
+      return {
+        ref,
+        status: "missing_evidence",
+        evidenceIds: [workerEvidence.id],
+        proof: "Worker result did not include this FR/AC ref.",
+        verifiedBy: verifier,
+      };
+    }
+    if (coverage.status !== "covered") {
+      return {
+        ref,
+        status: coverage.status === "blocked" ? "failed" : "missing_evidence",
+        evidenceIds: [workerEvidence.id],
+        proof: coverage.evidence,
+        verifiedBy: verifier,
+      };
+    }
+    return {
+      ref,
+      status: "passed",
+      evidenceIds: [workerEvidence.id],
+      proof: coverage.evidence,
+      verifiedBy: verifier,
+    };
+  });
   if (missingRefs.length > 0) {
-    return { passed: false, reason: `worker_result missing covered refs: ${missingRefs.join(", ")}`, coveredRefs };
+    return {
+      passed: false,
+      reason: `worker_result missing covered refs: ${missingRefs.join(", ")}`,
+      coveredRefs,
+      frAcResults: workerResults,
+    };
   }
-  return { passed: true, reason: "worker_result covers every leased ref", coveredRefs };
+  return { passed: true, reason: "worker_result covers every leased ref", coveredRefs, frAcResults: workerResults };
+}
+
+function missingEvidenceResults(slice: SliceRecord, verifier: string, proof: string): FrAcVerificationResult[] {
+  return slice.frAcRefs.map((ref) => ({
+    ref,
+    status: "missing_evidence",
+    evidenceIds: [],
+    proof,
+    verifiedBy: verifier,
+  }));
+}
+
+function buildFrAcResults(input: {
+  slice: SliceRecord;
+  verifier: string;
+  commandPassed: boolean;
+  workerGate: ReturnType<typeof readAndValidateWorkerResult>;
+  verificationEvidenceId: string;
+}): FrAcVerificationResult[] {
+  return input.slice.frAcRefs.map((ref) => {
+    const workerResult = input.workerGate.frAcResults.find((item) => item.ref === ref);
+    if (!workerResult) {
+      return {
+        ref,
+        status: "missing_evidence",
+        evidenceIds: [input.verificationEvidenceId],
+        proof: "No worker coverage result was available for this ref.",
+        verifiedBy: input.verifier,
+      };
+    }
+    if (workerResult.status !== "passed") {
+      return {
+        ...workerResult,
+        evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
+        verifiedBy: input.verifier,
+      };
+    }
+    if (!input.commandPassed) {
+      return {
+        ref,
+        status: "failed",
+        evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
+        proof: "Worker coverage existed, but the configured verification command failed.",
+        verifiedBy: input.verifier,
+      };
+    }
+    return {
+      ...workerResult,
+      evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
+      verifiedBy: input.verifier,
+    };
+  });
+}
+
+function detectAndRecordLowSignalWork(store: SwarmStore, acceptedSlice: SliceRecord): void {
+  const threshold = 2;
+  const laneSlices = store
+    .listSlices()
+    .filter((slice) => slice.laneId === acceptedSlice.laneId && slice.status === "accepted")
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const recentAccepted = laneSlices.slice(-threshold);
+  if (recentAccepted.length < threshold) return;
+
+  const lowSignalSlices = recentAccepted.filter((slice) => isLowSignalAcceptedSlice(store, slice));
+  if (lowSignalSlices.length < threshold) return;
+
+  const activeDuplicate = store
+    .listEscalations("active")
+    .some(
+      (escalation) =>
+        escalation.entityType === "lane" &&
+        escalation.entityId === acceptedSlice.laneId &&
+        escalation.message.includes("Low-signal slice cadence detected"),
+    );
+  if (activeDuplicate) return;
+
+  const now = new Date().toISOString();
+  const sliceIds = lowSignalSlices.map((slice) => slice.id);
+  const message =
+    "Low-signal slice cadence detected: recent accepted slices did not declare unblock targets or satisfy meaningful dependencies.";
+  const reason =
+    "Accepted slices should answer a delivery question. These slices passed mechanically, but the harness cannot see what downstream dependency, blocker, or readiness target they moved.";
+  const escalation = {
+    id: makeId("escalation"),
+    level: "warning" as const,
+    status: "active" as const,
+    entityType: "lane" as const,
+    entityId: acceptedSlice.laneId,
+    message,
+    reason,
+    createdBy: "planning-agent",
+    createdAt: now,
+    updatedAt: now,
+  };
+  store.insertEscalation(escalation);
+  store.addEvent(
+    createEvent({
+      actor: "planning-agent",
+      type: "planner.low_signal_work",
+      entityType: "lane",
+      entityId: acceptedSlice.laneId,
+      payload: {
+        escalationId: escalation.id,
+        level: escalation.level,
+        sliceIds,
+        threshold,
+        reason,
+        suggestedAction:
+          "Create a readiness pack or revise the lane delivery question so the next slice has an explicit unblock/readiness target.",
+      },
+    }),
+  );
+  refreshCheckpoint({
+    store,
+    role: "planner",
+    entityType: "lane",
+    entityId: acceptedSlice.laneId,
+    actor: "planning-agent",
+    reason: "Low-signal work warning raised.",
+  });
+}
+
+function isLowSignalAcceptedSlice(store: SwarmStore, slice: SliceRecord): boolean {
+  if (slice.unblockTargets.length > 0) return false;
+  const meaningfulSatisfiedDependencies = store
+    .listDependencies()
+    .filter((dependency) => dependency.fromType === "slice" && dependency.fromId === slice.id)
+    .filter((dependency) => currentDependencyStatus(store, dependency) === "satisfied")
+    .filter((dependency) => dependency.target !== "target test command");
+  if (meaningfulSatisfiedDependencies.length > 0) return false;
+  return true;
 }
 
 function buildTimeline(store: SwarmStore, entityId: string): {
@@ -2405,7 +4072,24 @@ function buildGraph(store: SwarmStore): {
   const edges: Array<{ from: string; to: string; type: string; label?: string; status?: string }> = [];
 
   for (const target of targets) nodes.set(target.id, { id: target.id, type: "target", label: target.name });
-  for (const source of sources) nodes.set(source.id, { id: source.id, type: "source", label: source.title });
+  for (const source of sources) {
+    const domainId = `domain:${sourceDomain(source)}`;
+    nodes.set(domainId, { id: domainId, type: "domain", label: sourceDomain(source) });
+    nodes.set(source.id, { id: source.id, type: "source", label: source.title });
+    edges.push({ from: domainId, to: source.id, type: "domain_source", label: "contains" });
+    for (const section of sourceSections(source)) {
+      nodes.set(section.id, { id: section.id, type: "source_section", label: section.title });
+      edges.push({ from: source.id, to: section.id, type: "source_section", label: `lines ${section.startLine}-${section.endLine}` });
+      for (const ref of section.refs) {
+        setFrAcNode(nodes, store, ref);
+        edges.push({ from: section.id, to: ref, type: "section_ref", label: "defines" });
+      }
+    }
+    for (const ref of sourceFrAcRefs(source)) {
+      setFrAcNode(nodes, store, ref);
+      edges.push({ from: source.id, to: ref, type: "source_ref", label: "indexes" });
+    }
+  }
   for (const lane of lanes) {
     nodes.set(lane.id, { id: lane.id, type: "lane", label: lane.name, status: lane.state });
     edges.push({ from: lane.targetId, to: lane.id, type: "target_lane", label: "hosts" });
@@ -2495,7 +4179,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildWorkerPrompt(input: {
-  slice: ReturnType<SwarmStore["listSlices"]>[number];
+  slice: SliceRecord;
   targetPath: string;
   laneName?: string;
 }): string {
@@ -2513,6 +4197,14 @@ ${input.laneName ?? input.slice.laneId}
 Slice:
 ${input.slice.id} - ${input.slice.title}
 
+Delivery question:
+${input.slice.deliveryQuestion}
+
+Work package:
+- type: ${input.slice.workPackageType}
+- minimum meaningful outcome: ${input.slice.minimumMeaningfulOutcome}
+${input.slice.acSizedExceptionReason ? `- AC-sized exception: ${input.slice.acSizedExceptionReason}` : ""}
+
 Immutable source refs:
 ${sourceRefs}
 
@@ -2526,6 +4218,9 @@ Out of scope:
 ${input.slice.outOfScope.map((item) => `- ${item}`).join("\n")}
 
 Expected evidence:
+${input.slice.expectedEvidence.map((item) => `- ${item}`).join("\n")}
+
+Verification requirements:
 ${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
 
 Instructions:
@@ -2533,6 +4228,7 @@ Instructions:
 - Do not modify source spec files.
 - Prefer minimal, behavior-focused changes.
 - Run relevant target tests if available.
+- Provide frAcCoverage for every in-scope FR/AC ref.
 - Return the final answer in the required structured schema.
 `;
 }

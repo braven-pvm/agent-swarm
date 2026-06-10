@@ -52,6 +52,23 @@ Completion must be proven by evidence, not agent claims. Structural/pattern chec
 
 Preferred evidence includes tests, runtime checks, API calls, browser flows, screenshots, visual diffs, contract checks, logs, and explicit AC-to-evidence mapping.
 
+### FR/AC-centered proof
+
+FRs and ACs are the harness measurement unit. Slices, dependencies, planner decisions, worker prompts, verifier gates, evidence, status, reports, and downstream readiness should all trace back to immutable FR/AC refs wherever the source material provides them.
+
+The harness should not treat "the tests passed" as sufficient by itself. Acceptance means the required verification evidence proves the slice's claimed FR/AC refs under the active protocol.
+
+Every accepted slice should be able to answer:
+
+- which FR/AC refs were in scope
+- what code or artifact changed to satisfy each ref
+- which evidence proves each ref
+- which verifier or gate accepted that evidence
+- which dependencies became satisfied as a result
+- which downstream slices or lanes were unblocked
+
+If any FR/AC ref in a slice lacks required proof, the slice remains blocked, repairing, or review-needed. The harness should not complete the underlying FR/AC lease until the missing proof is supplied or an explicit protocol-governed escalation/override is recorded.
+
 ## MVP Scope
 
 ### In scope
@@ -63,6 +80,8 @@ Preferred evidence includes tests, runtime checks, API calls, browser flows, scr
 - one fixed in-repo fixture target app
 - backend/CLI fixture tasks first
 - terminal/TUI operational monitoring
+- local read-only web observability viewer
+- resettable live real-agent smoke test harness
 - simple human-readable slice report generated from structured state
 - adapter interface for spec stores
 - initial file-based adapter
@@ -72,7 +91,7 @@ Preferred evidence includes tests, runtime checks, API calls, browser flows, scr
 
 ### Out of scope for first MVP
 
-- full web dashboard
+- full hosted or multi-user web dashboard
 - hosted multi-user deployment
 - frontend/browser fixture tasks
 - full spec ingestion/normalization pipeline
@@ -140,6 +159,8 @@ Each served slice should include:
 - allowed protocol actions
 - report URL once created
 
+Each slice contract should center its scope around FR/AC refs. A slice may contain multiple FR/ACs, but each included ref must have a verification expectation. The worker prompt, verifier prompt, generated report, and status sink summary should all carry the same FR/AC scope so the lifecycle cannot drift from the approved requirements.
+
 ## Source Adapter Behavior
 
 Adapters should:
@@ -147,6 +168,7 @@ Adapters should:
 - read approved source material
 - resolve links and related issues/docs when possible
 - expose source citations and versions
+- expose lightweight planning metadata such as domain, tags, priority, and extracted FR/AC refs where available
 
 Adapters should not:
 
@@ -154,6 +176,39 @@ Adapters should not:
 - store full harness telemetry in the source system
 - make source stores the primary execution state database
 - mutate immutable source specs
+
+### Domain Source Management
+
+Large projects may register many domain specs. The harness should maintain a derived planning index for those sources without treating the index as canonical spec truth.
+
+The MVP source index should track:
+
+- domain label
+- tags
+- priority
+- content hash
+- Markdown sections/headings with line ranges and snippets
+- extracted FR/AC refs
+- FR/AC refs by section
+- source URI/title
+- availability counts derived from leases and slice status
+
+Domain metadata may come from simple source metadata lines such as `Domain: Billing`, `Tags: backend,ledger`, and `Priority: 2`, or from CLI registration options. Registration options may override planning metadata, but must not change source text.
+
+The harness should support:
+
+- listing sources by domain/tag
+- inspecting source sections and source-level FR/AC refs
+- searching registered specs with lightweight local text matching
+- listing domain summaries
+- inspecting a domain's sources and FR/AC statuses
+- pulling slices filtered by domain and tag
+- graphing `domain -> source -> section -> FR/AC -> slice -> evidence`
+- exposing source/domain/search data in the local web viewer
+
+This is a visibility and planning tool, not a full spec ingestion pipeline.
+
+MVP should prefer text search plus explicit graph edges over RAG. Semantic retrieval may be added later for discovery, but it must not become authoritative for scope, completion, or verification.
 
 ## Status Sink Behavior
 
@@ -185,6 +240,7 @@ Slice tracking is harness-owned. The harness must track:
 - deferrals
 - PR/merge links
 - status sink write-back status
+- per-FR/AC evidence coverage and pass/fail status
 
 The spec server should use this state to know what is implemented, unimplemented, blocked, related, or available. It is not a gatekeeper that freezes planning into a rigid upfront format; it marshals the context and oversight needed for dynamic slicing.
 
@@ -200,6 +256,17 @@ The planning agent may pause, reassign, or repurpose an active lane when it dete
 
 Planning should optimize for coherent end-to-end product progress first. Cadence and lane utilization are a very close second, but should not produce incoherent or fake-ready work.
 
+The planner must avoid proof-slice bureaucracy. If repeated micro-slices improve evidence machinery but do not materially advance a delivery decision, the planner should propose or create a larger coherent readiness pack centered on a concrete outcome. A readiness pack is still FR/AC-centered: it groups related FR/AC refs because they answer one operational question, not because the planner wants to bypass verification.
+
+Examples of meaningful readiness-pack questions:
+
+- "Can this backend capability safely unblock the frontend lane?"
+- "Can this component be cut over, and if not, exactly what blocks it?"
+- "Can the new runtime coexist with the legacy runtime under real data?"
+- "Can staging prove the operator action is safe?"
+
+Readiness packs should have a blunt outcome: accepted, blocked with exact blockers, or human/operator action required. They should not close FR/ACs unless the required evidence passes for each ref.
+
 The planning agent may create lanes autonomously when it sees enough coherent work, but only within protocol-defined maximums.
 
 Lane maximums should support global defaults and per-project overrides.
@@ -211,6 +278,58 @@ The planning agent should maintain a short rolling delivery plan for visibility 
 Humans should not directly edit the rolling plan. They provide instructions/comments/course corrections, and the planning agent incorporates them into the next plan revision with an event trail.
 
 The canonical rolling plan is harness-owned state. Status sinks may publish a summary or link where supported, but they do not own the plan. MVP only needs the latest rolling plan; revision history can be added later.
+
+### Planning Agent Decision Contract
+
+The planning agent must formalize the same oversight loop that a skilled human/Codex overseer would perform manually. It is not enough for the planner to call `slices pull` in order. Every planning action should be derived from visible harness state, source context, protocol policy, and verification evidence.
+
+The planner's required inputs are:
+
+- immutable source context and source refs
+- FR/AC statuses and active leases
+- lane state, purpose, focus labels, and active scopes
+- dependency edges and blocker/starvation reasons
+- worker, verifier, reviewer, and recovery events
+- evidence and accepted verification results
+- protocol limits such as lane maximums, allowed actions, and required gates
+- human instructions/comments since the last plan decision
+
+The planner's core decision loop is:
+
+1. Snapshot current state.
+2. Identify ready, blocked, stale, accepted, and unverified scope.
+3. Identify downstream starvation, especially frontend or integration lanes waiting on backend capabilities.
+4. Choose the next coherent work cluster that best advances end-to-end product progress.
+5. Preserve cadence by keeping useful lanes fed, but never serve fake-ready work to improve utilization.
+6. Detect when micro-slices are creating ceremony without answering the real delivery question.
+7. Create, reuse, pause, repurpose, or close lanes within configured limits.
+8. Create or rescope slices/readiness packs against immutable FR/AC scope while respecting global leases.
+9. Dispatch workers and verifiers according to the active protocol.
+10. Record a structured planning decision explaining the chosen action and rejected alternatives where relevant.
+11. Update the rolling plan and dependency/readiness state.
+
+Planner decisions must be explainable. Each lane creation, slice creation, dispatch, blocked decision, pause, repurpose, recovery, or frontend unblock should record:
+
+- actor
+- decision type
+- selected slice/lane/FR/AC scope
+- relevant source refs
+- dependencies considered
+- readiness evidence used
+- protocol rule or limit applied
+- reason
+- expected next action
+
+The planner may use engineering judgment, but that judgment must become structured state. Examples:
+
+- "Selected backend lookup next because `AC-UI-INV-001.3` depends on accepted invoice lookup behavior."
+- "Did not serve dashboard slice because `AC-INV-003.1` is not accepted."
+- "Created backend-enabler lane because frontend lane is starved and lane limit allows one more backend lane."
+- "Paused frontend lane because no meaningful non-stub work is available."
+
+The planner must distinguish implementation interpretation from spec mutation. It may decide how to implement, batch, sequence, and verify FR/ACs. It may not rewrite source specs, silently change AC meaning, or treat a planning convenience as a spec update.
+
+The planner should be a first-class observable agent. Its actions, heartbeats, decisions, escalations, rolling plan updates, and handoffs must appear in the same event stream and dashboard surfaces as worker and verifier agents. The planner must not be an invisible chat-side conductor.
 
 Planning visibility should include a dependency graph showing relationships between FR/ACs, slices, lanes, blockers, and readiness where practical. A blocked-by list can be the first rendering, but the product direction should be graph-based.
 
@@ -260,6 +379,35 @@ Automatic revive attempts should use a configurable retry count. On the final au
 
 Revive means resuming the same agent/session where possible. Starting a fresh agent is a separate `restart task` action that receives prior run history and current workspace state.
 
+## Context Continuity and Resume
+
+The harness must not rely on chat memory, context compaction quality, or a single agent's private transcript as the durable source of execution truth. Context compaction should be treated as lossy. A fresh agent should be able to resume a planner, worker, verifier, reviewer, recovery, or overseer role from harness state.
+
+The harness should provide role-specific checkpoints and resume packets.
+
+A checkpoint is a compact structured memory record for a role and entity. It captures current objective, delivery question, FR/AC scope, state, last meaningful action, next intended action, blockers, evidence status, decisions, assumptions, risks, artifacts, and guardrails.
+
+A resume packet is generated from harness state plus the latest relevant checkpoint. It is the prompt/context bundle a fresh agent receives when continuing after compaction, revive, restart, reassignment, or handoff.
+
+Checkpoint/resume must preserve:
+
+- immutable source refs and hashes
+- current lane/slice/run state
+- FR/AC scope and per-ref evidence status
+- delivery question and expected evidence
+- active blockers/escalations
+- recent decisions and rejected alternatives
+- relevant commands/tests/artifacts
+- prior worker/verifier/reviewer claims
+- current next intended action
+- do-not-redo and do-not-mutate notes
+
+The harness should automatically create or refresh checkpoints at meaningful lifecycle transitions: planner decision, slice creation, lane change, worker start/completion/failure, verification start/completion, escalation raise/clear, low-signal warning, stale-run detection, revive start/completion, and restart start/completion.
+
+Resume packets should be inspectable by humans and deterministic enough for tests. They should default to Markdown for readability, with JSON support later where useful.
+
+Agents should resume from generated packets rather than from chat memory. If chat memory and harness state disagree, harness state wins and the discrepancy should be visible.
+
 In a multi-FR/AC slice, individual FR/AC statuses may advance independently as evidence is produced. The slice status is aggregate workflow state. A slice cannot close with included FR/ACs still blocked or deferred; it must be split or rescoped first.
 
 The orchestrator agent may autonomously split or rescope slices. This changes the slice execution plan, not the immutable source specs. All scope changes must be recorded as lifecycle events and preserve FR/AC status traceability.
@@ -293,7 +441,12 @@ swarm run <slice-id>
 swarm verify <slice-id>
 swarm status
 swarm watch
+swarm observe --events 80
+swarm graph --format json
 swarm report <slice-id>
+swarm checkpoint create --entity <type:id> --role <role>
+swarm resume-context --entity <type:id> --role <role>
+swarm serve --workspace <path> --host 127.0.0.1 --port 4318
 ```
 
 ## Fixture Strategy
@@ -352,6 +505,24 @@ MVP TUI should show:
 - blockers
 - blocker reasons where known
 - final recommendation
+
+MVP local web viewer should show:
+
+- summary counters
+- domain readiness
+- registered specs and search results
+- selected spec Summary, Sections, and Markdown
+- lanes and slices
+- selected slice Markdown report
+- agents and heartbeat state
+- blockers and recent events
+- run mode, clearly distinguishing fixture, scripted Codex, and live-agent smoke runs
+
+The web viewer is read-only for MVP. It should not become the control surface for revive/restart/release/clear actions until the read-only lifecycle view is proven with browser-level tests.
+
+The web-observability fixture demo is not sufficient as the real-world smoke. It is a deterministic regression harness. The MVP must also provide an optional resettable live-agent smoke path where a real overseer/planner agent coordinates real workers and verifiers through the harness while the UI shows progress.
+
+The ultimate smoke should have a full-product mode. In that mode, the reset workspace starts with no completed product and the run should end with a small real working product, or exact blockers explaining why not. The first proposed full-product target is the Invoice Operations Dashboard in `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`.
 
 The canonical slice report should show:
 

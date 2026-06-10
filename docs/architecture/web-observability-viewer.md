@@ -8,6 +8,37 @@ Add a local, read-only web observability viewer as the next visibility surface a
 
 The CLI/TUI remains the operator console for live terminal work. The web viewer is for management visibility, review, screenshots, links, historical browsing, and richer graph/detail views.
 
+## Current Implementation Status
+
+Implemented as of 2026-06-10:
+
+- `swarm serve`
+- local-only default host of `127.0.0.1`
+- friendly busy-port handling and support for `--port 0`
+- static HTML/CSS/JS served directly by the CLI
+- read-only JSON APIs backed by the same harness store as `observe`, `watch`, `timeline`, `graph`, and `report`
+- polling-based refresh
+- top-level UI tabs: Overview, Specs, Work, Agents, Events
+- domain readiness table
+- specs table with domain/tag/priority/ref/section data
+- spec search with domain filter and selected-spec-only scope
+- rendered spec detail tabs: Summary, Sections, Markdown
+- lanes and slices table
+- rendered Markdown slice reports
+- agents and heartbeat tables
+- blocker and event visibility
+- run-mode display in snapshot/header/metrics
+- web-observability E2E demo/test with browser-facing smoke assertions and review artifacts
+
+Still pending:
+
+- live-agent smoke state with a real overseer/planner, real workers, and real verifier/reviewer agents
+- graph/dependency visualization
+- history/run picker
+- lower-latency server-sent events or WebSockets
+- write actions such as revive/restart/release/clear escalation
+- full browser screenshot tests with a real browser engine
+
 ## Serving Model
 
 The first implementation should be served by the harness CLI:
@@ -40,6 +71,8 @@ This route keeps the product simple:
 
 The browser UI can become richer over time without changing the control-plane contract.
 
+The UI must not blur simulated and live behavior. When run-mode metadata is available, the viewer should display whether the current workspace is a fixture regression, a scripted Codex worker run, or a live-agent smoke run.
+
 ## Initial Routes
 
 Read-only API routes:
@@ -48,6 +81,8 @@ Read-only API routes:
 GET /api/snapshot?events=80
 GET /api/timeline/:entityId
 GET /api/graph
+GET /api/source/:selector
+GET /api/search/specs?q=...&domain=...&tag=...&source=...
 GET /api/report/:sliceId
 GET /api/artifacts/*path
 ```
@@ -66,15 +101,25 @@ MVP can use polling every 1-2 seconds. Server-sent events or WebSockets can be a
 
 The first screen should be the actual observability experience, not a landing page.
 
-Show:
+The implemented tab model:
+
+- Overview: domain readiness and blockers
+- Specs: source search, domain filter, registered specs table, selected spec summary/sections/markdown
+- Work: lanes, slices, and selected slice report
+- Agents: agent runs and current heartbeats
+- Events: recent event stream
+
+Show, at minimum:
 
 - run summary counters: targets, sources, lanes, slices, active work, running agents, blockers
+- spec/source panel: registered specs, domains, tags, priority, section counts, FR/AC refs, and search
 - lane board: lane name, purpose, focus labels, active slices, lease refs, readiness/blocker state
 - agent activity: actor, current heartbeat state, elapsed time, run status, session id when available
 - blocker panel: active escalations, stale candidates, blocked dependencies, reasons
 - recent event stream: worker, verifier, planner, recovery, and escalation events
 - slice list: status, FR/AC refs, lane, evidence count, latest agent run
 - detail drawer/page for a selected slice with report, timeline, evidence, and worker-result link
+- detail drawer/panel for a selected spec with source hash, URI, sections, line ranges, snippets, and FR/AC refs
 
 The first graph rendering can be simple:
 
@@ -106,6 +151,8 @@ The first graph rendering can be simple:
 
 ### Slice 1: Read-Only Server And Static Shell
 
+Status: implemented.
+
 Deliver:
 
 - `swarm serve`
@@ -122,6 +169,8 @@ Verification:
 - existing CLI tests still pass
 
 ### Slice 2: Management Overview
+
+Status: partially implemented and usable. The current viewer has tabbed overview, work, agents, blockers, and events, but still needs browser-level tests and richer lifecycle demo coverage.
 
 Deliver:
 
@@ -140,6 +189,8 @@ Verification:
 
 ### Slice 3: Slice Detail And Evidence View
 
+Status: partially implemented. Selected slice reports render as Markdown. Evidence links and timeline-in-detail remain future work.
+
 Deliver:
 
 - slice detail route or drawer
@@ -154,6 +205,8 @@ Verification:
 - accepted and blocked slices are visually distinct
 
 ### Slice 4: Graph And History
+
+Status: pending.
 
 Deliver:
 
@@ -174,3 +227,34 @@ Verification:
 - Do not mutate source specs.
 - Do not create a separate dashboard database.
 - Prefer dependency-light implementation until the UI shape is proven.
+
+### Slice 5: Web Observability E2E Harness
+
+Status: implemented.
+
+Deliver:
+
+- richer demo workspace with multiple specs/domains
+- backend and frontend lanes
+- frontend blocked by backend readiness until accepted
+- worker and verifier runs
+- stale run, recovery action, active blocker, and checkpoints
+- FR/AC coverage and evidence
+- served HTML/JS/API artifacts
+- lightweight browser-logic assertions for tabs, source view switching, and search
+
+Verification:
+
+- `npm run demo:web-observability`
+- `node --test tests/web-observability-demo.e2e.test.js`
+- summary assertions in `.swarm-demo/web-observability/web-observability-summary.json`
+
+## Next Hardening Slice
+
+Use the Web Observability E2E Harness state to add one high-value explanatory UI:
+
+- graph/dependency explanation
+- slice evidence detail
+- source-to-slice trace detail
+
+Any graph/evidence work should be driven by `.swarm-demo/web-observability`, not a toy workspace.

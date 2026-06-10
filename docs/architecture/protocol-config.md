@@ -69,6 +69,15 @@ protocol:
     coordinateLaneReadiness: true
     frontendUnblockStrategy: infer_from_completed_fr_ac
     allowFrontendAgainstMocks: false
+    requireDeliveryQuestion: true
+    requireUnblockTarget: true
+    allowReadinessPacks: true
+    proofBureaucracyDetection:
+      enabled: true
+      warnAfterLowSignalSlices: 2
+      lowSignalIfNoDependencyUnblocked: true
+      lowSignalIfNoFrAcAccepted: true
+      action: warning # warning | block | human_required
     showLaneStarvationReasons: true
     dependencyView: graph_preferred
     flexibleDependencyTargets: true
@@ -135,11 +144,47 @@ protocol:
     cadence: hybrid # continuous | batch | hybrid
     behaviorFirst: true
     requireEvidencePerAc: true
+    requireExpectedEvidenceBeforeDispatch: true
+    requirePerRefVerificationResult: true
+    completeLeaseOnlyWhenRefPassed: true
+    allowVerificationOverride: escalation_only
+    frAcResultStatuses:
+      - passed
+      - failed
+      - missing_evidence
+      - overridden
 
   recovery:
     reviveRetries: 2
     highlightFinalAttempt: true
     releaseAfterRetries: false
+
+  context:
+    checkpoints:
+      enabled: true
+      autoCreate: true
+      keepLatestPerRoleEntity: true
+      triggers:
+        - planner_decision
+        - slice_created
+        - worker_started
+        - worker_completed
+        - verification_completed
+        - escalation_created
+        - escalation_cleared
+        - low_signal_warning
+        - recovery_marked_stale
+        - recovery_revive_started
+        - recovery_revive_completed
+        - recovery_restart_started
+        - recovery_restart_completed
+    resumePackets:
+      defaultFormat: markdown
+      includeRecentEvents: 12
+      includeTimelineHighlights: true
+      includeArtifactPaths: true
+      includeGuardrails: true
+      preferHarnessStateOverCheckpoint: true
 
   actions:
     allowPrCreate: true

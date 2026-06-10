@@ -1,7 +1,15 @@
 import path from "node:path";
+import { refreshCheckpoint } from "./checkpoints.js";
 import { createEvent } from "./events.js";
 import { makeId } from "./ids.js";
 import { readSourceText } from "./source-adapter.js";
+import {
+  extractFrAcRefs,
+  matchesSourceFilters,
+  sourceDomain,
+  sourcePriority,
+  sourceTags,
+} from "./source-index.js";
 import type { SwarmStore } from "./storage.js";
 import type { DependencyEdge, LaneRecord, LeaseRecord, SliceRecord, SourceRecord, SourceRef } from "./types.js";
 
@@ -16,6 +24,8 @@ export interface PullSliceResult {
 export interface PullSliceOptions {
   target?: string;
   source?: string;
+  domain?: string;
+  tags?: string[];
   newLane?: boolean;
   laneName?: string;
   lanePurpose?: string;
@@ -29,7 +39,11 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
   if (!target) {
     throw new Error("No target registered. Run `swarm target init <repo>` first.");
   }
-  const source = selectSource(store, options.source);
+  const source = selectSource(store, {
+    selector: options.source,
+    domain: options.domain,
+    tags: options.tags,
+  });
   if (!source) {
     throw new Error("No sources registered. Run `swarm sources add-file <path>` first.");
   }
@@ -63,6 +77,39 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
         },
       }),
     );
+    store.addEvent(
+      createEvent({
+        actor: options.orchestrator ?? "planning-agent",
+        type: "planner.decision",
+        entityType: "source",
+        entityId: source.id,
+        payload: {
+          decisionType: "block_slice",
+          deliveryQuestion: deliveryQuestionFor(source, []),
+          selectedScope: [],
+          sourceRefs: [source.id],
+          dependenciesConsidered: blockedDependencies,
+          readinessEvidence: [],
+          protocolRules: ["frontend_requires_accepted_backend"],
+          reason: "Planner refused to serve work because prerequisite FR/AC refs are not accepted.",
+          rejectedAlternatives: [
+            {
+              action: "serve dependent slice",
+              reason: `Missing accepted refs: ${blockedDependencies.join(", ")}`,
+            },
+          ],
+          expectedNextAction: "Serve and verify backend prerequisite slices before retrying this source.",
+        },
+      }),
+    );
+    refreshCheckpoint({
+      store,
+      role: "planner",
+      entityType: "source",
+      entityId: source.id,
+      actor: options.orchestrator ?? "planning-agent",
+      reason: "Blocked dependency planning decision.",
+    });
     throw new Error(`Source dependencies are not satisfied: ${blockedDependencies.join(", ")}`);
   }
   const availableRefs = refs.filter((ref) => {
@@ -149,6 +196,46 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
       },
     }),
   );
+  store.addEvent(
+    createEvent({
+      actor: options.orchestrator ?? "planning-agent",
+      type: "planner.decision",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        decisionType: "serve_slice",
+        deliveryQuestion: slice.deliveryQuestion,
+        workPackageType: slice.workPackageType,
+        minimumMeaningfulOutcome: slice.minimumMeaningfulOutcome,
+        acSizedExceptionReason: slice.acSizedExceptionReason,
+        selectedScope: slice.frAcRefs,
+        sourceRefs: [source.id],
+        dependenciesConsidered: dependencies.map((dependency) => dependency.target),
+        readinessEvidence: [],
+        protocolRules: ["require_fr_ac_scope", "require_expected_evidence_before_dispatch"],
+        reason: "Planner selected the next unleased FR/AC-like references and created an implementation slice.",
+        rejectedAlternatives: [],
+        expectedNextAction: "Dispatch a worker, then verify per-FR/AC evidence before acceptance.",
+        laneId: lane.id,
+      },
+    }),
+  );
+  refreshCheckpoint({
+    store,
+    role: "planner",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: options.orchestrator ?? "planning-agent",
+    reason: "Slice served by planner.",
+  });
+  refreshCheckpoint({
+    store,
+    role: "planner",
+    entityType: "lane",
+    entityId: lane.id,
+    actor: options.orchestrator ?? "planning-agent",
+    reason: "Lane planning state changed.",
+  });
 
   return {
     lane,
@@ -173,7 +260,9 @@ function createLane(input: {
     id: makeId("lane"),
     name: input.name ?? `Lane: ${input.source.title}`,
     purpose: input.purpose ?? `Implement first coherent batch from ${input.source.title}`,
-    focusLabels: input.labels?.length ? input.labels : ["mvp", "file-source", input.source.kind],
+    focusLabels: input.labels?.length
+      ? input.labels
+      : ["mvp", "file-source", input.source.kind, `domain:${sourceDomain(input.source)}`, ...sourceTags(input.source)],
     targetId: input.targetId,
     orchestrator: input.orchestrator ?? "planning-agent",
     worktree: input.targetPath,
@@ -197,6 +286,8 @@ function createSlice(input: {
     title: input.source.title,
     hash: input.source.hash,
   };
+  const expectedEvidence = input.selectedRefs.map((ref) => `Behavior evidence proving ${ref}.`);
+  const meaningfulWork = inferMeaningfulWork(input.source, input.selectedRefs);
   return {
     id: makeId("slice"),
     laneId: input.lane.id,
@@ -205,8 +296,14 @@ function createSlice(input: {
     status: "ready",
     sourceRefs: [sourceRef],
     frAcRefs: input.selectedRefs,
+    deliveryQuestion: deliveryQuestionFor(input.source, input.selectedRefs),
+    workPackageType: meaningfulWork.workPackageType,
+    minimumMeaningfulOutcome: meaningfulWork.minimumMeaningfulOutcome,
+    acSizedExceptionReason: meaningfulWork.acSizedExceptionReason,
     scope: input.selectedRefs.map((ref) => `Implement behavior required by ${ref}.`),
     outOfScope: ["Do not mutate source specs.", "Do not implement unrelated FR/ACs."],
+    expectedEvidence,
+    unblockTargets: inferUnblockTargets(input.source, input.selectedRefs),
     verificationRequirements: [
       "Run the target test command if configured.",
       "Provide behavior evidence for each included FR/AC-like reference.",
@@ -214,6 +311,63 @@ function createSlice(input: {
     createdAt: input.now,
     updatedAt: input.now,
   };
+}
+
+function inferMeaningfulWork(
+  source: SourceRecord,
+  refs: string[],
+): Pick<SliceRecord, "workPackageType" | "minimumMeaningfulOutcome" | "acSizedExceptionReason"> {
+  if (isUiSource(source)) {
+    return {
+      workPackageType: "component_pack",
+      minimumMeaningfulOutcome: "enables_downstream_lane",
+    };
+  }
+  if (/backend|api/i.test(source.title)) {
+    return {
+      workPackageType: "runtime_capability",
+      minimumMeaningfulOutcome: "changes_runtime_path",
+    };
+  }
+  if (/cutover|readiness|coexist|staging|migration/i.test(source.title)) {
+    return {
+      workPackageType: "proof_pack",
+      minimumMeaningfulOutcome: "proves_cutover_or_readiness",
+    };
+  }
+  return {
+    workPackageType: "proof_pack",
+    minimumMeaningfulOutcome: "proves_cutover_or_readiness",
+    acSizedExceptionReason:
+      refs.length === 1 ? "Planner served a single-ref diagnostic proof slice from a generic source." : undefined,
+  };
+}
+
+function deliveryQuestionFor(source: SourceRecord, refs: string[]): string {
+  const domain = sourceDomain(source);
+  if (isUiSource(source)) {
+    return refs.length > 0
+      ? `Can verified backend capabilities support real ${domain} dashboard work for ${refs.join(", ")}?`
+      : "Can this downstream UI slice be served against accepted backend capabilities?";
+  }
+  if (/backend|api/i.test(source.title)) {
+    return refs.length > 0
+      ? `Can backend behavior for ${refs.join(", ")} be implemented and verified so downstream work can rely on it?`
+      : "Can backend prerequisites be verified for downstream implementation?";
+  }
+  return refs.length > 0
+    ? `Can ${refs.join(", ")} be implemented and verified against the approved ${domain} source?`
+    : `Can the next slice from ${source.title} be safely served?`;
+}
+
+function inferUnblockTargets(source: SourceRecord, refs: string[]): string[] {
+  if (/backend|api/i.test(source.title)) return refs.map((ref) => `downstream:${ref}`);
+  if (isUiSource(source)) return ["delivery:frontend-ready"];
+  return [];
+}
+
+function isUiSource(source: SourceRecord): boolean {
+  return /(?:dashboard|frontend|\bui\b)/i.test(source.title);
 }
 
 function createDependencies(slice: SliceRecord, now: string): DependencyEdge[] {
@@ -231,24 +385,7 @@ function createDependencies(slice: SliceRecord, now: string): DependencyEdge[] {
   ];
 }
 
-export function extractFrAcRefs(text: string): string[] {
-  const found = new Set<string>();
-  const explicit = /\b(?:FR|AC)-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:\.[0-9]+)?\b/gi;
-  for (const match of text.matchAll(explicit)) {
-    found.add(match[0].toUpperCase());
-  }
-  if (found.size > 0) return [...found];
-
-  const lines = text.split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    if (/^\s*[-*]\s+\[[ xX]\]\s+/.test(line) || /^\s*[-*]\s+/.test(line)) {
-      found.add(`AC-FILE-${index + 1}`);
-    }
-  }
-  if (found.size > 0) return [...found].slice(0, 10);
-
-  return ["AC-FILE-1"];
-}
+export { extractFrAcRefs };
 
 function isBroadFrSatisfiedByCompletedAcs(ref: string, refs: string[], store: SwarmStore): boolean {
   const match = /^FR-(.+)-([0-9]+)$/i.exec(ref);
@@ -280,11 +417,17 @@ function selectTarget(store: SwarmStore, selector?: string): { id: string; path:
   );
 }
 
-function selectSource(store: SwarmStore, selector?: string): SourceRecord | undefined {
-  const sources = store.listSources();
-  if (!selector) return sources[0];
-  const normalized = path.resolve(selector).toLowerCase();
-  const raw = selector.toLowerCase();
+function selectSource(
+  store: SwarmStore,
+  input: { selector?: string; domain?: string; tags?: string[] } = {},
+): SourceRecord | undefined {
+  const sources = store
+    .listSources()
+    .filter((source) => matchesSourceFilters(source, { domain: input.domain, tags: input.tags }))
+    .sort((a, b) => sourcePriority(a) - sourcePriority(b) || a.createdAt.localeCompare(b.createdAt));
+  if (!input.selector) return sources[0];
+  const normalized = path.resolve(input.selector).toLowerCase();
+  const raw = input.selector.toLowerCase();
   return sources.find(
     (source) =>
       source.id.toLowerCase() === raw ||

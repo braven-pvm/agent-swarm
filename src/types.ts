@@ -21,6 +21,8 @@ export type HeartbeatState =
   | "waiting"
   | "blocked";
 
+export type RunMode = "unspecified" | "fixture" | "scripted-codex" | "live-agent-smoke";
+
 export interface SourceRef {
   adapterId: string;
   kind: string;
@@ -80,6 +82,20 @@ export interface LaneRecord {
   updatedAt: string;
 }
 
+export type WorkPackageType =
+  | "component_pack"
+  | "runtime_capability"
+  | "proof_pack"
+  | "review_fix_pack"
+  | "diagnostic";
+
+export type MinimumMeaningfulOutcome =
+  | "changes_runtime_path"
+  | "removes_blocker"
+  | "enables_downstream_lane"
+  | "proves_cutover_or_readiness"
+  | "fixes_high_risk_finding";
+
 export interface SliceRecord {
   id: string;
   laneId: string;
@@ -99,8 +115,14 @@ export interface SliceRecord {
     | "closed";
   sourceRefs: SourceRef[];
   frAcRefs: string[];
+  deliveryQuestion: string;
+  workPackageType: WorkPackageType;
+  minimumMeaningfulOutcome: MinimumMeaningfulOutcome;
+  acSizedExceptionReason?: string;
   scope: string[];
   outOfScope: string[];
+  expectedEvidence: string[];
+  unblockTargets: string[];
   verificationRequirements: string[];
   createdAt: string;
   updatedAt: string;
@@ -151,6 +173,16 @@ export interface EvidenceRecord {
   createdAt: string;
 }
 
+export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "overridden";
+
+export interface FrAcVerificationResult {
+  ref: string;
+  status: FrAcVerificationStatus;
+  evidenceIds: string[];
+  proof: string;
+  verifiedBy: string;
+}
+
 export interface EscalationRecord {
   id: string;
   level: "info" | "warning" | "blocker" | "human_required" | "critical";
@@ -172,6 +204,20 @@ export interface DependencyEdge {
   target: string;
   reason: string;
   status: "pending" | "satisfied" | "blocked";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CheckpointRole = "planner" | "worker" | "verifier" | "reviewer" | "recovery" | "overseer";
+
+export interface CheckpointRecord {
+  id: string;
+  role: CheckpointRole;
+  entityType: EntityType;
+  entityId: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  createdBy: string;
   createdAt: string;
   updatedAt: string;
 }

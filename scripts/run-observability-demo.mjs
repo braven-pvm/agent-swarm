@@ -71,6 +71,7 @@ const report = runSwarm(["report", staleSliceId]);
 const summary = {
   workspace,
   driver,
+  runMode: finalSnapshot.runMode,
   generatedAt: new Date().toISOString(),
   invoice: invoiceOutput,
   staleRunId,

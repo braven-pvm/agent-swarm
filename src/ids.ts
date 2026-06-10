@@ -12,6 +12,7 @@ const prefixes = {
   evidence: "EVD",
   escalation: "ESC",
   agentRun: "RUN",
+  checkpoint: "CHK",
 } as const;
 
 export function makeId(kind: keyof typeof prefixes): string {

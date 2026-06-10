@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import Database from "better-sqlite3";
 import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -56,6 +57,7 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
     assert.ok(slice.leases.every((lease) => lease.status === "completed"));
     assert.ok(slice.evidence.some((item) => item.kind === "worker_result"));
     assert.ok(slice.evidence.some((item) => item.kind === "command" && item.payload.passed === true));
+    assert.deepEqual(slice.frAcResults.map((item) => item.status), slice.frAcRefs.map(() => "passed"));
   }
 
   for (const slice of dashboardSlices) {
@@ -63,6 +65,7 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
     assert.ok(slice.leases.every((lease) => lease.status === "completed"));
     assert.ok(slice.evidence.some((item) => item.kind === "worker_result"));
     assert.ok(slice.evidence.some((item) => item.kind === "command" && item.payload.passed === true));
+    assert.deepEqual(slice.frAcResults.map((item) => item.status), slice.frAcRefs.map(() => "passed"));
   }
 
   const dashboardTimeline = JSON.parse(runSwarm(workspace, ["timeline", dashboardSlices[0].id, "--json"]));
@@ -99,6 +102,55 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   assert.match(agentWatch, /Agent Runs/);
   assert.match(agentWatch, /RUN-/);
   assert.doesNotMatch(agentWatch, /\nLanes\n/);
+
+  const checkpointList = runSwarm(workspace, ["checkpoint", "list"]);
+  assert.match(checkpointList, /Checkpoints:/);
+  assert.match(checkpointList, /worker slice:/);
+  assert.match(checkpointList, /verifier slice:/);
+
+  const resumePacket = runSwarm(workspace, [
+    "resume-context",
+    "--entity",
+    `slice:${dashboardSlices[0].id}`,
+    "--role",
+    "worker",
+  ]);
+  assert.match(resumePacket, /Resume Packet: worker slice:/);
+  assert.match(resumePacket, /Worker Focus/);
+  assert.match(resumePacket, /Delivery Question/);
+  assert.match(resumePacket, /AC-UI-INV-001.1/);
+  assert.match(resumePacket, /Missing or failed FR\/AC proof/);
+  assert.match(resumePacket, /Do not mutate immutable source specs/);
+
+  const verifierPacket = runSwarm(workspace, [
+    "resume-context",
+    "--entity",
+    `slice:${dashboardSlices[0].id}`,
+    "--role",
+    "verifier",
+  ]);
+  assert.match(verifierPacket, /Verifier Focus/);
+  assert.match(verifierPacket, /Per-FR\/AC checklist/);
+  assert.match(verifierPacket, /Block acceptance unless every in-scope FR\/AC/);
+
+  const plannerPacket = runSwarm(workspace, [
+    "resume-context",
+    "--entity",
+    `lane:${dashboardSlices[0].laneId}`,
+    "--role",
+    "planner",
+  ]);
+  assert.match(plannerPacket, /Planner \/ Overseer Focus/);
+  assert.match(plannerPacket, /Active slices/);
+  assert.match(plannerPacket, /Recent planner decisions/);
+
+  const dashboardRun = snapshot.agentRuns.find((run) => run.sliceId === dashboardSlices[0].id);
+  assert.ok(dashboardRun);
+  const runResumePacket = runSwarm(workspace, ["resume-context", "--run", dashboardRun.id]);
+  assert.match(runResumePacket, /Resume Packet: recovery agent_run:/);
+  assert.match(runResumePacket, /Recovery Focus/);
+  assert.match(runResumePacket, /Revive\/restart recommendation/);
+  assert.match(runResumePacket, /Artifacts/);
 });
 
 test("verification blocks acceptance when worker coverage evidence is missing", () => {
@@ -132,6 +184,141 @@ test("verification blocks acceptance when worker coverage evidence is missing", 
   assert.ok(slice.leases.every((lease) => lease.status === "active"));
 });
 
+test("manual checkpoint refresh keeps latest checkpoint per role and entity", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-checkpoint-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const first = runSwarm(workspace, ["checkpoint", "create", "--entity", `slice:${sliceId}`, "--role", "worker"]);
+  const firstId = /Refreshed checkpoint (CHK-[a-f0-9]+)/i.exec(first)?.[1];
+  assert.ok(firstId);
+  const second = runSwarm(workspace, ["checkpoint", "create", "--entity", `slice:${sliceId}`, "--role", "worker"]);
+  const secondId = /Refreshed checkpoint (CHK-[a-f0-9]+)/i.exec(second)?.[1];
+  assert.equal(secondId, firstId);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "20"]));
+  const matching = snapshot.checkpoints.filter(
+    (item) => item.role === "worker" && item.entityType === "slice" && item.entityId === sliceId,
+  );
+  assert.equal(matching.length, 1);
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "checkpoint.refreshed"));
+
+  const shown = runSwarm(workspace, ["checkpoint", "show", firstId]);
+  assert.match(shown, /# Checkpoint/);
+  assert.match(shown, /Payload:/);
+});
+
+test("dispatch rejects AC-sized proof work without an exception reason", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-meaningful-gate-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const store = new SwarmStore(workspace);
+  const slice = store.listSlices().find((item) => item.id === sliceId);
+  store.close();
+  assert.ok(slice);
+
+  const dbPath = path.join(workspace, ".swarm", "state.db");
+  const db = new Database(dbPath);
+  try {
+    db.prepare(
+      `update slices
+       set fr_ac_refs_json = ?,
+           work_package_type = 'proof_pack',
+           minimum_meaningful_outcome = 'proves_cutover_or_readiness',
+           unblock_targets_json = '[]',
+           ac_sized_exception_reason = null
+       where id = ?`,
+    ).run(JSON.stringify([slice.frAcRefs[0]]), sliceId);
+  } finally {
+    db.close();
+  }
+
+  assert.throws(
+    () => runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "proof-worker"]),
+    /AC-sized proof_pack work without an exception reason/,
+  );
+});
+
+test("verification blocks acceptance when worker result omits one in-scope AC", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-partial-gate-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "partial-worker"]);
+
+  const store = new SwarmStore(workspace);
+  const workerEvidence = store.listEvidence(sliceId).find((item) => item.kind === "worker_result");
+  store.close();
+  assert.ok(workerEvidence?.ref);
+  const workerResult = JSON.parse(fs.readFileSync(workerEvidence.ref, "utf8"));
+  workerResult.frAcCoverage = workerResult.frAcCoverage.filter((item) => item.ref !== "AC-INV-001.3");
+  fs.writeFileSync(workerEvidence.ref, `${JSON.stringify(workerResult)}\n`, "utf8");
+
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "partial-verifier"]);
+  assert.match(verifyOutput, /missing FR\/AC evidence: AC-INV-001\.3/);
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "20"]));
+  const slice = snapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(slice.status, "blocked");
+  assert.ok(slice.leases.every((lease) => lease.status === "active"));
+  const omitted = slice.frAcResults.find((item) => item.ref === "AC-INV-001.3");
+  assert.equal(omitted.status, "missing_evidence");
+});
+
 test("planner blocks dashboard slices until backend dependencies are accepted", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-readiness-${process.pid}`);
   const target = path.join(workspace, "invoice-api");
@@ -162,6 +349,71 @@ test("planner blocks dashboard slices until backend dependencies are accepted", 
 
   const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "10"]));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "slice.blocked_by_dependencies"));
+});
+
+test("planner raises low-signal warning after repeated accepted slices with no unblock target", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-low-signal-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  const genericSpec = path.join(target, "specs", "maintenance-proof.md");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+  fs.writeFileSync(
+    genericSpec,
+    `# Maintenance Proof Requirements
+
+- AC-MAINT-001.1: Record proof note one.
+- AC-MAINT-001.2: Record proof note two.
+- AC-MAINT-001.3: Record proof note three.
+- AC-MAINT-002.1: Record proof note four.
+- AC-MAINT-002.2: Record proof note five.
+- AC-MAINT-002.3: Record proof note six.
+`,
+    "utf8",
+  );
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", genericSpec]);
+
+  const firstPull = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "maintenance-proof.md",
+    "--batch-size",
+    "3",
+  ]);
+  const firstSlice = /Created slice (SLICE-[a-f0-9]+)/i.exec(firstPull)?.[1];
+  assert.ok(firstSlice);
+  runSwarm(workspace, ["run", firstSlice, "--driver", "fixture", "--actor", "low-signal-worker-one"]);
+  runSwarm(workspace, ["verify", firstSlice, "--actor", "low-signal-verifier-one"]);
+
+  const secondPull = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "maintenance-proof.md",
+    "--batch-size",
+    "3",
+  ]);
+  const secondSlice = /Created slice (SLICE-[a-f0-9]+)/i.exec(secondPull)?.[1];
+  assert.ok(secondSlice);
+  runSwarm(workspace, ["run", secondSlice, "--driver", "fixture", "--actor", "low-signal-worker-two"]);
+  runSwarm(workspace, ["verify", secondSlice, "--actor", "low-signal-verifier-two"]);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "30"]));
+  assert.equal(snapshot.slices.filter((slice) => slice.status === "accepted").length, 2);
+  assert.ok(
+    snapshot.activeEscalations.some(
+      (item) => item.level === "warning" && item.message.includes("Low-signal slice cadence detected"),
+    ),
+  );
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "planner.low_signal_work"));
 });
 
 test("recovery scan marks stale running agent runs and raises a scoped blocker", () => {

@@ -29,6 +29,7 @@ const cliSource = path.join(repoRoot, "src", "cli.ts");
 
 resetWorkspace();
 runSwarm(["init"]);
+runSwarm(["run-mode", "set", driver === "fixture" ? "fixture" : "scripted-codex"]);
 runSwarm(["target", "init", target]);
 runSwarm(["target", "init", dashboardTarget]);
 runSwarm(["sources", "add-file", spec]);
@@ -107,6 +108,7 @@ runSwarm(["verify", dashboardSlice, "--actor", "frontend-verifier-dashboard"]);
 runSwarm(["observe", "--events", "80", "--out", snapshot]);
 console.log(JSON.stringify({
   workspace,
+  runMode: driver === "fixture" ? "fixture" : "scripted-codex",
   target,
   dashboardTarget,
   snapshot,
