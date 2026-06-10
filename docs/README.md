@@ -22,6 +22,7 @@ Start here:
 - [Live Agent Smoke Test Harness](architecture/live-agent-smoke-test.md) — design for the missing resettable real-agent rehearsal with a real overseer, real workers, real verifiers, and live UI observability.
 - [Live Agent Smoke Implementation Plan](architecture/live-agent-smoke-implementation-plan.md) — phased implementation plan for the make-or-break real-agent smoke harness.
 - [Model-Agnostic Worker Drivers Implementation Plan](architecture/model-agnostic-worker-drivers-implementation-plan.md) — task-by-task TDD plan for the `WorkerDriverAdapter` registry with codex and claude drivers.
+- [Worker Driver Adapters](architecture/worker-drivers.md) — model-agnostic worker dispatch contract (codex, claude, fixture) and per-driver protocol configuration.
 - [Codex CLI and SDK Research](research/codex-cli-sdk-agent-swarm.md) — research notes on Codex CLI, Agents SDK, workers, and verification strategy.
 - [Claude Code and Model-Agnostic Workers](research/claude-code-and-model-agnostic-workers.md) — verified Claude Code headless feasibility and the `WorkerDriverAdapter` design for vendor-neutral worker dispatch.
 - [Orchestra Lessons](research/orchestra-lessons.md) — lessons kept and avoided from the previous `braven-pvm/orchestra` project.
@@ -35,11 +36,11 @@ Current implementation snapshot:
 
 - file-based source adapter and lightweight source/domain/ref index are implemented
 - dynamic slice pulling, lane state, FR/AC leases, dependency gating, and low-signal warnings are implemented
-- fixture and Codex worker dispatch, streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented
+- fixture, Codex, and Claude Code worker dispatch through driver adapters, streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, and Events
 - web-observability E2E harness is implemented and writes browser/API artifacts
 - live real-agent smoke harness is designed; Phase 1 reset/run-mode setup is implemented
-- latest known verification: `npm test` passes 20/20
+- latest known verification: `npm test` passes 40/40
 
 Current thesis:
 

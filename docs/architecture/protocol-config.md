@@ -37,6 +37,7 @@ These are configurable:
 - escalation preferences
 - slice batch sizing
 - worktree/lane naming
+- worker driver selection and per-driver dispatch settings
 
 ## Initial Shape
 
@@ -159,6 +160,17 @@ protocol:
     highlightFinalAttempt: true
     releaseAfterRetries: false
 
+  workers:
+    defaultDriver: codex
+    drivers:
+      codex:
+        sandbox: workspace-write
+      claude:
+        permissionMode: acceptEdits
+        settingSources: ""
+        allowedTools: "Edit Write Read Glob Grep Bash"
+        maxBudgetUsd: 5
+
   context:
     checkpoints:
       enabled: true
@@ -199,6 +211,10 @@ protocol:
     verifier: ./prompts/verifier.md
     reviewer: ./prompts/reviewer.md
 ```
+
+## workers
+
+Selects the default worker driver and per-driver dispatch settings; see [Worker Driver Adapters](worker-drivers.md).
 
 ## MVP Decision
 

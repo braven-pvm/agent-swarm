@@ -46,6 +46,7 @@ Implemented and covered by tests:
 - lane creation/reuse, FR/AC leases, dependency gating
 - planning decision events and checkpoints
 - worker dispatch through fixture or Codex
+- model-agnostic worker driver registry (codex, claude, fixture) with per-driver protocol config
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
@@ -59,7 +60,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 20/20 passing
+npm test -> 40/40 passing
 ```
 
 ## Recent UI Work Completed

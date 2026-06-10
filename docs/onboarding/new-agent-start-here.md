@@ -44,6 +44,7 @@ The harness is not a spec authoring system. Implementation agents may interpret 
 - `src/source-index.ts`: Markdown section/ref/domain/tag/priority indexing.
 - `src/domains.ts`: derived domain status summaries.
 - `src/checkpoints.ts`: checkpoint refresh and resume packet generation.
+- `src/worker-driver.ts`: worker driver adapter registry (codex, claude).
 - `src/worker-events.ts`: streaming Codex JSONL ingestion into events/heartbeats.
 - `fixtures/`: disposable target apps and specs for demos/tests.
 - `scripts/`: repeatable demo runners.
@@ -68,7 +69,7 @@ The current prototype supports:
 - FR/AC leases
 - dependency-gated slice serving
 - low-signal work warning escalation
-- fixture and Codex worker dispatch
+- model-agnostic worker dispatch (fixture, codex, claude drivers)
 - worker JSONL event ingestion
 - heartbeats and agent-run records
 - verifier gates using worker-result evidence and FR/AC coverage
@@ -113,7 +114,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 20/20 passing
+npm test -> 40/40 passing
 ```
 
 ## Useful Demo Commands
