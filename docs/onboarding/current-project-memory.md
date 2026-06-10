@@ -45,7 +45,6 @@ Implemented and covered by tests:
 - dynamic slice pulling with source/domain/tag filtering
 - lane creation/reuse, FR/AC leases, dependency gating
 - planning decision events and checkpoints
-- worker dispatch through fixture or Codex
 - model-agnostic worker driver registry (codex, claude, fixture) with per-driver protocol config
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation

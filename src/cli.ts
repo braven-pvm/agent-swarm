@@ -31,6 +31,7 @@ const DEFAULT_RUN_MODE: RunMode = "unspecified";
 type WorkerRunResult = {
   sliceId: string;
   runId: string;
+  ok: boolean;
   exitCode: number | null;
   eventsPath: string;
   resultPath: string;
@@ -2847,6 +2848,7 @@ async function executeWorkerRun(input: {
   return {
     sliceId: slice.id,
     runId,
+    ok: finalization.ok,
     exitCode: result.status,
     eventsPath: jsonlPath,
     resultPath: lastMessagePath,
@@ -2909,7 +2911,7 @@ function spawnWorkerStreaming(input: {
 }
 
 function printWorkerRunResult(result: WorkerRunResult): void {
-  console.log(`Worker ${result.exitCode === 0 ? "completed" : "failed"} for ${result.sliceId}`);
+  console.log(`Worker ${result.ok ? "completed" : "failed"} for ${result.sliceId}`);
   console.log(`  run: ${result.runId}`);
   console.log(`  events: ${result.eventsPath}`);
   console.log(`  ingested events: ${result.workerEvents.eventCount}`);
