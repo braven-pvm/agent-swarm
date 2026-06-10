@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 5A implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, and bounded overseer command execution are in place; child-agent dispatch is next.
+Status: Phase 6C implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, and stale-run recovery fault are in place.
 
 ## Why This Matters
 
@@ -729,30 +729,76 @@ Convenience scripts:
 
 #### Phase 5B: Worker/Reviewer Dispatch
 
-Status: next.
+Status: implemented.
 
 Deliver:
 
 - overseer prompt allows child-agent dispatch after Phase 5A state execution
-- overseer creates/reuses lanes
-- overseer pulls backend slices
-- overseer dispatches workers and reviewers
-- overseer waits/observes state between transitions
-- overseer blocks frontend until backend accepted
-- overseer stops with final scenario result
+- overseer creates/reuses lanes and pulls backend slices through Phase 5A state commands
+- overseer dispatches workers and reviewers through bounded `run` and `review` harness commands
+- child dispatch requires an existing slice id, explicit `--actor`, and `--driver codex`
+- `review` dispatch requires prior `worker_result` evidence
+- concurrent worker/reviewer dispatch for the same slice is blocked
+- deterministic `verify` remains blocked until the acceptance-loop phase
+- child dispatch events include command category, child role, and slice id
+- worker and reviewer agent runs, heartbeats, JSONL events, evidence, and artifacts remain first-class harness state
+
+Tests:
+
+- fake Codex overseer E2E proves `--execute` can run `run` and `review` through the real `--driver codex` paths
+- E2E confirms worker and reviewer runs are visible as separate agent runs
+- E2E confirms `worker_result` and `review_result` evidence is recorded
+- E2E confirms deterministic verifier dispatch is still blocked in Phase 5B
 
 Controls:
 
-- max slices
-- max runs
-- max runtime
+- existing slice id required for child dispatch
+- explicit actor required for visibility
+- `--driver codex` required for child dispatch
+- reviewer requires worker evidence
+- concurrent child run on the same slice is blocked
 - no direct DB edits
 - no source spec edits
 - bounded target paths
+- `--execute-limit` bounds recommended commands per overseer decision
 
 Manual success:
 
-- user can open UI and watch real progress.
+- user can open UI and watch the overseer dispatch a worker/reviewer pair against a real slice.
+
+Delivered in Phase 5C:
+
+- repeated autonomous overseer loop across pull -> worker -> review -> verify
+- deterministic verification handoff after reviewer acceptance
+- max scenario slices/runs/runtime
+- final scenario status of accepted, blocked, or human-required
+
+#### Phase 5C: Autonomous Acceptance Loop
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs`
+- `npm run demo:live-agent:run`
+- repeated visible overseer turns through `swarm orchestrate --execute`
+- state carries across pull -> worker -> review -> deterministic verify
+- deterministic `swarm verify` runs only after reviewer acceptance
+- scenario-level bounds for max turns, max slices, max agent runs, and max runtime
+- source hash mutation checks before each turn and in final summary
+- final scenario summary with accepted, blocked, or human-required outcome
+- run artifacts for overseer turn outputs, verification output, observe snapshot, graph, report, and timeline
+- manifest update under `.swarm-demo/live-agent-smoke/live-agent-smoke.json`
+
+Tests:
+
+- fake Codex E2E proves the live runner invokes real overseer, worker, and reviewer `--driver codex` paths
+- E2E confirms deterministic verification happens after reviewer acceptance
+- E2E confirms final accepted slice has worker evidence, review evidence, command evidence, completed leases, and visible events
+
+Manual success:
+
+- user can run `npm run demo:live-agent:reset`, start the UI, run `npm run demo:live-agent:run`, and watch a baseline backend slice move from planned to accepted.
 
 ### Phase 6: Fault Injection And Recovery
 
@@ -760,11 +806,11 @@ Goal: stress the harness under realistic failure.
 
 Deliver one at a time:
 
-- stale run visibility/recovery
-- reviewer repair loop
+- stale run visibility/recovery: implemented as Phase 6C
+- reviewer repair loop: implemented as Phase 6B
 - context resume packet handoff
 - low-signal/proof-churn warning
-- source mutation detection
+- source mutation detection: implemented as Phase 6A
 
 Each fault should have:
 
@@ -772,6 +818,71 @@ Each fault should have:
 - expected harness behavior
 - UI visibility
 - final artifact assertion
+
+#### Phase 6A: Source Mutation Fault
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs --fault source-mutation`
+- controlled mutation of a registered disposable source spec after source registration
+- source hash mismatch detection before any overseer/worker/reviewer dispatch
+- visible `human_required` harness escalation on `harness:scenario:live-agent-smoke`
+- final summary uses `phase-6-fault-injection`
+- final summary records injected fault, source mutation details, bounded outcome, active escalation, and artifacts
+- manifest records the fault and final outcome
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` proves the source-mutation fault stops before hidden agent work
+- E2E confirms no agent runs are created
+- E2E confirms `observe` contains a `human_required` escalation and `escalation.created` event
+- E2E confirms final summary assertions pass for the fault scenario
+
+#### Phase 6B: Reviewer Repair Fault
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs --fault reviewer-repair`
+- first independent review returns `repair_required`
+- slice moves to `repairing` with visible `review.blocked_acceptance` and blocker escalation
+- overseer dispatches a repair worker run for the same slice
+- second independent review accepts the repaired work
+- live runner clears only repair-related slice blockers after later reviewer acceptance
+- deterministic verification runs only after accepted review and cleared repair blocker
+- final summary records repair clearances, multiple worker/reviewer runs, bounded outcome, and artifacts
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` proves the reviewer repair loop blocks once, repairs, clears the resolved blocker, and accepts
+- E2E confirms at least two worker runs and two reviewer runs are visible
+- E2E confirms `review.blocked_acceptance`, `escalation.cleared`, and passing `verification.completed` events are visible
+- E2E confirms no active slice blocker remains after repair acceptance
+
+#### Phase 6C: Stale Run Recovery Fault
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs --fault stale-run`
+- overseer first creates the live backend slice through the normal bounded command path
+- runner injects a stale worker run on that real slice with an old heartbeat
+- `swarm recovery scan --mark-stale` marks the run stale, blocks the slice, raises a scoped blocker, writes a recovery checkpoint, and records artifacts
+- `swarm recovery restart <run-id>` starts a fresh worker for the same slice through the configured driver
+- independent review must accept the restarted work before the live runner clears the stale-run blocker
+- deterministic verification runs only after the stale blocker is cleared and reviewer acceptance is present
+- final summary records stale recovery state, scan/mark/restart artifacts, clearance records, bounded outcome, and accepted verification
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` proves the stale-run fault marks, restarts, clears, reviews, verifies, and accepts
+- E2E confirms the stale run remains visible with `status = stale`
+- E2E confirms `recovery.marked_stale_run`, `recovery.restart_started`, `recovery.restart_completed`, `escalation.cleared`, and passing `verification.completed` events are visible
+- E2E confirms no active stale-run blocker remains after acceptance
 
 ### Phase 7: Hardening
 
@@ -902,21 +1013,18 @@ Mitigation:
 
 ## Next Implementation Slice
 
-Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5A are implemented. Continue with Phase 5B:
+Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, and Phase 6C are implemented. Continue with Phase 6D or Phase 7:
 
 ```text
-Worker/Reviewer Dispatch
+Context Resume Fault Or Hardening
 ```
 
 Acceptance criteria:
 
-- the overseer may execute `swarm run` and `swarm review` through a stricter child-agent dispatch layer
-- autonomous dispatch starts with backend slices created through Phase 5A
-- the overseer observes state between worker/reviewer transitions and records decisions as events/checkpoints
-- worker and reviewer runs are visible as separate agent runs with heartbeats and artifacts
-- deterministic verification remains the acceptance gate after reviewer acceptance
-- max slices, max runs, max runtime, no source-spec mutation, and no direct DB edits are enforced
-- the run ends accepted, blocked, or human-required with exact reasons/artifacts
+- add the next explicit fault mode, preferably context resume packet handoff, or start Phase 7 hardening
+- the fault is visible in `observe`, `watch`, and the web UI
+- the run stops or recovers according to protocol
+- final summary records the fault, evidence, and exact blocker/recovery result
 - `npm test` remains green
 
-Phase 5A gave the overseer planning-state hands. Phase 5B is where it starts dispatching child agents, still bounded and fully visible.
+Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Continue breaking one thing at a time so recovery, context handoff, and anti-drift behavior become tested rather than assumed.

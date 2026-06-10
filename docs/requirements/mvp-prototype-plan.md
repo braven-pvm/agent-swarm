@@ -50,6 +50,11 @@ Implemented as of 2026-06-10:
 - scripted live worker+reviewer rehearsal for the live smoke workspace
 - visible overseer runner with structured planning decisions and scenario-scoped observability
 - bounded overseer command execution for planning-safe harness commands
+- bounded overseer-dispatched worker/reviewer child agents through `swarm orchestrate --execute`
+- autonomous live acceptance loop through `npm run demo:live-agent:run`
+- source-mutation fault injection through `--fault source-mutation`
+- reviewer-repair fault injection through `--fault reviewer-repair`
+- stale-run recovery fault injection through `--fault stale-run`
 - reports, timeline, graph, observe, and watch
 - stale-run recovery, revive, and restart
 - checkpoints and role-specific resume packets
@@ -58,10 +63,10 @@ Implemented as of 2026-06-10:
 
 Not yet implemented:
 
-- real Codex overseer/planner dispatching child workers/reviewers after bounded command execution
-- live/full-product run modes beyond Phase 5A bounded overseer command execution
+- additional live context handoff and anti-drift fault scenarios against the autonomous loop
+- full-product run mode beyond the baseline accepted backend slice
 
-Latest known full verification: `npm test` passes 30/30 and `git diff --check` is clean.
+Latest known full verification: `npm test` passes 35/35 and `git diff --check` is clean.
 
 ## Functional Requirements
 

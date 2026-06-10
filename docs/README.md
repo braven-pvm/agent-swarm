@@ -38,11 +38,11 @@ Current implementation snapshot:
 - fixture and Codex worker dispatch, streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented
 - independent reviewer dispatch, structured review evidence, reviewer JSONL events, and review-gated verification are implemented
 - visible overseer dispatch, structured overseer decisions, overseer JSONL events, prompt artifacts, role/entity agent runs, and overseer checkpoints are implemented
-- bounded overseer command execution, command artifacts, command events, and Phase 5A allowlist/blocking are implemented
+- bounded overseer command execution, command artifacts, command events, Phase 5A state-command allowlist, Phase 5B worker/reviewer child dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, and Phase 6C stale-run recovery fault injection are implemented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, and Events
 - web-observability E2E harness is implemented and writes browser/API artifacts
-- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, and Phase 5A bounded command execution are implemented
-- latest known verification: `npm test` passes 30/30 and `git diff --check` is clean
+- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, and Phase 6C stale-run recovery fault injection are implemented
+- latest known verification: `npm test` passes 35/35 and `git diff --check` is clean
 
 Current thesis:
 

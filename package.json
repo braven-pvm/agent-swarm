@@ -23,6 +23,7 @@
     "demo:live-agent:overseer:fixture": "npm run build && cd .swarm-demo/live-agent-smoke && node ../../dist/cli.js orchestrate --actor live-overseer --driver fixture --scenario live-agent-smoke",
     "demo:live-agent:overseer:execute": "npm run build && cd .swarm-demo/live-agent-smoke && node ../../dist/cli.js orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke --execute",
     "demo:live-agent:overseer:execute:fixture": "npm run build && cd .swarm-demo/live-agent-smoke && node ../../dist/cli.js orchestrate --actor live-overseer --driver fixture --scenario live-agent-smoke --execute",
+    "demo:live-agent:run": "npm run build && node scripts/run-live-agent-demo.mjs",
     "demo:live-agent:scripted": "npm run build && node scripts/run-live-agent-scripted-demo.mjs --driver codex",
     "dev": "tsx src/cli.ts",
     "swarm": "tsx src/cli.ts",

@@ -141,13 +141,126 @@ test("codex overseer execute mode runs allowlisted harness commands and records 
   assert.match(watch, new RegExp(slice.id));
 });
 
-test("codex overseer execute mode blocks agent dispatch commands in phase 5A", () => {
+test("codex overseer execute mode dispatches worker and reviewer child agents", () => {
+  const workspace = setupWorkspace("test-overseer-child-dispatch");
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--new-lane",
+    "--lane-name",
+    "Backend Lane: Invoice Query Core",
+    "--lane-purpose",
+    "Implement accepted invoice backend capabilities before dashboard slices",
+    "--lane-labels",
+    "backend,invoice-api,live-smoke",
+    "--orchestrator",
+    "live-overseer",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = pullOutput.match(/Created slice (SLICE-[a-z0-9]+)/)?.[1];
+  assert.ok(sliceId);
+
+  const runCommand = `node "${cli}" run ${sliceId} --actor live-backend-worker --driver codex`;
+  const reviewCommand = `node "${cli}" review ${sliceId} --actor live-reviewer --driver codex`;
+  const observeCommand = `node "${cli}" observe --events 160`;
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: runCommand,
+      purpose: "Dispatch the backend worker through the harness against the active slice.",
+      expectedStateChange: "Worker agent run, heartbeat, JSONL events, and worker_result evidence appear.",
+      requiresHuman: false,
+    },
+    {
+      command: reviewCommand,
+      purpose: "Dispatch the independent reviewer after worker evidence exists.",
+      expectedStateChange: "Reviewer agent run, reviewer JSONL events, and review_result evidence appear.",
+      requiresHuman: false,
+    },
+    {
+      command: observeCommand,
+      purpose: "Confirm child-agent state and evidence are visible after dispatch.",
+      expectedStateChange: "Snapshot shows implemented/reviewed backend slice with child-agent artifacts.",
+      requiresHuman: false,
+    },
+  ]);
+
+  const output = runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke", "--execute", "--execute-limit", "3"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    },
+  );
+
+  assert.match(output, /command execution: executed 3, blocked 0, failed 0/);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "180"]));
+  const slice = snapshot.slices.find((item) => item.id === sliceId);
+  assert.ok(slice);
+  assert.equal(slice.status, "ready_for_review");
+  assert.ok(slice.evidence.some((item) => item.kind === "worker_result"));
+  assert.ok(slice.evidence.some((item) => item.kind === "review_result"));
+  assert.ok(
+    snapshot.agentRuns.some(
+      (run) => run.actor === "live-backend-worker" && run.role === "worker" && run.driver === "codex" && run.status === "completed",
+    ),
+  );
+  assert.ok(
+    snapshot.agentRuns.some(
+      (run) => run.actor === "live-reviewer" && run.role === "reviewer" && run.driver === "codex" && run.status === "completed",
+    ),
+  );
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.codex_event"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "reviewer.codex_event"));
+  assert.ok(
+    snapshot.recentEvents.some(
+      (event) =>
+        event.type === "overseer.command_completed" &&
+        event.payload.commandKey === "run" &&
+        event.payload.category === "child_agent" &&
+        event.payload.childRole === "worker" &&
+        event.payload.sliceId === sliceId,
+    ),
+  );
+  assert.ok(
+    snapshot.recentEvents.some(
+      (event) =>
+        event.type === "overseer.command_completed" &&
+        event.payload.commandKey === "review" &&
+        event.payload.category === "child_agent" &&
+        event.payload.childRole === "reviewer" &&
+        event.payload.sliceId === sliceId,
+    ),
+  );
+
+  const workerCommandEvent = snapshot.recentEvents.find(
+    (event) => event.type === "overseer.command_completed" && event.payload.commandKey === "run",
+  );
+  assert.ok(workerCommandEvent);
+  assert.ok(fs.existsSync(workerCommandEvent.payload.stdoutPath));
+  assert.match(fs.readFileSync(workerCommandEvent.payload.stdoutPath, "utf8"), /Worker completed/);
+
+  const reviewerCommandEvent = snapshot.recentEvents.find(
+    (event) => event.type === "overseer.command_completed" && event.payload.commandKey === "review",
+  );
+  assert.ok(reviewerCommandEvent);
+  assert.ok(fs.existsSync(reviewerCommandEvent.payload.stdoutPath));
+  assert.match(fs.readFileSync(reviewerCommandEvent.payload.stdoutPath, "utf8"), /Review accepted/);
+});
+
+test("codex overseer execute mode still blocks deterministic verifier dispatch in phase 5B", () => {
   const workspace = setupWorkspace("test-overseer-execute-block");
   const fakeCodexScript = writeFakeOverseerCodex([
     {
-      command: `node "${cli}" run SLICE-not-real --actor live-worker --driver codex`,
-      purpose: "Try to dispatch a worker before Phase 5B.",
-      expectedStateChange: "This should be blocked by the Phase 5A command validator.",
+      command: `node "${cli}" verify SLICE-not-real --actor live-verifier --force`,
+      purpose: "Try to execute deterministic verification before the acceptance-gate phase.",
+      expectedStateChange: "This should be blocked by the Phase 5B command validator.",
       requiresHuman: false,
     },
   ]);
@@ -166,7 +279,7 @@ test("codex overseer execute mode blocks agent dispatch commands in phase 5A", (
   assert.equal(snapshot.slices.length, 0);
   assert.ok(snapshot.recentEvents.some((event) => event.type === "overseer.command_blocked"));
   const blocked = snapshot.recentEvents.find((event) => event.type === "overseer.command_blocked");
-  assert.match(blocked.payload.reason, /does not execute worker, reviewer, or verifier/);
+  assert.match(blocked.payload.reason, /Phase 5B does not execute deterministic verification/);
 });
 
 function setupWorkspace(name) {
@@ -287,14 +400,109 @@ function writeFakeOverseerCodex(recommendedCommands) {
   fs.writeFileSync(
     scriptPath,
     `import fs from "node:fs";
+import path from "node:path";
 
 const args = process.argv.slice(2);
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
+const schemaIndex = args.indexOf("--output-schema");
+const schemaPath = schemaIndex >= 0 ? args[schemaIndex + 1] : "";
+const refs = ["AC-INV-001.1", "AC-INV-001.2", "AC-INV-001.3"];
 
-console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-overseer-thread" }));
-console.log(JSON.stringify({ type: "overseer.analysis", status: "recommend_commands" }));
-if (outputPath) {
+console.log(JSON.stringify({
+  type: "thread.started",
+  thread_id: schemaPath.includes("review-result")
+    ? "fake-review-thread"
+    : schemaPath.includes("worker-result")
+      ? "fake-worker-thread"
+      : "fake-overseer-thread"
+}));
+
+if (schemaPath.includes("review-result")) {
+  console.log(JSON.stringify({ type: "review.analysis", status: "accepted" }));
+  if (outputPath) {
+    fs.writeFileSync(outputPath, JSON.stringify({
+      status: "accepted",
+      summary: "fake reviewer accepted overseer-dispatched backend slice",
+      frAcFindings: refs.map((ref) => ({
+        ref,
+        status: "passed",
+        evidence: ["fake-review-evidence"],
+        finding: "Worker evidence and runtime changes cover this ref."
+      })),
+      testAssessment: "Worker evidence includes behavior-focused invoice query tests.",
+      sourceMutationDetected: false,
+      stubOrHardcodeRisk: "none",
+      requiredFixes: [],
+      escalations: [],
+      recommendation: "Proceed to deterministic verification in the next acceptance phase."
+    }) + "\\n", "utf8");
+  }
+} else if (schemaPath.includes("worker-result")) {
+  console.log(JSON.stringify({ type: "item.started", item: { type: "file_change", path: "src/invoices.js" } }));
+  fs.writeFileSync(path.join(process.cwd(), "src", "invoices.js"), \`const invoices = [
+  { id: "INV-1001", customerId: "CUST-1", status: "open", totalCents: 12500 },
+  { id: "INV-1002", customerId: "CUST-1", status: "paid", totalCents: 9900 },
+  { id: "INV-1003", customerId: "CUST-2", status: "open", totalCents: 4500 },
+];
+
+export function listInvoices(filters = {}) {
+  return invoices.filter((invoice) => {
+    if (filters.status && invoice.status !== filters.status) return false;
+    if (filters.customerId && invoice.customerId !== filters.customerId) return false;
+    return true;
+  });
+}
+
+export function getInvoiceSummary() {
+  return { count: invoices.length };
+}
+\`, "utf8");
+  fs.writeFileSync(path.join(process.cwd(), "test", "invoices.test.js"), \`import test from "node:test";
+import assert from "node:assert/strict";
+import { getInvoiceSummary, listInvoices } from "../src/invoices.js";
+
+test("lists seeded invoices", () => {
+  assert.equal(listInvoices().length, 3);
+});
+
+test("lists only open invoices when filtered by open status", () => {
+  assert.deepEqual(
+    listInvoices({ status: "open" }).map((invoice) => invoice.id),
+    ["INV-1001", "INV-1003"],
+  );
+});
+
+test("lists only invoices for the requested customer", () => {
+  assert.deepEqual(
+    listInvoices({ customerId: "CUST-1" }).map((invoice) => invoice.id),
+    ["INV-1001", "INV-1002"],
+  );
+});
+
+test("returns baseline invoice count summary", () => {
+  assert.deepEqual(getInvoiceSummary(), { count: 3 });
+});
+\`, "utf8");
+  if (outputPath) {
+    fs.writeFileSync(outputPath, JSON.stringify({
+      status: "passed",
+      summary: "fake worker implemented invoice query filtering",
+      changedFiles: ["src/invoices.js", "test/invoices.test.js"],
+      commandsRun: ["npm test"],
+      testsRun: ["npm test"],
+      frAcCoverage: refs.map((ref) => ({
+        ref,
+        status: "covered",
+        evidence: "Invoice query behavior is covered by listInvoices tests."
+      })),
+      risks: [],
+      nextRecommendation: "Run independent review and deterministic verification."
+    }) + "\\n", "utf8");
+  }
+} else {
+  console.log(JSON.stringify({ type: "overseer.analysis", status: "recommend_commands" }));
+  if (outputPath) {
   fs.writeFileSync(outputPath, JSON.stringify({
     status: "recommend_commands",
     summary: "Fake overseer recommends pulling the first backend capability slice.",
@@ -310,6 +518,7 @@ if (outputPath) {
     stopCondition: "Stop after planning decision in Phase 4.",
     nextAction: "Execute the recommended pull command through the harness."
   }) + "\\n", "utf8");
+  }
 }
 console.log(JSON.stringify({ type: "turn.completed" }));
 `,

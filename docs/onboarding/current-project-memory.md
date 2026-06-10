@@ -54,7 +54,13 @@ Implemented and covered by tests:
 - visible overseer runner through `swarm orchestrate`
 - overseer JSONL events, heartbeat, structured decision artifact, prompt artifact, and role/entity checkpoint
 - bounded overseer command execution through `swarm orchestrate --execute`
-- overseer command events/artifacts and Phase 5A command allowlist/blocking
+- overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
+- overseer-dispatched worker/reviewer child agents with explicit actor, `--driver codex`, evidence gating, and visible command metadata
+- autonomous live acceptance loop through `npm run demo:live-agent:run`
+- live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, and report
+- source-mutation fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
+- reviewer-repair fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
+- stale-run recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
 - stale-run recovery, revive, restart
 - low-signal work warning
 - latest-only role/entity checkpoints
@@ -65,7 +71,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 30/30 passing
+npm test -> 35/35 passing
 git diff --check -> clean
 ```
 
@@ -187,6 +193,71 @@ Phase 5A implementation completed:
 - fake Codex E2E proves `--execute` can run an allowlisted `slices pull`, creating a backend lane, slice, and active leases
 - fake Codex E2E proves worker dispatch is blocked in Phase 5A
 
+Phase 5B implementation completed:
+
+- `swarm orchestrate --execute` can now execute bounded `run` and `review` child-agent commands
+- child dispatch command metadata records `category: child_agent`, `childRole`, and `sliceId`
+- `run` is allowed only for existing ready/blocked/repairing slices
+- `review` is allowed only for existing implemented/ready_for_review/repairing slices with prior `worker_result` evidence
+- child dispatch requires explicit `--actor` so the UI/observe trail is not anonymous
+- child dispatch requires `--driver codex`; fixture child dispatch is intentionally blocked in this path
+- concurrent worker/reviewer runs on the same slice are blocked
+- deterministic `verify` remains blocked in overseer execution until the next acceptance-loop phase
+- command stdout/stderr artifacts still live under `.swarm/artifacts/scenario-<scenario>/`
+- fake Codex E2E proves a visible overseer can dispatch a worker and reviewer through the real `--driver codex` code paths
+- fake Codex E2E proves verifier dispatch is still blocked in Phase 5B
+
+Phase 5C implementation completed:
+
+- `scripts/run-live-agent-demo.mjs`
+- `npm run demo:live-agent:run`
+- live runner repeatedly invokes `swarm orchestrate --execute`
+- state carries across pull -> worker -> review -> deterministic verify
+- deterministic `swarm verify` runs only after reviewer acceptance
+- scenario bounds: max turns, max slices, max agent runs, max runtime, execute limit
+- source hash mutation checks before each turn and in final summary
+- final summary is written to `live-agent-run-summary.json`
+- artifacts are written under `live-agent-run-artifacts/`
+- manifest updates record `phase-5c-autonomous-acceptance-loop` and `liveRun`
+- fake Codex E2E proves the live runner exercises real overseer, worker, and reviewer `--driver codex` paths and reaches accepted deterministic verification
+
+Phase 6A implementation completed:
+
+- `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
+- controlled mutation of a registered disposable source spec after registration
+- source hash mismatch detection before overseer/worker/reviewer dispatch
+- `human_required` escalation on `harness:scenario:live-agent-smoke`
+- summary phase is `phase-6-fault-injection`
+- summary records fault mode, injected fault path, source mutation details, bounded outcome, active escalation, and artifacts
+- manifest records `liveRun.fault = source-mutation` and final outcome
+- E2E confirms no agent runs are created before the stop
+- E2E confirms `observe` shows `human_required` and `escalation.created`
+
+Phase 6B implementation completed:
+
+- `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
+- first independent reviewer returns `repair_required`
+- slice moves to `repairing` with visible `review.blocked_acceptance` and blocker escalation
+- overseer dispatches a repair worker for the same slice
+- second independent reviewer accepts the repaired work
+- live runner clears only repair-related slice blockers after later reviewer acceptance
+- deterministic verification runs after accepted review and cleared repair blocker
+- summary records repair clearances, multiple worker/reviewer runs, bounded outcome, and artifacts
+- E2E confirms at least two worker runs and two reviewer runs are visible
+- E2E confirms `review.blocked_acceptance`, `escalation.cleared`, and passing `verification.completed`
+
+Phase 6C implementation completed:
+
+- `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
+- overseer first creates the live backend slice through normal bounded command execution
+- runner injects a stale worker run with an old heartbeat on that real slice
+- `swarm recovery scan --mark-stale` marks the stale run, blocks the slice, raises a scoped blocker, and records recovery artifacts
+- `swarm recovery restart RUN-live-stale-001` starts a fresh worker for the same slice through the configured driver
+- independent review must accept the restarted work before the live runner clears the stale-run blocker
+- deterministic verification runs after accepted review and cleared stale blocker
+- summary records stale recovery state, scan/mark/restart artifacts, clearance records, bounded outcome, and accepted verification
+- E2E confirms `recovery.marked_stale_run`, `recovery.restart_started`, `recovery.restart_completed`, `escalation.cleared`, and passing `verification.completed`
+
 Current manual viewer path:
 
 ```powershell
@@ -250,24 +321,22 @@ node ..\..\dist\cli.js report <slice-id>
 
 ## Next Slice To Implement
 
-Name: Worker/Reviewer Dispatch
+Name: Next Fault Injection
 
-Goal: let the now-visible overseer dispatch child worker/reviewer agents through the harness after Phase 5A has created planning state.
+Goal: add the next context/anti-drift fault against the now-working live acceptance loop, or start Phase 7 hardening.
 
 Next practical slices:
 
-- add a stricter child-agent dispatch mode to the overseer executor
-- allow `swarm run --driver codex` for selected backend slices
-- allow `swarm review --driver codex` after worker completion
-- keep `verify` deterministic and gated after reviewer acceptance
-- observe state between transitions and record each decision/command result
-- enforce max slices, max agent runs, max runtime, no source-spec mutation, and no hidden state mutation
-- stop with accepted, blocked, or human-required scenario status and artifacts
-- add package scripts for live run and later full-product run
+- add one explicit context/anti-drift fault mode to the live runner or a companion smoke script
+- prefer context resume packet handoff next
+- assert the UI/observe/event stream shows the fault
+- assert recovery or blocked/human-required state is exact and artifact-backed
+- preserve the baseline happy-path live runner
+- keep full-product mode as the later destination
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5A are complete. Do Phase 5B next: child worker/reviewer dispatch. Keep Phase 5A's bounded command execution path intact and auditable while adding agent dispatch.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, and Phase 6C are complete. Do context resume handoff or Phase 7 hardening next. Keep the Phase 5C happy path strict and auditable while adding controlled breakage.
 
-Do not lose the full-product target while implementing overseer visibility. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
+Do not lose the full-product target while implementing fault injection. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 
 Acceptance criteria for the next slice should stay lifecycle-grounded:
 

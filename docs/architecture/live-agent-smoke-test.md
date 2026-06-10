@@ -123,7 +123,7 @@ npm run demo:live-agent:serve
 npm run demo:live-agent:run
 ```
 
-Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, and bounded overseer execution for planning-safe harness commands are implemented. Child-agent dispatch is next.
+Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, bounded overseer execution for planning-safe harness commands, bounded worker/reviewer child dispatch, and the autonomous acceptance loop are implemented. Fault injection and full-product mode are next.
 
 The serve command should keep the read-only UI open. The run command should populate state over time so the user can watch:
 
@@ -138,7 +138,7 @@ The serve command should keep the read-only UI open. The run command should popu
 - blockers or human-required escalations
 - checkpoints and resume packets
 
-`demo:live-agent:run` should also support a single-command mode that starts its own temporary viewer on `--port 0` for automated probing.
+`demo:live-agent:run` currently runs the baseline autonomous acceptance loop. A later convenience mode can start its own temporary viewer on `--port 0` for automated probing.
 
 Future full-product mode:
 
@@ -355,12 +355,36 @@ Implemented behavior:
 
 - executes only allowlisted shell-free harness commands
 - allows read/planning commands and `slices pull`
-- blocks worker/reviewer/verifier dispatch commands until the next slice
+- historically blocked worker/reviewer/verifier dispatch commands until Phase 5B
 - records `overseer.command_started`, `overseer.command_completed`, `overseer.command_failed`, `overseer.command_blocked`, and `overseer.commands_completed`
 - writes command stdout/stderr artifacts
 - proves a backend lane/slice can be created from an overseer recommendation
 
+### Slice 4B: Add bounded worker/reviewer dispatch
+
+Status: implemented.
+
+Extend `swarm orchestrate --execute` so the overseer may dispatch child agents through harness commands:
+
+```powershell
+swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke --execute
+```
+
+Implemented behavior:
+
+- allows `run <slice-id> --actor <actor> --driver codex` for existing ready/blocked/repairing slices
+- allows `review <slice-id> --actor <actor> --driver codex` only after worker evidence exists
+- requires explicit child actors for visibility
+- blocks concurrent worker/reviewer dispatch on the same slice
+- keeps deterministic `verify` blocked until the acceptance-loop phase
+- command events include command category, child role, and slice id
+- worker/reviewer runs write their own agent runs, heartbeats, Codex JSONL events, evidence, and artifacts
+
+The default CI path uses fake Codex while still exercising the real `--driver codex` runner path.
+
 ### Slice 5: Add live smoke script
+
+Status: implemented.
 
 Add package scripts:
 
@@ -372,9 +396,11 @@ Add package scripts:
 }
 ```
 
-The run script should launch the overseer, let it dispatch workers/verifiers once child-agent execution exists, and write a summary artifact.
+The run script repeatedly launches the overseer, lets it dispatch workers/reviewers, runs deterministic verification after reviewer acceptance, and writes a summary artifact.
 
 ### Slice 6: Add live smoke assertions
+
+Status: implemented for default CI with fake Codex on the real runner paths; a non-default real Codex smoke remains useful for manual validation.
 
 Add an optional test or smoke checker that does not run in default CI:
 
@@ -391,6 +417,11 @@ Assertions should include:
 - at least one slice reached accepted or blocked with exact reason
 - every accepted FR/AC has evidence
 - UI APIs expose the live run state
+- source mutation stops before hidden work
+- reviewer repair blocks, recovers, and clears resolved blockers
+- stale-run recovery marks, restarts, clears resolved blockers after review, and verifies
+
+Current default E2E coverage uses fake Codex while exercising the real `--driver codex` runner paths. A non-default smoke with real Codex remains useful for manual validation.
 
 ## Exit Criteria
 

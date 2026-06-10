@@ -65,12 +65,27 @@ type OverseerCommandExecution = {
   command: string;
   purpose: string;
   expectedStateChange: string;
+  commandKey?: string;
+  category?: "state" | "child_agent";
+  childRole?: "worker" | "reviewer";
+  sliceId?: string;
   status: "executed" | "blocked" | "failed";
   exitCode?: number | null;
   stdoutPath?: string;
   stderrPath?: string;
   reason?: string;
 };
+
+type OverseerCommandValidation =
+  | {
+      ok: true;
+      cliArgs: string[];
+      commandKey: string;
+      category: "state" | "child_agent";
+      childRole?: "worker" | "reviewer";
+      sliceId?: string;
+    }
+  | { ok: false; reason: string };
 
 type CodexStreamingResult = {
   status: number | null;
@@ -5271,12 +5286,13 @@ Workspace:
 ${input.workspace}
 
 Your current execution mode:
-${input.execute ? "- Phase 5A bounded execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
-- Do not dispatch worker, reviewer, or verifier agents yet.
+${input.execute ? "- Phase 5B bounded execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
+- You may dispatch worker and reviewer child agents only through harness commands when execution is enabled.
+- Do not dispatch verifier agents yet.
 - Do not edit target code.
 - Do not mutate source specs.
 - Recommend exact harness commands that move harness state forward.
-${input.execute ? "- The harness may execute only allowlisted commands: observe, sources list, domains list/inspect, and slices pull. Worker/reviewer/verifier dispatch commands are intentionally blocked in Phase 5A." : "- A human or later runner may execute recommended commands next."}
+${input.execute ? "- The harness may execute allowlisted state commands plus bounded child dispatch: run/review with an existing slice id, explicit --actor, and --driver codex. Deterministic verify remains blocked until a later acceptance-gate phase." : "- A human or later runner may execute recommended commands next."}
 
 Planning priorities:
 - Use immutable source specs and FR/AC refs as the source of truth.
@@ -5291,9 +5307,9 @@ Allowed command contract:
 - node "${process.argv[1]}" domains list
 - node "${process.argv[1]}" domains inspect <domain>
 - node "${process.argv[1]}" slices pull --target <target> --source <source> --batch-size <n> [lane options]
-- node "${process.argv[1]}" run <slice-id> --actor <actor> --driver codex (recommend only; blocked from execution in Phase 5A)
-- node "${process.argv[1]}" review <slice-id> --actor <actor> --driver codex (recommend only; blocked from execution in Phase 5A)
-- node "${process.argv[1]}" verify <slice-id> --actor <actor> --force (recommend only; blocked from execution in Phase 5A)
+- node "${process.argv[1]}" run <slice-id> --actor <actor> --driver codex
+- node "${process.argv[1]}" review <slice-id> --actor <actor> --driver codex
+- node "${process.argv[1]}" verify <slice-id> --actor <actor> --force (recommend only; blocked from execution in Phase 5B)
 - node "${process.argv[1]}" report <slice-id>
 - node "${process.argv[1]}" checkpoint create --role <role> --entity <type:id> --summary <summary>
 - node "${process.argv[1]}" escalations create --level <level> --entity <type:id> --message <message>
@@ -5389,7 +5405,7 @@ function runFixtureOverseerDecision(input: {
         },
       ],
       blockers,
-      stopCondition: "Stop after recommending the next harness command; Phase 4 does not dispatch child agents.",
+      stopCondition: "Stop after the next bounded child-agent command is recorded or executed.",
       nextAction: "Run the recommended command through the harness, then observe state again.",
     };
   }
@@ -5421,8 +5437,8 @@ function runFixtureOverseerDecision(input: {
       },
     ],
     blockers,
-    stopCondition: "Stop after recommending commands; Phase 4 does not dispatch child agents.",
-    nextAction: "Execute the pull command or let the Phase 5 autonomous runner do it.",
+    stopCondition: "Stop after bounded planning-state commands are recorded or executed.",
+    nextAction: "Execute the pull command, then run the overseer again to dispatch a worker.",
   };
 }
 
@@ -5617,7 +5633,7 @@ function executeOverseerRecommendedCommands(input: {
       continue;
     }
 
-    const validation = validateOverseerCommand(command.command, input.workspace);
+    const validation = validateOverseerCommand(command.command, input.workspace, input.store);
     if (!validation.ok) {
       const blocked = {
         ...baseResult,
@@ -5632,8 +5648,11 @@ function executeOverseerRecommendedCommands(input: {
     input.store.upsertHeartbeat({
       id: `heartbeat:${input.actor}`,
       actor: input.actor,
-      state: "testing",
-      detail: `Executing overseer command ${commandIndex}: ${validation.commandKey}`,
+      state: validation.category === "child_agent" ? "waiting" : "testing",
+      detail:
+        validation.category === "child_agent"
+          ? `Dispatching ${validation.childRole} for ${validation.sliceId}`
+          : `Executing overseer command ${commandIndex}: ${validation.commandKey}`,
       entityType: "harness",
       entityId: input.entityId,
     });
@@ -5648,6 +5667,9 @@ function executeOverseerRecommendedCommands(input: {
           index: commandIndex,
           command: command.command,
           commandKey: validation.commandKey,
+          category: validation.category,
+          childRole: validation.childRole,
+          sliceId: validation.sliceId,
           purpose: command.purpose,
           expectedStateChange: command.expectedStateChange,
         },
@@ -5668,6 +5690,10 @@ function executeOverseerRecommendedCommands(input: {
 
     const execution: OverseerCommandExecution = {
       ...baseResult,
+      commandKey: validation.commandKey,
+      category: validation.category,
+      childRole: validation.childRole,
+      sliceId: validation.sliceId,
       status: result.status === 0 ? "executed" : "failed",
       exitCode: result.status,
       stdoutPath,
@@ -5685,6 +5711,9 @@ function executeOverseerRecommendedCommands(input: {
           index: commandIndex,
           command: command.command,
           commandKey: validation.commandKey,
+          category: validation.category,
+          childRole: validation.childRole,
+          sliceId: validation.sliceId,
           exitCode: result.status,
           stdoutPath,
           stderrPath,
@@ -5747,7 +5776,8 @@ function summarizeOverseerCommandResults(results: OverseerCommandExecution[]): s
 function validateOverseerCommand(
   command: string,
   workspace: string,
-): { ok: true; cliArgs: string[]; commandKey: string } | { ok: false; reason: string } {
+  store: SwarmStore,
+): OverseerCommandValidation {
   const tokens = tokenizeCommand(command);
   if (!tokens.ok) return tokens;
   if (tokens.args.some((token) => [";", "&&", "||", "|", ">", "<", "`"].includes(token))) {
@@ -5771,19 +5801,130 @@ function validateOverseerCommand(
   }
   if (cliArgs.length === 0) return { ok: false, reason: "Missing harness subcommand." };
   const [commandName, subcommand] = cliArgs;
-  if (commandName === "observe") return { ok: true, cliArgs, commandKey: "observe" };
-  if (commandName === "sources" && subcommand === "list") return { ok: true, cliArgs, commandKey: "sources list" };
-  if (commandName === "domains" && (subcommand === "list" || subcommand === "inspect")) {
-    return { ok: true, cliArgs, commandKey: `domains ${subcommand}` };
+  if (commandName === "observe") return { ok: true, cliArgs, commandKey: "observe", category: "state" };
+  if (commandName === "sources" && subcommand === "list") {
+    return { ok: true, cliArgs, commandKey: "sources list", category: "state" };
   }
-  if (commandName === "slices" && subcommand === "pull") return { ok: true, cliArgs, commandKey: "slices pull" };
-  if (["run", "review", "verify"].includes(commandName)) {
-    return { ok: false, reason: "Phase 5A does not execute worker, reviewer, or verifier dispatch commands." };
+  if (commandName === "domains" && (subcommand === "list" || subcommand === "inspect")) {
+    return { ok: true, cliArgs, commandKey: `domains ${subcommand}`, category: "state" };
+  }
+  if (commandName === "slices" && subcommand === "pull") {
+    return { ok: true, cliArgs, commandKey: "slices pull", category: "state" };
+  }
+  if (commandName === "run") {
+    return validateOverseerChildDispatch({
+      store,
+      cliArgs,
+      commandName,
+      childRole: "worker",
+      allowedStatuses: new Set(["ready", "blocked", "repairing"]),
+    });
+  }
+  if (commandName === "review") {
+    return validateOverseerChildDispatch({
+      store,
+      cliArgs,
+      commandName,
+      childRole: "reviewer",
+      allowedStatuses: new Set(["implemented", "ready_for_review", "repairing"]),
+      requireWorkerEvidence: true,
+    });
+  }
+  if (commandName === "verify") {
+    return {
+      ok: false,
+      reason: "Phase 5B does not execute deterministic verification commands yet; dispatch worker/reviewer agents first.",
+    };
   }
   if (["checkpoint", "escalations"].includes(commandName)) {
-    return { ok: false, reason: "Phase 5A records overseer decisions directly and does not execute checkpoint/escalation commands." };
+    return { ok: false, reason: "Phase 5B records overseer decisions directly and does not execute checkpoint/escalation commands." };
   }
-  return { ok: false, reason: `Command is not allowlisted for Phase 5A: ${commandName}${subcommand ? ` ${subcommand}` : ""}` };
+  return { ok: false, reason: `Command is not allowlisted for Phase 5B: ${commandName}${subcommand ? ` ${subcommand}` : ""}` };
+}
+
+function validateOverseerChildDispatch(input: {
+  store: SwarmStore;
+  cliArgs: string[];
+  commandName: "run" | "review";
+  childRole: "worker" | "reviewer";
+  allowedStatuses: Set<SliceRecord["status"]>;
+  requireWorkerEvidence?: boolean;
+}): OverseerCommandValidation {
+  const [, sliceId, ...options] = input.cliArgs;
+  if (!sliceId || sliceId.startsWith("-")) {
+    return { ok: false, reason: `Missing slice id for ${input.commandName} child-agent dispatch.` };
+  }
+  const optionValidation = validateChildDispatchOptions(options);
+  if (!optionValidation.ok) return optionValidation;
+  if (!optionValidation.actor) {
+    return { ok: false, reason: "Phase 5B child-agent dispatch requires an explicit --actor for visibility." };
+  }
+  if ((optionValidation.driver ?? "codex") !== "codex") {
+    return { ok: false, reason: "Phase 5B child-agent dispatch requires --driver codex." };
+  }
+
+  const slice = input.store.listSlices().find((item) => item.id === sliceId);
+  if (!slice) return { ok: false, reason: `Cannot dispatch ${input.childRole}; slice not found: ${sliceId}` };
+  if (!input.allowedStatuses.has(slice.status)) {
+    return {
+      ok: false,
+      reason: `Cannot dispatch ${input.childRole} for slice ${slice.id} while status is ${slice.status}.`,
+    };
+  }
+
+  const activeChildRun = input.store
+    .listAgentRuns()
+    .find(
+      (run) =>
+        run.entityType === "slice" &&
+        run.entityId === slice.id &&
+        run.status === "running" &&
+        (run.role === "worker" || run.role === "reviewer"),
+    );
+  if (activeChildRun) {
+    return {
+      ok: false,
+      reason: `Cannot dispatch ${input.childRole}; ${activeChildRun.role} run ${activeChildRun.id} is still running for ${slice.id}.`,
+    };
+  }
+
+  if (input.requireWorkerEvidence && !input.store.listEvidence(slice.id).some((item) => item.kind === "worker_result")) {
+    return { ok: false, reason: `Cannot dispatch reviewer for ${slice.id}; no worker_result evidence exists yet.` };
+  }
+
+  return {
+    ok: true,
+    cliArgs: input.cliArgs,
+    commandKey: input.commandName,
+    category: "child_agent",
+    childRole: input.childRole,
+    sliceId: slice.id,
+  };
+}
+
+function validateChildDispatchOptions(
+  options: string[],
+): { ok: true; actor?: string; driver?: string } | { ok: false; reason: string } {
+  const allowedOptions = new Set(["--actor", "--driver", "--model"]);
+  let actor: string | undefined;
+  let driver: string | undefined;
+  for (let index = 0; index < options.length; index += 1) {
+    const token = options[index];
+    if (!token.startsWith("--")) {
+      return { ok: false, reason: `Unexpected positional argument in child-agent dispatch: ${token}` };
+    }
+    if (!allowedOptions.has(token)) {
+      return { ok: false, reason: `Unsupported child-agent dispatch option: ${token}` };
+    }
+    const value = options[index + 1];
+    if (!value || value.startsWith("--")) {
+      return { ok: false, reason: `Missing value for child-agent dispatch option: ${token}` };
+    }
+    if (token === "--actor") actor = value;
+    if (token === "--driver") driver = value;
+    index += 1;
+  }
+  return { ok: true, actor, driver };
 }
 
 function tokenizeCommand(command: string): { ok: true; args: string[] } | { ok: false; reason: string } {

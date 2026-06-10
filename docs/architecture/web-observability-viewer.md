@@ -28,12 +28,16 @@ Implemented as of 2026-06-10:
 - agents and heartbeat tables with role/entity display, including overseer runs
 - blocker and event visibility
 - run-mode display in snapshot/header/metrics
-- visible Phase 5A overseer command execution events/artifacts in the event stream
+- visible Phase 5A/5B overseer command execution events/artifacts in the event stream, including child-agent command metadata
+- Phase 5C live acceptance loop state where overseer, worker, reviewer, and deterministic verifier events all appear in the same workspace
+- Phase 6A source-mutation fault visibility through active escalation, event stream, source mutation summary, and final run artifacts
+- Phase 6B reviewer-repair visibility through `review.blocked_acceptance`, active/cleared escalation state, multiple worker/reviewer runs, and final verification evidence
+- Phase 6C stale-run recovery visibility through stale run state, recovery scan/mark/restart events, active/cleared blocker state, recovery artifacts, and final verification evidence
 - web-observability E2E demo/test with browser-facing smoke assertions and review artifacts
 
 Still pending:
 
-- autonomous live-agent smoke state where the visible overseer dispatches real workers and real verifier/reviewer agents
+- richer live-run summary/detail views for fault-injection and full-product runs
 - graph/dependency visualization
 - history/run picker
 - lower-latency server-sent events or WebSockets

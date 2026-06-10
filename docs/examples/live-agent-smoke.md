@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, and Phase 5A bounded command execution are implemented. Child-agent dispatch, autonomous live run, and full-product mode are still planned.
+Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, and Phase 6C stale-run recovery fault injection are implemented. Additional faults and full-product mode are still planned.
 
 This demo is the resettable real-world smoke test for the harness. Unlike fixture demos, it must use a real Codex overseer/planner to coordinate real Codex workers and real Codex verifier/reviewer agents.
 
@@ -32,7 +32,42 @@ Launch the real overseer/planner:
 npm run demo:live-agent:run
 ```
 
-`demo:live-agent:run` is not implemented yet. It is the later autonomous overseer phase.
+This runs the baseline autonomous acceptance loop. It repeatedly calls the visible overseer through `swarm orchestrate --execute`, lets the overseer dispatch bounded worker/reviewer child agents, runs deterministic `verify` only after reviewer acceptance, and writes:
+
+```text
+.swarm-demo/live-agent-smoke/live-agent-run-summary.json
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/
+```
+
+Useful bounded options:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --max-turns 8 --max-runtime-seconds 600 --execute-limit 3
+```
+
+Run the Phase 6A source-mutation fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault source-mutation
+```
+
+This mutates a registered disposable source spec after registration. The loop should stop before any overseer, worker, or reviewer agent runs, raise a `human_required` escalation on `harness:scenario:live-agent-smoke`, and record the mutation in `live-agent-run-summary.json`.
+
+Run the Phase 6B reviewer-repair fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair
+```
+
+This forces the first independent review to return `repair_required`. The loop should keep the same slice visible, dispatch a repair worker, run a second reviewer, clear only the resolved review blocker after reviewer acceptance, and then run deterministic verification.
+
+Run the Phase 6C stale-run recovery fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault stale-run
+```
+
+This lets the overseer create the slice, injects a stale worker run on that slice, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale-run blocker only after independent review accepts the restarted work, and then runs deterministic verification.
 
 Run the Phase 4 visible overseer manually:
 
@@ -52,7 +87,7 @@ Cheap local variant without spending Codex cycles:
 npm run demo:live-agent:overseer:fixture
 ```
 
-Run the Phase 5A bounded execution path:
+Run the Phase 5A/5B bounded execution path:
 
 ```powershell
 npm run demo:live-agent:reset
@@ -65,7 +100,16 @@ Cheap local variant:
 npm run demo:live-agent:overseer:execute:fixture
 ```
 
-This executes only allowlisted harness commands from the overseer decision. In Phase 5A that means read/planning commands and `slices pull`; worker, reviewer, and verifier dispatch commands are blocked with visible `overseer.command_blocked` events. A successful fixture execution creates the first backend lane/slice and command artifacts under `.swarm/artifacts/scenario-live-agent-smoke/`.
+This executes allowlisted harness commands from the overseer decision. Phase 5A added read/planning commands and `slices pull`. Phase 5B adds bounded `run` and `review` child-agent dispatch for existing slices with explicit actors and `--driver codex`; deterministic `verify` remains blocked until the acceptance-loop phase. A successful fixture execution from a fresh reset creates the first backend lane/slice and command artifacts under `.swarm/artifacts/scenario-live-agent-smoke/`. A later execution pass can dispatch a worker/reviewer once a slice exists.
+
+Phase 5B child-dispatch guardrails:
+
+- `run` requires an existing ready/blocked/repairing slice
+- `review` requires worker evidence
+- child commands require explicit `--actor`
+- child commands require `--driver codex`
+- concurrent worker/reviewer runs on the same slice are blocked
+- `verify` remains a separate deterministic gate
 
 Run the Phase 3 scripted Codex rehearsal:
 
@@ -88,7 +132,9 @@ node dist\cli.js review <slice-id> --actor independent-reviewer --driver codex
 
 For CI-style coverage, `tests/review-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` runner path.
 
-For Phase 4 and Phase 5A CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer runner path, including `--execute` and command blocking.
+For Phase 4, Phase 5A, and Phase 5B CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer, worker, and reviewer runner paths, including `--execute`, child dispatch, and command blocking.
+
+For Phase 5C, Phase 6A, Phase 6B, and Phase 6C CI-style coverage, `tests/live-agent-runner.e2e.test.js` uses fake Codex while exercising the real live runner and real `--driver codex` overseer/worker/reviewer/recovery paths. It proves the loop reaches deterministic acceptance after review, source mutation stops before hidden agent work, reviewer repair blocks once before recovering to acceptance, and stale-run recovery marks, restarts, clears, reviews, and verifies.
 
 Future full-product mode:
 
