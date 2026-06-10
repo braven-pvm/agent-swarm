@@ -71,6 +71,110 @@ test("claude driver runs a worker end-to-end with structured output", () => {
   }
 });
 
+test("claude driver revives a run by captured session id", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-claude-revive-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  const fakeClaudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-claude-revive-"));
+  const fakeClaudeScript = path.join(fakeClaudeDir, "fake-claude.mjs");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+  writeFakeClaude(fakeClaudeScript);
+  const env = {
+    SWARM_CLAUDE_COMMAND: process.execPath,
+    SWARM_CLAUDE_ARGS: JSON.stringify([fakeClaudeScript]),
+  };
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices", "pull", "--target", "invoice-api", "--source", "invoice-api.md", "--batch-size", "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+  runSwarm(workspace, ["run", sliceId, "--driver", "claude", "--actor", "claude-worker"], env);
+
+  let firstRunId;
+  {
+    const store = new SwarmStore(workspace);
+    try {
+      const run = store.listAgentRuns().find((item) => item.actor === "claude-worker");
+      assert.equal(run?.sessionId, "fake-claude-session");
+      firstRunId = run.id;
+    } finally {
+      store.close();
+    }
+  }
+
+  const reviveOutput = runSwarm(workspace, ["recovery", "revive", firstRunId], env);
+  assert.match(reviveOutput, /Revived/);
+
+  const store = new SwarmStore(workspace);
+  try {
+    const runs = store.listAgentRuns().filter((item) => item.actor === "claude-worker");
+    assert.equal(runs.length, 2);
+    const revived = runs.find((item) => item.id !== firstRunId);
+    assert.equal(revived?.status, "completed");
+    assert.equal(revived?.driver, "claude");
+    const revivedResult = JSON.parse(fs.readFileSync(revived.resultPath, "utf8"));
+    assert.equal(revivedResult.summary, "fake claude revive completed");
+  } finally {
+    store.close();
+  }
+});
+
+test("run rejects unknown drivers and resolves the protocol default driver", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-driver-resolution-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  const fakeClaudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-claude-default-"));
+  const fakeClaudeScript = path.join(fakeClaudeDir, "fake-claude.mjs");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+  writeFakeClaude(fakeClaudeScript);
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  fs.writeFileSync(
+    path.join(target, ".swarm", "protocol.yaml"),
+    `protocol:
+  workers:
+    defaultDriver: claude
+`,
+    "utf8",
+  );
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices", "pull", "--target", "invoice-api", "--source", "invoice-api.md", "--batch-size", "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  let threw = false;
+  try {
+    runSwarm(workspace, ["run", sliceId, "--driver", "bogus", "--actor", "driver-check"]);
+  } catch (error) {
+    threw = true;
+    assert.match(String(error.stderr ?? error.message), /Invalid worker driver/);
+  }
+  assert.ok(threw);
+
+  const runOutput = runSwarm(workspace, ["run", sliceId, "--actor", "default-driver-worker"], {
+    SWARM_CLAUDE_COMMAND: process.execPath,
+    SWARM_CLAUDE_ARGS: JSON.stringify([fakeClaudeScript]),
+  });
+  assert.match(runOutput, /Worker completed/);
+
+  const store = new SwarmStore(workspace);
+  try {
+    const run = store.listAgentRuns().find((item) => item.actor === "default-driver-worker");
+    assert.equal(run?.driver, "claude");
+  } finally {
+    store.close();
+  }
+});
+
 function runSwarm(workspace, args, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
     cwd: workspace,
