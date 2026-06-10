@@ -61,6 +61,7 @@ const codexDriver: WorkerDriverAdapter = {
     const { command, prefixArgs } = resolveDriverCommand("codex", "codex");
     const args = [...prefixArgs, "exec"];
     if (spec.resumeSessionId) {
+      // sandbox is fixed for a resumed codex session; spec.readOnly does not apply here
       args.push(
         "resume",
         "--json",
@@ -183,7 +184,8 @@ const claudeDriver: WorkerDriverAdapter = {
         fs.writeFileSync(spec.resultPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
         structuredResultWritten = true;
       } else {
-        failureReason = `structured_output failed worker-result validation: ${parsed.error.message}`.slice(0, 1000);
+        const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
+        failureReason = `structured_output failed ${schemaLabel} validation: ${parsed.error.message}`.slice(0, 1000);
       }
     } else if (!resultEvent) {
       failureReason = "no result event found in claude stream output";

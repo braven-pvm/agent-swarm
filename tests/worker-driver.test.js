@@ -288,11 +288,13 @@ test("claude readOnly spec uses plan mode and omits the edit-tool allowlist", ()
   const spec = {
     ...baseSpec(dir),
     readOnly: true,
-    driverConfig: { allowedTools: "Edit Write Read", permissionMode: "acceptEdits" },
+    driverConfig: { allowedTools: "Edit Write Read", permissionMode: "acceptEdits", maxBudgetUsd: 5 },
   };
   const args = getWorkerDriver("claude").buildInvocation(spec).args;
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.equal(args.includes("--allowedTools"), false);
+  assert.equal(args.includes("--setting-sources"), true);
+  assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5");
 });
 
 test("claude finalize validates structured output against a supplied resultSchema", () => {
