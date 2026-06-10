@@ -49,7 +49,7 @@ Implemented and covered by tests:
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
-- independent reviewer runner through `swarm review`
+- independent reviewer runner through `swarm review`; reviewer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
 - stale-run recovery, revive, restart
 - low-signal work warning
@@ -61,7 +61,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 43/43 passing
+npm test -> 49/49 passing
 git diff --check -> clean
 ```
 

@@ -40,6 +40,15 @@ protocol:
 - `codex`: OS-level sandbox via `--sandbox workspace-write`.
 - `claude`: policy-level permissions only (no OS sandbox on Windows). Default `acceptEdits` plus a tool allowlist; use `bypassPermissions` only for disposable fixtures or containerized targets. `settingSources: ""` keeps developer-machine plugins/skills out of worker runs. Headless auth uses the machine's Claude login; CI should set `ANTHROPIC_API_KEY`.
 
+## Read-only and reviewer dispatch
+
+`WorkerRunSpec` carries two fields that let one adapter serve both worker and reviewer roles:
+
+- `readOnly` — when `true`, the adapter forces a read-only posture, **authoritative over driver config**: codex uses `--sandbox read-only`; claude uses `--permission-mode plan` with no edit-tool allowlist. A reviewer's read-only guarantee cannot be defeated by a `driverConfig` override (the default codex config is `workspace-write`, so this matters).
+- `resultSchema` — the Zod schema `finalize` validates the structured result against. Defaults to the worker-result schema; the reviewer passes the review-result schema. The codex adapter ignores it (codex validates via its own `--output-schema` file).
+
+`swarm review <slice> --driver claude` runs an independent reviewer under `--permission-mode plan`. The `inspectSourceMutations` before/after check remains as defense-in-depth against any driver mutating immutable source specs.
+
 ## Manual live smoke (not part of npm test)
 
 ```powershell

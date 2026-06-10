@@ -73,7 +73,7 @@ The current prototype supports:
 - worker JSONL event ingestion
 - heartbeats and agent-run records
 - verifier gates using worker-result evidence and FR/AC coverage
-- independent Codex/fixture reviewer dispatch through `swarm review`
+- independent reviewer dispatch (fixture, codex, claude) through driver adapters via `swarm review`
 - reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, revive, and restart
@@ -116,7 +116,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 43/43 passing
+npm test -> 49/49 passing
 ```
 
 ## Useful Demo Commands
