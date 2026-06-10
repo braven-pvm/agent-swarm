@@ -44,6 +44,7 @@ test("claude reviewer runs read-only end-to-end and applies the outcome", () => 
     const run = store.listAgentRuns().find((item) => item.actor === "claude-reviewer");
     assert.equal(run?.status, "completed");
     assert.equal(run?.driver, "claude");
+    assert.ok(run?.resultPath, "review run should have a result path");
 
     const evidence = store.listEvidence(sliceId).find((item) => item.kind === "review_result");
     assert.ok(evidence);
