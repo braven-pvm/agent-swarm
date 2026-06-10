@@ -2361,10 +2361,10 @@ recovery
 
 recovery
   .command("revive")
-  .description("Resume a stale Codex agent run by captured session id")
+  .description("Resume a stale agent run by captured session id")
   .argument("<run-id>", "agent run identifier")
   .option("--actor <actor>", "recovery actor", "recovery-agent")
-  .option("--model <model>", "Codex model override")
+  .option("--model <model>", "model override passed to the worker driver")
   .action(async (runId: string, options: { actor: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
@@ -2372,8 +2372,11 @@ recovery
     try {
       const previousRun = store.listAgentRuns().find((run) => run.id === runId);
       if (!previousRun) throw new Error(`Agent run not found: ${runId}`);
-      if (previousRun.driver !== "codex") throw new Error(`Agent run ${runId} uses ${previousRun.driver}; only Codex runs can be revived.`);
-      if (!previousRun.sessionId) throw new Error(`Agent run ${runId} does not have a captured Codex session id.`);
+      const adapter = getWorkerDriver(previousRun.driver);
+      if (!adapter?.capabilities.resume) {
+        throw new Error(`Agent run ${runId} uses driver ${previousRun.driver}, which does not support resume.`);
+      }
+      if (!previousRun.sessionId) throw new Error(`Agent run ${runId} does not have a captured worker session id.`);
       const slice = store.listSlices().find((item) => item.id === previousRun.sliceId);
       if (!slice) throw new Error(`Slice not found for run ${runId}: ${previousRun.sliceId}`);
       const target = store.targetById(slice.targetId);
@@ -2384,7 +2387,7 @@ recovery
       const attempt = store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === previousRun.actor).length + 1;
       const artifactPath = path.join(artifactsDir(workspace), slice.id);
       fs.mkdirSync(artifactPath, { recursive: true });
-      const jsonlPath = path.join(artifactPath, `codex-revive-${revivedRunId}.jsonl`);
+      const jsonlPath = path.join(artifactPath, `worker-revive-${revivedRunId}.jsonl`);
       const lastMessagePath = path.join(artifactPath, `worker-result-${revivedRunId}.json`);
       const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
       writeWorkerResultSchema(schemaPath);
@@ -2394,7 +2397,7 @@ recovery
         id: revivedRunId,
         sliceId: slice.id,
         actor: previousRun.actor,
-        driver: "codex",
+        driver: previousRun.driver,
         status: "running",
         sessionId: previousRun.sessionId,
         attempt,
@@ -2406,7 +2409,7 @@ recovery
         id: `heartbeat:${previousRun.actor}`,
         actor: previousRun.actor,
         state: "thinking",
-        detail: `Reviving Codex session ${previousRun.sessionId}`,
+        detail: `Reviving worker session ${previousRun.sessionId}`,
         entityType: "slice",
         entityId: slice.id,
       });
@@ -2433,37 +2436,34 @@ recovery
         reason: "Revive started.",
       });
 
-      const args = [
-        "exec",
-        "resume",
-        "--json",
-        "--skip-git-repo-check",
-        "--output-schema",
+      const protocol = loadProtocol(target.path);
+      const spec: WorkerRunSpec = {
+        prompt,
+        targetPath: target.path,
         schemaPath,
-        "--output-last-message",
-        lastMessagePath,
-      ];
-      if (options.model) args.push("--model", options.model);
-      args.push(previousRun.sessionId, prompt);
-      const codex = {
-        command: process.env.SWARM_CODEX_COMMAND?.trim() || "codex",
-        args: process.env.SWARM_CODEX_ARGS?.trim() ? (JSON.parse(process.env.SWARM_CODEX_ARGS) as string[]) : [],
+        resultPath: lastMessagePath,
+        model: options.model,
+        resumeSessionId: previousRun.sessionId,
+        driverConfig: protocol.protocol.workers.drivers[previousRun.driver] ?? {},
       };
+      const invocation = adapter.buildInvocation(spec);
       const result = await spawnWorkerStreaming({
-        command: codex.command,
-        args: [...codex.args, ...args],
+        command: invocation.command,
+        args: invocation.args,
         cwd: target.path,
         jsonlPath,
         actor: previousRun.actor,
         sliceId: slice.id,
         store,
         driver: previousRun.driver,
+        classify: adapter.classifyHeartbeat?.bind(adapter),
       });
-      const stderrPath = result.stderr ? path.join(artifactPath, `codex-revive-${revivedRunId}-stderr.log`) : undefined;
+      const finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
+      const stderrPath = result.stderr ? path.join(artifactPath, `worker-revive-${revivedRunId}-stderr.log`) : undefined;
       if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
       const workerEvents = result.workerEvents;
       store.updateAgentRun(revivedRunId, {
-        status: result.status === 0 ? "completed" : "failed",
+        status: finalization.ok ? "completed" : "failed",
         sessionId: workerEvents.sessionId ?? previousRun.sessionId,
         eventsPath: jsonlPath,
         resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
@@ -2474,18 +2474,18 @@ recovery
           id: makeId("evidence"),
           sliceId: slice.id,
           kind: "worker_result",
-          summary: "Structured Codex revive result",
+          summary: "Structured worker revive result",
           ref: lastMessagePath,
           payload: { path: lastMessagePath, revivedFrom: previousRun.id },
           createdAt: new Date().toISOString(),
         });
       }
-      store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
+      store.updateSliceStatus(slice.id, finalization.ok ? "implemented" : "blocked");
       store.upsertHeartbeat({
         id: `heartbeat:${previousRun.actor}`,
         actor: previousRun.actor,
-        state: result.status === 0 ? "idle" : "blocked",
-        detail: result.status === 0 ? "Codex revive completed" : "Codex revive failed",
+        state: finalization.ok ? "idle" : "blocked",
+        detail: finalization.ok ? "Worker revive completed" : "Worker revive failed",
         entityType: "slice",
         entityId: slice.id,
       });
@@ -2498,6 +2498,10 @@ recovery
           payload: {
             previousRunId: previousRun.id,
             sliceId: slice.id,
+            driver: previousRun.driver,
+            ok: finalization.ok,
+            failureReason: finalization.failureReason,
+            costUsd: finalization.costUsd,
             exitCode: result.status,
             workerEvents,
           },
@@ -2511,7 +2515,7 @@ recovery
         actor: options.actor,
         reason: "Revive completed.",
       });
-      console.log(`${result.status === 0 ? "Revived" : "Revive failed"} for ${runId}`);
+      console.log(`${finalization.ok ? "Revived" : "Revive failed"} for ${runId}`);
       console.log(`  new run: ${revivedRunId}`);
       console.log(`  session: ${previousRun.sessionId}`);
       console.log(`  events: ${jsonlPath}`);
@@ -2697,7 +2701,7 @@ async function executeWorkerRun(input: {
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
     state: "thinking",
-    detail: input.reason === "restart" ? "Fresh worker restarted for slice" : "Codex worker process started",
+    detail: input.reason === "restart" ? "Fresh worker restarted for slice" : `${driverId} worker process started`,
     entityType: "slice",
     entityId: slice.id,
   });
@@ -2784,7 +2788,7 @@ async function executeWorkerRun(input: {
       id: makeId("evidence"),
       sliceId: slice.id,
       kind: "worker_result",
-      summary: input.reason === "restart" ? "Structured worker restart result" : "Structured Codex worker result",
+      summary: input.reason === "restart" ? "Structured worker restart result" : "Structured worker result",
       ref: lastMessagePath,
       payload: { path: lastMessagePath, previousRunId: input.previousRunId },
       createdAt: new Date().toISOString(),

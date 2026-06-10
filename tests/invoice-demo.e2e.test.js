@@ -493,7 +493,7 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
   assert.ok(snapshot.recentEvents.some((event) => event.type === "recovery.marked_stale_run"));
   assert.throws(
     () => runSwarm(workspace, ["recovery", "revive", "RUN-stale001"]),
-    /does not have a captured Codex session id/,
+    /does not have a captured worker session id/,
   );
 
   const restartOutput = runSwarm(workspace, ["recovery", "restart", "RUN-stale001", "--driver", "fixture"]);
