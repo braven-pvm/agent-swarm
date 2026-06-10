@@ -103,7 +103,7 @@ function mergeDriverConfigs(
 ): Record<string, Record<string, unknown>> {
   const merged: Record<string, Record<string, unknown>> = { ...base };
   for (const [driver, config] of Object.entries(override ?? {})) {
-    merged[driver] = { ...(merged[driver] ?? {}), ...(config ?? {}) };
+    merged[driver] = { ...(merged[driver] ?? {}), ...config };
   }
   return merged;
 }
