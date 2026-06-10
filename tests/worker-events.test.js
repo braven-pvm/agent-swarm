@@ -36,6 +36,10 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
     assert.equal(agentEvents[0].payload.driver, "codex");
     assert.ok(agentEvents.some((event) => event.payload.agentEventType === "session.started"));
     assert.equal(events.filter((event) => event.type === "worker.agent_event.parse_failed").length, 1);
+    assert.equal(
+      events.find((event) => event.type === "worker.agent_event.parse_failed")?.payload.driver,
+      "codex",
+    );
     const heartbeat = store.listHeartbeats().find((item) => item.actor === "worker-events-test");
     assert.equal(heartbeat?.state, "editing");
     assert.equal(heartbeat?.entityId, "SLICE-test");

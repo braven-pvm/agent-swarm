@@ -9,19 +9,20 @@ export interface WorkerEventIngestResult {
   sessionId?: string;
 }
 
+export interface WorkerJsonlIngestContext {
+  store: SwarmStore;
+  actor: string;
+  sliceId: string;
+  driver?: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
+}
+
 interface WorkerJsonlIngestState extends WorkerEventIngestResult {
   lineNumber: number;
   buffer: string;
 }
 
-export function ingestWorkerJsonl(input: {
-  store: SwarmStore;
-  actor: string;
-  sliceId: string;
-  jsonl: string;
-  driver?: string;
-  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
-}): WorkerEventIngestResult {
+export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: string }): WorkerEventIngestResult {
   const ingestor = createWorkerJsonlIngestor({
     store: input.store,
     actor: input.actor,
@@ -33,13 +34,7 @@ export function ingestWorkerJsonl(input: {
   return ingestor.flush();
 }
 
-export function createWorkerJsonlIngestor(input: {
-  store: SwarmStore;
-  actor: string;
-  sliceId: string;
-  driver?: string;
-  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
-}): {
+export function createWorkerJsonlIngestor(input: WorkerJsonlIngestContext): {
   ingest: (chunk: string) => WorkerEventIngestResult;
   flush: () => WorkerEventIngestResult;
   result: () => WorkerEventIngestResult;
@@ -70,13 +65,7 @@ export function createWorkerJsonlIngestor(input: {
 }
 
 function ingestLines(
-  input: {
-    store: SwarmStore;
-    actor: string;
-    sliceId: string;
-    driver?: string;
-    classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
-  },
+  input: WorkerJsonlIngestContext,
   state: WorkerJsonlIngestState,
   rawLines: string[],
 ): void {
@@ -88,13 +77,7 @@ function ingestLines(
 }
 
 function ingestLine(
-  input: {
-    store: SwarmStore;
-    actor: string;
-    sliceId: string;
-    driver?: string;
-    classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
-  },
+  input: WorkerJsonlIngestContext,
   state: WorkerJsonlIngestState,
   line: string,
 ): void {
