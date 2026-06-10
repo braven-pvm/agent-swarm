@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: planning baseline.
+Status: Phase 3 implemented. Run-mode/reset, independent reviewer runner, and scripted worker+reviewer rehearsal are in place; visible overseer runner is next.
 
 ## Why This Matters
 
@@ -603,43 +603,66 @@ Implemented artifacts:
 
 ### Phase 2: Real Reviewer/Verifier Agent
 
+Status: implemented.
+
 Goal: add independent semantic review before building overseer autonomy.
 
 Deliver:
 
-- review result schema
-- `swarm review <slice-id> --driver codex`
-- reviewer agent run records
-- reviewer JSONL events and heartbeat
-- reviewer evidence/finding artifact
-- acceptance/report surfaces include reviewer result
+- review result schema: implemented in `src/schemas.ts`
+- `swarm review <slice-id> --driver codex`: implemented
+- reviewer agent run records: implemented
+- reviewer JSONL events and heartbeat: implemented with `reviewer.codex_event`
+- reviewer evidence/finding artifact: implemented as `review_result`
+- acceptance/report surfaces include reviewer result: implemented in `observe`, slice reports, timeline/evidence, and graph actor events
 
 Tests:
 
-- fixture/stub reviewer test using fake Codex command
-- one optional manual `--driver codex` run
-- verifier blocks on material reviewer failure
+- fake-Codex reviewer E2E test using the real `--driver codex` execution path
+- verifier blocks on material reviewer failure once `review_result` exists
 - accepted report shows reviewer judgement
 
+Implemented artifacts:
+
+- `swarm review <slice-id> --actor <actor> --driver codex|fixture`
+- `schemas/review-result.schema.json` generated per workspace
+- reviewer result artifacts under `.swarm/artifacts/<slice-id>/review-result-<run-id>.json`
+- reviewer JSONL artifacts under `.swarm/artifacts/<slice-id>/review-events-<run-id>.jsonl`
+- `review_result` evidence
+- `review.started`, `review.completed`, `review.failed`, `review.blocked_acceptance`, and `review.escalation_raised` events
+- latest review in `swarm report <slice-id>` and `observe` slice payloads
+- `tests/review-runner.e2e.test.js`
+
 ### Phase 3: Scripted Live Worker+Reviewer Rehearsal
+
+Status: implemented.
 
 Goal: run real worker and real reviewer under a scripted outer runner before adding real overseer.
 
 Deliver:
 
-- `npm run demo:live-agent:scripted`
-- reset workspace
-- script pulls one backend slice
-- real Codex worker implements it
-- deterministic verify runs
-- real Codex reviewer reviews it
-- UI shows run mode as `scripted-codex` or `live-agent-smoke-prep`, not full live smoke
+- `npm run demo:live-agent:scripted`: implemented
+- reset workspace: implemented by default, with safe custom workspace support for tests
+- script pulls one backend slice: implemented
+- real Codex worker implements it through `swarm run --driver codex`: implemented
+- real Codex reviewer reviews it through `swarm review --driver codex`: implemented
+- deterministic verify runs after review as the final acceptance gate: implemented
+- UI shows run mode as `scripted-codex`, not full live smoke: implemented
 
 Tests:
 
-- optional smoke checker confirms real worker and reviewer artifacts
+- fake-Codex E2E test confirms worker and reviewer use the real `--driver codex` path
+- summary assertions confirm worker/reviewer artifacts, review evidence, command evidence, bounded outcome, source immutability, graph/timeline/report artifacts
 
 This is a bridge, not the final smoke.
+
+Implemented artifacts:
+
+- `scripts/run-live-agent-scripted-demo.mjs`
+- `npm run demo:live-agent:scripted`
+- `.swarm-demo/live-agent-smoke/live-agent-scripted-summary.json`
+- `.swarm-demo/live-agent-smoke/live-agent-scripted-artifacts/`
+- `tests/live-agent-scripted.e2e.test.js`
 
 ### Phase 4: Visible Overseer Agent
 
@@ -837,24 +860,23 @@ Mitigation:
 - add reviewer product-coherence checks
 - include manual inspection URL and operator workflow in the summary
 
-## First Implementation Slice
+## Next Implementation Slice
 
-Start with Phase 1 only:
+Phase 1, Phase 2, and Phase 3 are implemented. Continue with Phase 4:
 
 ```text
-Run Mode And Scenario Reset
+Visible Overseer Agent
 ```
 
 Acceptance criteria:
 
-- `runMode` can be written and read from harness state
-- `observe` includes `runMode`
-- web snapshot includes `runMode`
-- UI displays `runMode`
-- `npm run demo:live-agent:reset` creates `.swarm-demo/live-agent-smoke`
-- reset refuses unsafe paths
-- workspace has initialized harness state, registered invoice targets, registered sources, and scenario manifest
-- no real agents are launched yet
+- `swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke` exists
+- overseer is recorded as a first-class observable run or equivalent harness entity
+- overseer prompt includes scenario manifest, snapshot, source refs/hashes, target paths, current lanes/slices, command contract, and bounds
+- overseer JSONL events and heartbeat are visible
+- overseer output schema records current assessment, recommended commands, stop condition, blockers, and next action
+- overseer decision is stored as event/checkpoint
+- first pass may recommend commands instead of executing child dispatches
 - `npm test` remains green
 
-This gives us a stable runway before spending agent cycles.
+This is still not full autonomous dispatch. It proves the overseer role is visible and can reason from harness state before letting it execute child commands.

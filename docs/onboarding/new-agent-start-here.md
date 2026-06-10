@@ -73,6 +73,8 @@ The current prototype supports:
 - worker JSONL event ingestion
 - heartbeats and agent-run records
 - verifier gates using worker-result evidence and FR/AC coverage
+- independent Codex/fixture reviewer dispatch through `swarm review`
+- reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, revive, and restart
 - latest-only role/entity checkpoints
@@ -114,7 +116,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 40/40 passing
+npm test -> 43/43 passing
 ```
 
 ## Useful Demo Commands
@@ -174,9 +176,11 @@ Run-mode boundary:
 - `demo:web-observability:codex`: scripted planning with real Codex workers.
 - full live-agent overseer smoke: not implemented yet; see `docs/architecture/live-agent-smoke-test.md`.
 - live smoke Phase 1 reset/run-mode setup: implemented with `npm run demo:live-agent:reset` and `npm run demo:live-agent:serve`.
+- live smoke Phase 2 reviewer runner: implemented with `swarm review <slice-id> --actor <actor> --driver codex`.
+- live smoke Phase 3 scripted worker+reviewer rehearsal: implemented with `npm run demo:live-agent:scripted`.
 
 ## Next Coherent Slice
 
-Next slice: real Codex verifier/reviewer runner.
+Next slice: visible overseer agent.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Next implement Phase 2: a real Codex verifier/reviewer runner that can inspect a slice independently from the worker. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Next implement Phase 4: a visible overseer agent that reads harness state, emits JSONL heartbeat/events, produces a structured planning decision, and stores that decision as an event/checkpoint. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.

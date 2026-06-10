@@ -14,6 +14,7 @@ export interface WorkerJsonlIngestContext {
   actor: string;
   sliceId: string;
   driver?: string;
+  eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
 }
 
@@ -28,6 +29,7 @@ export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: str
     actor: input.actor,
     sliceId: input.sliceId,
     driver: input.driver,
+    eventPrefix: input.eventPrefix,
     classify: input.classify,
   });
   ingestor.ingest(input.jsonl);
@@ -84,10 +86,11 @@ function ingestLine(
   const parsed = parseJsonLine(line);
   if (!parsed.ok) {
     state.parseErrorCount += 1;
+    const eventPrefix = input.eventPrefix ?? "worker";
     input.store.addEvent(
       createEvent({
         actor: input.actor,
-        type: "worker.agent_event.parse_failed",
+        type: `${eventPrefix}.agent_event.parse_failed`,
         entityType: "slice",
         entityId: input.sliceId,
         payload: {
@@ -102,6 +105,7 @@ function ingestLine(
   }
 
   const payload = asPayload(parsed.value);
+  const eventPrefix = input.eventPrefix ?? "worker";
   state.sessionId ??= findSessionId(payload);
   const heartbeatState = input.classify?.(payload) ?? inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
@@ -109,7 +113,7 @@ function ingestLine(
   input.store.addEvent(
     createEvent({
       actor: input.actor,
-      type: "worker.agent_event",
+      type: `${eventPrefix}.agent_event`,
       entityType: "slice",
       entityId: input.sliceId,
       payload: {

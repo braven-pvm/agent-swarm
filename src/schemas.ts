@@ -53,3 +53,29 @@ export const workerResultSchema = z.object({
 });
 
 export type WorkerResult = z.infer<typeof workerResultSchema>;
+
+export const reviewResultSchema = z.object({
+  status: z.enum(["accepted", "repair_required", "blocked", "human_required"]),
+  summary: z.string(),
+  frAcFindings: z.array(
+    z.object({
+      ref: z.string(),
+      status: z.enum(["passed", "failed", "missing_evidence", "uncertain"]),
+      evidence: z.array(z.string()),
+      finding: z.string(),
+    }),
+  ),
+  testAssessment: z.string(),
+  sourceMutationDetected: z.boolean(),
+  stubOrHardcodeRisk: z.enum(["none", "low", "medium", "high"]),
+  requiredFixes: z.array(z.string()),
+  escalations: z.array(
+    z.object({
+      level: z.enum(["warning", "blocker", "human_required", "critical"]),
+      message: z.string(),
+    }),
+  ),
+  recommendation: z.string(),
+});
+
+export type ReviewResult = z.infer<typeof reviewResultSchema>;

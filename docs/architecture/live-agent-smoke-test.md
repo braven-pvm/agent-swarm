@@ -123,7 +123,7 @@ npm run demo:live-agent:serve
 npm run demo:live-agent:run
 ```
 
-Current implementation status: reset and serve are implemented; live overseer run is planned.
+Current implementation status: reset, serve, and independent reviewer runs are implemented; live overseer run is planned.
 
 The serve command should keep the read-only UI open. The run command should populate state over time so the user can watch:
 
@@ -303,6 +303,8 @@ Create a resettable live smoke workspace:
 
 ### Slice 3: Add real verifier/reviewer runner
 
+Status: implemented.
+
 Add a Codex verifier/reviewer command or mode:
 
 ```powershell
@@ -315,7 +317,7 @@ or:
 swarm verify <slice-id> --agent-review --driver codex
 ```
 
-It should create agent-run records, stream Codex JSONL events, store structured findings, and block acceptance on material FR/AC findings.
+It creates agent-run records, streams Codex JSONL events as `reviewer.codex_event`, stores structured `review_result` findings, exposes latest review in reports/snapshots, and blocks acceptance on material FR/AC findings.
 
 ### Slice 4: Add live overseer runner
 

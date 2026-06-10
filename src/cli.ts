@@ -3,6 +3,7 @@ import fs from "node:fs";
 import http, { type ServerResponse } from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { URL } from "node:url";
 import { Command } from "commander";
 import YAML from "yaml";
@@ -11,13 +12,13 @@ import { runFixtureWorker } from "./fixture-worker.js";
 import { makeId } from "./ids.js";
 import { artifactsDir, resolveWorkspace, swarmDir } from "./paths.js";
 import { pullNextSlice } from "./planner.js";
-import { workerResultSchema } from "./schemas.js";
+import { reviewResultSchema, workerResultSchema, type ReviewResult } from "./schemas.js";
 import { readSourceText, registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
-import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
+import { getWorkerDriver, workerDriverIds, resolveDriverCommand, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
@@ -36,6 +37,17 @@ type WorkerRunResult = {
   eventsPath: string;
   resultPath: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  stderr?: string;
+};
+
+type ReviewRunResult = {
+  sliceId: string;
+  runId: string;
+  exitCode: number | null;
+  eventsPath: string;
+  resultPath: string;
+  reviewerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  reviewResult?: ReviewResult;
   stderr?: string;
 };
 
@@ -1839,6 +1851,32 @@ program
   });
 
 program
+  .command("review")
+  .description("Run an independent Codex reviewer for a slice")
+  .argument("<slice-id>", "slice identifier")
+  .option("--actor <actor>", "reviewer actor id shown in observability", "reviewer")
+  .option("--driver <driver>", "reviewer driver: codex or fixture", "codex")
+  .option("--model <model>", "Codex model override")
+  .action(async (sliceId: string, options: { actor: string; driver: string; model?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const result = await executeReviewRun({
+        workspace,
+        store,
+        sliceId,
+        actor: options.actor,
+        driver: parseWorkerDriver(options.driver),
+        model: options.model,
+      });
+      printReviewRunResult(result);
+    } finally {
+      store.close();
+    }
+  });
+
+program
   .command("verify")
   .description("Run configured target verification for a slice")
   .argument("<slice-id>", "slice identifier")
@@ -1897,6 +1935,10 @@ program
       });
       const commandPassed = result.status === 0;
       const workerGate = readAndValidateWorkerResult(store, slice, options.actor);
+      const reviewGate = readLatestReviewGate(store, slice, options.actor);
+      const activeAcceptanceBlockers = store
+        .listEscalations("active")
+        .filter((item) => item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
       const verificationEvidenceId = makeId("evidence");
       const frAcResults = buildFrAcResults({
         slice,
@@ -1906,8 +1948,9 @@ program
         verificationEvidenceId,
       });
       const perRefPassed = frAcResults.every((result) => result.status === "passed" || result.status === "overridden");
-      const passed = commandPassed && workerGate.passed && perRefPassed;
-      store.updateSliceStatus(slice.id, passed ? "accepted" : "blocked");
+      const passed = commandPassed && workerGate.passed && reviewGate.passed && activeAcceptanceBlockers.length === 0 && perRefPassed;
+      const failedStatus: SliceRecord["status"] = reviewGate.status === "repair_required" ? "repairing" : "blocked";
+      store.updateSliceStatus(slice.id, passed ? "accepted" : failedStatus);
       if (passed) {
         store.completeLeasesForSlice(slice.id);
       }
@@ -1924,6 +1967,8 @@ program
           passed,
           commandPassed,
           workerGate,
+          reviewGate,
+          activeAcceptanceBlockers,
           frAcResults,
           missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
           failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
@@ -1953,6 +1998,8 @@ program
             passed,
             commandPassed,
             workerGate,
+            reviewGate,
+            activeAcceptanceBlockers,
             frAcResults,
             missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
             failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
@@ -1976,6 +2023,10 @@ program
       console.log(`  command: ${command}`);
       console.log(`  exit code: ${result.status}`);
       if (!workerGate.passed) console.log(`  worker gate: ${workerGate.reason}`);
+      if (!reviewGate.passed) console.log(`  review gate: ${reviewGate.reason}`);
+      if (activeAcceptanceBlockers.length > 0) {
+        console.log(`  active blockers: ${activeAcceptanceBlockers.map((item) => item.id).join(", ")}`);
+      }
       const missingRefs = frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref);
       const failedRefs = frAcResults.filter((item) => item.status === "failed").map((item) => item.ref);
       if (missingRefs.length > 0) console.log(`  missing FR/AC evidence: ${missingRefs.join(", ")}`);
@@ -2857,6 +2908,254 @@ async function executeWorkerRun(input: {
   };
 }
 
+async function executeReviewRun(input: {
+  workspace: string;
+  store: SwarmStore;
+  sliceId: string;
+  actor: string;
+  driver: string;
+  model?: string;
+}): Promise<ReviewRunResult> {
+  const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
+  if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
+  validateSliceDispatchContract(slice);
+  const target = input.store.targetById(slice.targetId);
+  if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+  const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
+  const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
+  fs.mkdirSync(artifactPath, { recursive: true });
+  const runId = makeId("agentRun");
+  const resultPath = path.join(artifactPath, `review-result-${runId}.json`);
+  const jsonlPath = path.join(artifactPath, `review-events-${runId}.jsonl`);
+  const stderrPath = path.join(artifactPath, `review-stderr-${runId}.log`);
+  const schemaPath = path.join(input.workspace, "schemas", "review-result.schema.json");
+  writeReviewResultSchema(schemaPath);
+
+  const evidence = input.store.listEvidence(slice.id);
+  const sourceMutationsBefore = inspectSourceMutations(slice);
+  const prompt = buildReviewPrompt({
+    slice,
+    targetPath: target.path,
+    laneName: lane?.name,
+    evidence,
+    sourceMutations: sourceMutationsBefore,
+  });
+  const now = new Date().toISOString();
+  const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
+
+  input.store.insertAgentRun({
+    id: runId,
+    sliceId: slice.id,
+    actor: input.actor,
+    driver: input.driver,
+    status: "running",
+    attempt,
+    startedAt: now,
+    updatedAt: now,
+  });
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: "verifying",
+    detail: "Independent reviewer process started",
+    entityType: "slice",
+    entityId: slice.id,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "review.started",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        targetPath: target.path,
+        laneId: slice.laneId,
+        reviewerActor: input.actor,
+        driver: input.driver,
+        model: input.model,
+        runId,
+        attempt,
+        sourceMutationsBefore,
+      },
+    }),
+  );
+
+  let result: {
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+    workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+  };
+  if (input.driver === "fixture") {
+    const reviewResult = runFixtureReview({
+      slice,
+      evidence,
+      sourceMutations: sourceMutationsBefore,
+    });
+    fs.writeFileSync(resultPath, `${JSON.stringify(reviewResult)}\n`, "utf8");
+    result = {
+      status: 0,
+      stdout: `${JSON.stringify({ type: "fixture.reviewer.completed", sliceId: slice.id, actor: input.actor })}\n`,
+    };
+  } else {
+    const args = [
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+      "-C",
+      target.path,
+      "--output-schema",
+      schemaPath,
+      "--output-last-message",
+      resultPath,
+    ];
+    if (input.model) args.push("--model", input.model);
+    args.push(prompt);
+    const codex = resolveDriverCommand("codex", "codex");
+    result = await spawnWorkerStreaming({
+      command: codex.command,
+      args: [...codex.prefixArgs, ...args],
+      cwd: target.path,
+      jsonlPath,
+      actor: input.actor,
+      sliceId: slice.id,
+      store: input.store,
+      driver: input.driver,
+      eventPrefix: "reviewer",
+    });
+  }
+
+  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+  const reviewerEvents =
+    result.workerEvents ??
+    ingestWorkerJsonl({
+      store: input.store,
+      actor: input.actor,
+      sliceId: slice.id,
+      jsonl: result.stdout ?? "",
+      eventPrefix: "reviewer",
+    });
+  const sourceMutationsAfter = inspectSourceMutations(slice);
+  const parsedReview = readReviewResultFile(resultPath);
+  const runCompleted = result.status === 0 && parsedReview.ok;
+  input.store.updateAgentRun(runId, {
+    status: runCompleted ? "completed" : "failed",
+    sessionId: reviewerEvents.sessionId,
+    eventsPath: jsonlPath,
+    resultPath: fs.existsSync(resultPath) ? resultPath : undefined,
+    stderrPath: result.stderr ? stderrPath : undefined,
+  });
+
+  let reviewEvidenceId: string | undefined;
+  if (parsedReview.ok) {
+    reviewEvidenceId = makeId("evidence");
+    input.store.insertEvidence({
+      id: reviewEvidenceId,
+      sliceId: slice.id,
+      kind: "review_result",
+      summary: `Independent review ${parsedReview.result.status}: ${parsedReview.result.summary}`,
+      ref: resultPath,
+      payload: {
+        path: resultPath,
+        reviewResult: parsedReview.result,
+        sourceMutationsBefore,
+        sourceMutationsAfter,
+        reviewerEvents,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    applyReviewOutcome({
+      store: input.store,
+      slice,
+      actor: input.actor,
+      result: parsedReview.result,
+      reviewEvidenceId,
+      sourceMutationsAfter,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "review.completed",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          exitCode: result.status,
+          runId,
+          eventsPath: jsonlPath,
+          resultPath,
+          stderrPath: result.stderr ? stderrPath : undefined,
+          reviewerEvents,
+          reviewStatus: parsedReview.result.status,
+          reviewEvidenceId,
+          sourceMutationsAfter,
+        },
+      }),
+    );
+  } else {
+    const reason = parsedReview.reason;
+    input.store.updateSliceStatus(slice.id, "blocked");
+    input.store.updateDependenciesFor("slice", slice.id, "blocked");
+    insertReviewEscalation(input.store, slice, input.actor, "blocker", "Reviewer output was missing or invalid.", reason);
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "blocked",
+      detail: reason,
+      entityType: "slice",
+      entityId: slice.id,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "review.failed",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          exitCode: result.status,
+          runId,
+          eventsPath: jsonlPath,
+          resultPath,
+          stderrPath: result.stderr ? stderrPath : undefined,
+          reviewerEvents,
+          reason,
+          sourceMutationsAfter,
+        },
+      }),
+    );
+  }
+
+  refreshCheckpoint({
+    store: input.store,
+    role: "reviewer",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: input.actor,
+    reason: parsedReview.ok ? "Reviewer run completed." : "Reviewer run failed.",
+  });
+  refreshCheckpoint({
+    store: input.store,
+    role: "recovery",
+    entityType: "agent_run",
+    entityId: runId,
+    actor: input.actor,
+    reason: "Reviewer run available for recovery context.",
+  });
+
+  return {
+    sliceId: slice.id,
+    runId,
+    exitCode: result.status,
+    eventsPath: jsonlPath,
+    resultPath,
+    reviewerEvents,
+    reviewResult: parsedReview.ok ? parsedReview.result : undefined,
+    stderr: result.stderr,
+  };
+}
+
 function spawnWorkerStreaming(input: {
   command: string;
   args: string[];
@@ -2866,6 +3165,7 @@ function spawnWorkerStreaming(input: {
   sliceId: string;
   store: SwarmStore;
   driver: string;
+  eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
 }): Promise<WorkerStreamingResult> {
   return new Promise((resolve, reject) => {
@@ -2878,6 +3178,7 @@ function spawnWorkerStreaming(input: {
       actor: input.actor,
       sliceId: input.sliceId,
       driver: input.driver,
+      eventPrefix: input.eventPrefix,
       classify: input.classify,
     });
     const child = spawn(input.command, input.args, {
@@ -2918,6 +3219,19 @@ function printWorkerRunResult(result: WorkerRunResult): void {
   if (result.workerEvents.sessionId) console.log(`  session: ${result.workerEvents.sessionId}`);
   if (result.workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.workerEvents.parseErrorCount}`);
   console.log(`  result: ${result.resultPath}`);
+  if (result.stderr?.trim()) console.error(result.stderr.trim());
+}
+
+function printReviewRunResult(result: ReviewRunResult): void {
+  const reviewStatus = result.reviewResult?.status ?? "invalid";
+  console.log(`Review ${result.exitCode === 0 && result.reviewResult ? reviewStatus : "failed"} for ${result.sliceId}`);
+  console.log(`  run: ${result.runId}`);
+  console.log(`  events: ${result.eventsPath}`);
+  console.log(`  ingested events: ${result.reviewerEvents.eventCount}`);
+  if (result.reviewerEvents.sessionId) console.log(`  session: ${result.reviewerEvents.sessionId}`);
+  if (result.reviewerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.reviewerEvents.parseErrorCount}`);
+  console.log(`  result: ${result.resultPath}`);
+  if (result.reviewResult) console.log(`  recommendation: ${result.reviewResult.recommendation}`);
   if (result.stderr?.trim()) console.error(result.stderr.trim());
 }
 
@@ -3135,6 +3449,7 @@ function buildSliceReport(store: SwarmStore, sliceId: string): string {
   const evidence = store.listEvidence(slice.id);
   const escalations = store.listEscalations("active").filter((item) => item.entityId === slice.id);
   const frAcResults = latestFrAcResults(evidence);
+  const reviewResult = latestReviewResult(evidence);
   const lines = [
     `# Slice Report: ${slice.title}`,
     "",
@@ -3168,6 +3483,20 @@ function buildSliceReport(store: SwarmStore, sliceId: string): string {
     "",
     "Evidence:",
     ...(evidence.length > 0 ? evidence.map((item) => `- ${item.kind}: ${item.summary}${item.ref ? ` (${item.ref})` : ""}`) : ["- none"]),
+    "",
+    "Latest review:",
+    ...(reviewResult
+      ? [
+          `- status: ${reviewResult.status}`,
+          `- summary: ${reviewResult.summary}`,
+          `- stub/hardcode risk: ${reviewResult.stubOrHardcodeRisk}`,
+          `- recommendation: ${reviewResult.recommendation}`,
+          ...(reviewResult.requiredFixes.length > 0
+            ? reviewResult.requiredFixes.map((item) => `- required fix: ${item}`)
+            : ["- required fixes: none"]),
+          ...reviewResult.frAcFindings.map((finding) => `- ${finding.ref}: ${finding.status} (${finding.finding})`),
+        ]
+      : ["- none"]),
     "",
     "Active escalations:",
     ...(escalations.length > 0 ? escalations.map((escalation) => `- ${escalation.level}: ${escalation.message}`) : ["- none"]),
@@ -3206,6 +3535,7 @@ function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventC
       leases: leases.filter((lease) => lease.sliceId === slice.id),
       evidence: evidence.filter((item) => item.sliceId === slice.id),
       frAcResults: latestFrAcResults(evidence.filter((item) => item.sliceId === slice.id)),
+      reviewResult: latestReviewResult(evidence.filter((item) => item.sliceId === slice.id)),
       agentRuns: store.listAgentRuns().filter((run) => run.sliceId === slice.id),
     })),
     dependencies: store.listDependencies().map((dependency) => ({
@@ -3682,6 +4012,379 @@ function currentRunMode(store: SwarmStore): RunMode {
   return value ? parseRunMode(value) : DEFAULT_RUN_MODE;
 }
 
+type SourceMutationFinding = {
+  sourceId?: string;
+  title?: string;
+  uri: string;
+  expectedHash?: string;
+  currentHash?: string;
+  mutated: boolean;
+  reason?: string;
+};
+
+function runFixtureReview(input: {
+  slice: SliceRecord;
+  evidence: ReturnType<SwarmStore["listEvidence"]>;
+  sourceMutations: SourceMutationFinding[];
+}): ReviewResult {
+  const evidenceIds = input.evidence
+    .filter((item) => item.kind === "worker_result" || item.kind === "command")
+    .map((item) => item.id);
+  const sourceMutationDetected = input.sourceMutations.some((item) => item.mutated);
+  return {
+    status: sourceMutationDetected ? "human_required" : "accepted",
+    summary: sourceMutationDetected
+      ? "Fixture reviewer detected immutable source mutation."
+      : "Fixture reviewer accepted the slice against recorded worker and command evidence.",
+    frAcFindings: input.slice.frAcRefs.map((ref) => ({
+      ref,
+      status: sourceMutationDetected ? "uncertain" : "passed",
+      evidence: evidenceIds,
+      finding: sourceMutationDetected
+        ? "Immutable source mutation prevents trustworthy review."
+        : "Recorded evidence covers this in-scope FR/AC ref.",
+    })),
+    testAssessment: "Fixture reviewer used existing harness evidence for deterministic assessment.",
+    sourceMutationDetected,
+    stubOrHardcodeRisk: "none",
+    requiredFixes: sourceMutationDetected ? ["Restore immutable source spec files before continuing."] : [],
+    escalations: sourceMutationDetected
+      ? [{ level: "human_required", message: "Immutable source spec mutation detected during review." }]
+      : [],
+    recommendation: sourceMutationDetected ? "Stop affected scope and restore source specs." : "Proceed to deterministic verification.",
+  };
+}
+
+function buildReviewPrompt(input: {
+  slice: SliceRecord;
+  targetPath: string;
+  laneName?: string;
+  evidence: ReturnType<SwarmStore["listEvidence"]>;
+  sourceMutations: SourceMutationFinding[];
+}): string {
+  const sourceRefs = input.slice.sourceRefs
+    .map((source) => `- ${source.title ?? source.uri}: ${source.uri}${source.hash ? ` hash:${source.hash}` : ""}`)
+    .join("\n");
+  const evidenceLines =
+    input.evidence.length > 0
+      ? input.evidence.map((item) => `- ${item.id} ${item.kind}: ${item.summary}${item.ref ? ` (${item.ref})` : ""}`).join("\n")
+      : "- none recorded";
+  const latestWorker = input.evidence.filter((item) => item.kind === "worker_result" && item.ref).at(-1);
+  const latestCommand = input.evidence.filter((item) => item.kind === "command").at(-1);
+  return `You are an independent reviewer inside the Agent Swarm MVP harness.
+
+You are reviewing implementation work for a slice. You must not edit code, state, or source specs.
+Use read-only inspection. Judge whether the work genuinely satisfies the immutable FR/AC refs.
+
+Target workspace:
+${input.targetPath}
+
+Lane:
+${input.laneName ?? input.slice.laneId}
+
+Slice:
+${input.slice.id} - ${input.slice.title}
+
+Delivery question:
+${input.slice.deliveryQuestion}
+
+Work package:
+- type: ${input.slice.workPackageType}
+- minimum meaningful outcome: ${input.slice.minimumMeaningfulOutcome}
+${input.slice.acSizedExceptionReason ? `- AC-sized exception: ${input.slice.acSizedExceptionReason}` : ""}
+
+Immutable source refs:
+${sourceRefs}
+
+FR/AC scope:
+${input.slice.frAcRefs.map((ref) => `- ${ref}`).join("\n")}
+
+Scope:
+${input.slice.scope.map((item) => `- ${item}`).join("\n")}
+
+Out of scope:
+${input.slice.outOfScope.map((item) => `- ${item}`).join("\n")}
+
+Expected evidence:
+${input.slice.expectedEvidence.map((item) => `- ${item}`).join("\n")}
+
+Verification requirements:
+${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
+
+Recorded harness evidence:
+${evidenceLines}
+
+Latest worker result snippet:
+${latestWorker?.ref ? readArtifactSnippet(latestWorker.ref) : "No worker result artifact recorded."}
+
+Latest command evidence:
+${latestCommand ? JSON.stringify(latestCommand.payload, null, 2).slice(0, 4000) : "No command evidence recorded yet."}
+
+Source hash status:
+${JSON.stringify(input.sourceMutations, null, 2)}
+
+Review rules:
+- Do not modify files or specs.
+- Do not reinterpret or rewrite the source spec.
+- Treat missing per-FR/AC evidence as a finding.
+- Treat stubs, hardcoded shortcuts, hollow tests, or unproven runtime paths as material risks.
+- If source spec mutation is detected, set sourceMutationDetected true and status human_required.
+- If the work is close but needs code/test repair, use repair_required.
+- If review cannot safely proceed due to missing evidence or runtime blockers, use blocked.
+- If spec meaning is ambiguous, use human_required.
+- Return only the required structured JSON result.
+`;
+}
+
+function readArtifactSnippet(filePath: string, maxLength = 4000): string {
+  if (!fs.existsSync(filePath)) return `Artifact missing: ${filePath}`;
+  const content = fs.readFileSync(filePath, "utf8").trim();
+  if (content.length <= maxLength) return content;
+  return `${content.slice(0, maxLength)}\n... truncated ...`;
+}
+
+function inspectSourceMutations(slice: SliceRecord): SourceMutationFinding[] {
+  return slice.sourceRefs.map((source) => {
+    if (!source.hash) {
+      return {
+        sourceId: undefined,
+        title: source.title,
+        uri: source.uri,
+        mutated: false,
+        reason: "No registered source hash was available.",
+      };
+    }
+    if (!fs.existsSync(source.uri)) {
+      return {
+        sourceId: undefined,
+        title: source.title,
+        uri: source.uri,
+        expectedHash: source.hash,
+        mutated: true,
+        reason: "Source file is missing.",
+      };
+    }
+    const currentHash = createHash("sha256").update(fs.readFileSync(source.uri)).digest("hex");
+    return {
+      sourceId: undefined,
+      title: source.title,
+      uri: source.uri,
+      expectedHash: source.hash,
+      currentHash,
+      mutated: currentHash !== source.hash,
+      reason: currentHash === source.hash ? undefined : "Source hash differs from registered immutable hash.",
+    };
+  });
+}
+
+function readReviewResultFile(filePath: string): { ok: true; result: ReviewResult } | { ok: false; reason: string } {
+  if (!fs.existsSync(filePath)) return { ok: false, reason: `review_result file missing: ${filePath}` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `review_result JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const result = reviewResultSchema.safeParse(parsed);
+  if (!result.success) {
+    return {
+      ok: false,
+      reason: `review_result schema failed: ${result.error.message}`,
+    };
+  }
+  return { ok: true, result: result.data };
+}
+
+function applyReviewOutcome(input: {
+  store: SwarmStore;
+  slice: SliceRecord;
+  actor: string;
+  result: ReviewResult;
+  reviewEvidenceId: string;
+  sourceMutationsAfter: SourceMutationFinding[];
+}): void {
+  const sourceMutationDetected = input.result.sourceMutationDetected || input.sourceMutationsAfter.some((item) => item.mutated);
+  const effectiveStatus = sourceMutationDetected ? "human_required" : input.result.status;
+
+  for (const escalation of input.result.escalations) {
+    insertReviewEscalation(input.store, input.slice, input.actor, escalation.level, escalation.message, input.result.summary);
+  }
+  if (sourceMutationDetected) {
+    insertReviewEscalation(
+      input.store,
+      input.slice,
+      input.actor,
+      "critical",
+      "Immutable source spec mutation detected during review.",
+      "Source hashes did not match registered immutable refs.",
+    );
+  }
+
+  if (effectiveStatus === "accepted") {
+    if (input.slice.status !== "accepted") input.store.updateSliceStatus(input.slice.id, "ready_for_review");
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "idle",
+      detail: "Independent review accepted",
+      entityType: "slice",
+      entityId: input.slice.id,
+    });
+    return;
+  }
+
+  const nextStatus: SliceRecord["status"] = effectiveStatus === "repair_required" ? "repairing" : "blocked";
+  input.store.updateSliceStatus(input.slice.id, nextStatus);
+  input.store.updateDependenciesFor("slice", input.slice.id, "blocked");
+  const hasBlockingEscalation = input.result.escalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level));
+  if (!hasBlockingEscalation && !sourceMutationDetected) {
+    insertReviewEscalation(
+      input.store,
+      input.slice,
+      input.actor,
+      effectiveStatus === "human_required" ? "human_required" : "blocker",
+      `Independent review status is ${effectiveStatus}.`,
+      input.result.recommendation,
+    );
+  }
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: "blocked",
+    detail: `Independent review ${effectiveStatus}: ${input.result.recommendation}`,
+    entityType: "slice",
+    entityId: input.slice.id,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "review.blocked_acceptance",
+      entityType: "slice",
+      entityId: input.slice.id,
+      payload: {
+        reviewEvidenceId: input.reviewEvidenceId,
+        reviewStatus: effectiveStatus,
+        requiredFixes: input.result.requiredFixes,
+        recommendation: input.result.recommendation,
+      },
+    }),
+  );
+}
+
+function insertReviewEscalation(
+  store: SwarmStore,
+  slice: SliceRecord,
+  actor: string,
+  level: "warning" | "blocker" | "human_required" | "critical",
+  message: string,
+  reason?: string,
+): void {
+  const now = new Date().toISOString();
+  const escalation = {
+    id: makeId("escalation"),
+    level,
+    status: "active" as const,
+    entityType: "slice" as const,
+    entityId: slice.id,
+    message,
+    reason,
+    createdBy: actor,
+    createdAt: now,
+    updatedAt: now,
+  };
+  store.insertEscalation(escalation);
+  store.addEvent(
+    createEvent({
+      actor,
+      type: "review.escalation_raised",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        escalationId: escalation.id,
+        level,
+        message,
+        reason,
+      },
+    }),
+  );
+}
+
+function latestReviewResult(evidence: Array<ReturnType<SwarmStore["listEvidence"]>[number]>): ReviewResult | undefined {
+  const reviewEvidence = evidence
+    .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
+    .at(-1);
+  if (!reviewEvidence) return undefined;
+  const parsed = reviewResultSchema.safeParse(reviewEvidence.payload.reviewResult);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function readLatestReviewGate(
+  store: SwarmStore,
+  slice: SliceRecord,
+  verifier: string,
+): { passed: boolean; reason: string; status?: ReviewResult["status"]; evidenceId?: string } {
+  const reviewEvidence = store
+    .listEvidence(slice.id)
+    .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
+    .at(-1);
+  if (!reviewEvidence) return { passed: true, reason: "no review result recorded" };
+  const parsed = reviewResultSchema.safeParse(reviewEvidence.payload.reviewResult);
+  if (!parsed.success) {
+    return {
+      passed: false,
+      reason: `review_result schema failed: ${parsed.error.message}`,
+      status: "blocked",
+      evidenceId: reviewEvidence.id,
+    };
+  }
+  const sourceMutationsAfter = Array.isArray(reviewEvidence.payload.sourceMutationsAfter)
+    ? (reviewEvidence.payload.sourceMutationsAfter as SourceMutationFinding[])
+    : [];
+  if (parsed.data.sourceMutationDetected || sourceMutationsAfter.some((item) => item.mutated)) {
+    return {
+      passed: false,
+      reason: "latest review detected immutable source mutation",
+      status: "human_required",
+      evidenceId: reviewEvidence.id,
+    };
+  }
+  if (parsed.data.status !== "accepted") {
+    return {
+      passed: false,
+      reason: `latest review status is ${parsed.data.status}`,
+      status: parsed.data.status,
+      evidenceId: reviewEvidence.id,
+    };
+  }
+  const findingsByRef = new Map(parsed.data.frAcFindings.map((item) => [item.ref, item]));
+  const nonPassingRefs = slice.frAcRefs.filter((ref) => findingsByRef.get(ref)?.status !== "passed");
+  if (nonPassingRefs.length > 0) {
+    return {
+      passed: false,
+      reason: `latest review has non-passing FR/AC findings from ${verifier}: ${nonPassingRefs.join(", ")}`,
+      status: "blocked",
+      evidenceId: reviewEvidence.id,
+    };
+  }
+  if (parsed.data.stubOrHardcodeRisk === "high") {
+    return {
+      passed: false,
+      reason: "latest review reported high stub/hardcode risk",
+      status: "blocked",
+      evidenceId: reviewEvidence.id,
+    };
+  }
+  return {
+    passed: true,
+    reason: "latest review accepted",
+    status: "accepted",
+    evidenceId: reviewEvidence.id,
+  };
+}
+
 function validateSliceDispatchContract(slice: SliceRecord): void {
   const missing: string[] = [];
   if (slice.frAcRefs.length === 0) missing.push("frAcRefs");
@@ -4142,7 +4845,7 @@ function buildGraph(store: SwarmStore): {
     nodes.set(heartbeat.id, { id: heartbeat.id, type: "heartbeat", label: `${heartbeat.actor}: ${heartbeat.state}`, status: heartbeat.state });
     if (heartbeat.entityId) edges.push({ from: heartbeat.id, to: heartbeat.entityId, type: "heartbeat_for", label: heartbeat.actor });
   }
-  for (const event of events.filter((item) => item.type.includes("worker") || item.type.includes("verification"))) {
+  for (const event of events.filter((item) => item.type.includes("worker") || item.type.includes("verification") || item.type.includes("review"))) {
     const actorNode = `actor:${event.actor}`;
     nodes.set(actorNode, { id: actorNode, type: "actor", label: event.actor });
     edges.push({ from: actorNode, to: event.entityId, type: "actor_event", label: event.type });
@@ -4289,6 +4992,68 @@ function writeWorkerResultSchema(schemaPath: string): void {
           },
           risks: { type: "array", items: { type: "string" } },
           nextRecommendation: { type: "string" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function writeReviewResultSchema(schemaPath: string): void {
+  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+  fs.writeFileSync(
+    schemaPath,
+    `${JSON.stringify(
+      {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "status",
+          "summary",
+          "frAcFindings",
+          "testAssessment",
+          "sourceMutationDetected",
+          "stubOrHardcodeRisk",
+          "requiredFixes",
+          "escalations",
+          "recommendation",
+        ],
+        properties: {
+          status: { type: "string", enum: ["accepted", "repair_required", "blocked", "human_required"] },
+          summary: { type: "string" },
+          frAcFindings: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["ref", "status", "evidence", "finding"],
+              properties: {
+                ref: { type: "string" },
+                status: { type: "string", enum: ["passed", "failed", "missing_evidence", "uncertain"] },
+                evidence: { type: "array", items: { type: "string" } },
+                finding: { type: "string" },
+              },
+            },
+          },
+          testAssessment: { type: "string" },
+          sourceMutationDetected: { type: "boolean" },
+          stubOrHardcodeRisk: { type: "string", enum: ["none", "low", "medium", "high"] },
+          requiredFixes: { type: "array", items: { type: "string" } },
+          escalations: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["level", "message"],
+              properties: {
+                level: { type: "string", enum: ["warning", "blocker", "human_required", "critical"] },
+                message: { type: "string" },
+              },
+            },
+          },
+          recommendation: { type: "string" },
         },
       },
       null,

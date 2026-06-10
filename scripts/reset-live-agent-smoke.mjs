@@ -107,6 +107,7 @@ const manifest = {
   })),
   commands: {
     serve: "npm run demo:live-agent:serve",
+    scripted: "npm run demo:live-agent:scripted",
     futureRun: "npm run demo:live-agent:run",
     futureFullProduct: "npm run demo:live-agent:full",
   },

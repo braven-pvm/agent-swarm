@@ -166,7 +166,7 @@ export interface AgentRunRecord {
 export interface EvidenceRecord {
   id: string;
   sliceId: string;
-  kind: "command" | "worker_result" | "artifact" | "note";
+  kind: "command" | "worker_result" | "review_result" | "artifact" | "note";
   summary: string;
   ref?: string;
   payload: Record<string, unknown>;
