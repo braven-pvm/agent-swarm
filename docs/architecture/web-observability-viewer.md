@@ -33,6 +33,8 @@ Implemented as of 2026-06-10:
 - Phase 6A source-mutation fault visibility through active escalation, event stream, source mutation summary, and final run artifacts
 - Phase 6B reviewer-repair visibility through `review.blocked_acceptance`, active/cleared escalation state, multiple worker/reviewer runs, and final verification evidence
 - Phase 6C stale-run recovery visibility through stale run state, recovery scan/mark/restart events, active/cleared blocker state, recovery artifacts, and final verification evidence
+- Phase 6D context-handoff visibility through checkpoint refresh events, role-specific resume packet artifacts, checkpoint state, and final verification evidence
+- Phase 6E low-signal/proof-churn visibility through lane warning escalation, `planner.low_signal_work`, planner checkpoint, warning artifact, and final verification evidence
 - web-observability E2E demo/test with browser-facing smoke assertions and review artifacts
 
 Still pending:
@@ -211,18 +213,20 @@ Verification:
 
 ### Slice 4: Graph And History
 
-Status: pending.
+Status: partially implemented.
 
 Deliver:
 
 - improved dependency/evidence graph rendering
 - filters by lane/status/actor/ref
 - run/workspace picker or recent workspace list
+- live-smoke run history tab with latest-run comparison and artifact index detail: implemented through Phase 7B-2
 
 Verification:
 
 - graph can explain why frontend work is blocked or ready
 - graph links nodes back to slice detail and evidence
+- `tests/web-viewer.e2e.test.js` confirms archived live runs, comparison output, and artifact index data are available through read-only web APIs
 
 ## Design Constraints
 
@@ -261,5 +265,7 @@ Use the Web Observability E2E Harness state to add one high-value explanatory UI
 - graph/dependency explanation
 - slice evidence detail
 - source-to-slice trace detail
+
+Live-smoke history/detail is now available in the History tab. Remaining work should focus on graph/dependency explanation and product-run evidence, not rebuilding history storage.
 
 Any graph/evidence work should be driven by `.swarm-demo/web-observability`, not a toy workspace.

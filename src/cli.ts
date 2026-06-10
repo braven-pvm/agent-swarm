@@ -134,6 +134,7 @@ const WEB_VIEWER_HTML = String.raw`<!doctype html>
         <button class="tab" type="button" data-tab="work">Work</button>
         <button class="tab" type="button" data-tab="agents">Agents</button>
         <button class="tab" type="button" data-tab="events">Events</button>
+        <button class="tab" type="button" data-tab="history">History</button>
       </nav>
 
       <section id="tab-overview" class="tab-panel active">
@@ -260,6 +261,34 @@ const WEB_VIEWER_HTML = String.raw`<!doctype html>
             <span id="updatedAt"></span>
           </div>
           <div id="events" class="event-list"></div>
+        </section>
+      </section>
+
+      <section id="tab-history" class="tab-panel">
+        <section class="layout">
+          <section class="panel wide">
+            <div class="panel-title">
+              <h2>Run History</h2>
+              <span id="historyRunCount"></span>
+            </div>
+            <div id="historyRuns" class="table-wrap"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <h2>Latest Comparison</h2>
+              <span id="historyComparisonLabel"></span>
+            </div>
+            <div id="historyComparison" class="stack"></div>
+          </section>
+        </section>
+
+        <section class="panel wide">
+          <div class="panel-title">
+            <h2>Artifact Index</h2>
+            <span id="historyArtifactLabel"></span>
+          </div>
+          <div id="historyArtifactIndex" class="rendered-detail">Select an archived run to inspect its artifact index.</div>
         </section>
       </section>
     </main>
@@ -831,6 +860,10 @@ pre {
 `;
 
 const WEB_VIEWER_JS = String.raw`let snapshot = null;
+let runHistory = { exists: false, runs: [] };
+let selectedRunId = null;
+let selectedRunDetail = null;
+let latestRunComparison = null;
 let selectedSliceId = null;
 let selectedSourceId = null;
 let selectedSourceDetail = null;
@@ -866,6 +899,12 @@ const els = {
   blockerCount: document.getElementById("blockerCount"),
   events: document.getElementById("events"),
   updatedAt: document.getElementById("updatedAt"),
+  historyRuns: document.getElementById("historyRuns"),
+  historyRunCount: document.getElementById("historyRunCount"),
+  historyComparison: document.getElementById("historyComparison"),
+  historyComparisonLabel: document.getElementById("historyComparisonLabel"),
+  historyArtifactIndex: document.getElementById("historyArtifactIndex"),
+  historyArtifactLabel: document.getElementById("historyArtifactLabel"),
   report: document.getElementById("report"),
   sourceDetail: document.getElementById("sourceDetail"),
   selectedSliceLabel: document.getElementById("selectedSliceLabel"),
@@ -925,10 +964,17 @@ function activateTab(tabName) {
 }
 
 async function load() {
-  const response = await fetch("/api/snapshot?events=80", { cache: "no-store" });
-  snapshot = await response.json();
+  const [snapshotResponse, historyResponse] = await Promise.all([
+    fetch("/api/snapshot?events=80", { cache: "no-store" }),
+    fetch("/api/history/runs", { cache: "no-store" }),
+  ]);
+  snapshot = await snapshotResponse.json();
+  runHistory = historyResponse.ok ? await historyResponse.json() : { exists: false, runs: [] };
+  if (!selectedRunId && runHistory.runs && runHistory.runs.length > 0) selectedRunId = runHistory.runs[runHistory.runs.length - 1].runId;
   render();
   if (selectedSliceId) loadReport(selectedSliceId);
+  if (selectedRunId) loadHistoryRun(selectedRunId);
+  if (runHistory.runs && runHistory.runs.length >= 2) loadLatestRunComparison();
 }
 
 function render() {
@@ -947,6 +993,7 @@ function render() {
     ["Active Work", activeSlices.length],
     ["Running Agents", runningAgents.length],
     ["Blockers", snapshot.activeEscalations.length + blockedDependencies.length],
+    ["Archived Runs", runHistory.runs ? runHistory.runs.length : 0],
     ["Events", snapshot.recentEvents.length],
   ]);
   renderSpecDomainOptions();
@@ -958,6 +1005,7 @@ function render() {
   renderHeartbeats();
   renderBlockers(blockedDependencies);
   renderEvents();
+  renderHistory();
 }
 
 function renderMetrics(items) {
@@ -1239,6 +1287,118 @@ function renderEvents() {
     escapeHtml(event.type),
     escapeHtml(event.entityType + ":" + event.entityId),
   ]), "No events");
+}
+
+function renderHistory() {
+  const runs = runHistory.runs || [];
+  if (selectedRunId && !runs.some((run) => run.runId === selectedRunId)) {
+    selectedRunId = runs.length > 0 ? runs[runs.length - 1].runId : null;
+    selectedRunDetail = null;
+  }
+  els.historyRunCount.textContent = runHistory.exists ? runs.length + " archived" : "no history";
+  if (!runHistory.exists) {
+    els.historyRuns.innerHTML = '<div class="item muted">No live run history found. Run the live smoke once to create history.</div>';
+    els.historyComparison.innerHTML = '<div class="item muted">Need at least two archived runs for comparison.</div>';
+    els.historyComparisonLabel.textContent = "";
+    return;
+  }
+  els.historyRuns.innerHTML = tableHtml(
+    ["Run", "Generated", "Fault", "Outcome", "Classifier", "Turns", "Agents", "Verify", "Escalations"],
+    runs.slice().reverse().map((run) => ({
+      attrs: 'class="clickable ' + (run.runId === selectedRunId ? 'selected' : '') + '" data-run="' + escapeHtml(run.runId) + '"',
+      cells: [
+        '<strong>' + escapeHtml(run.runId) + '</strong><div class="sub">' + escapeHtml(run.phase || "") + '</div>',
+        escapeHtml(run.generatedAt ? new Date(run.generatedAt).toLocaleString() : "unknown"),
+        escapeHtml(run.faultMode || "none"),
+        pill(run.finalOutcome || "unknown"),
+        pill(run.classificationCode || "unknown"),
+        escapeHtml(run.counts ? run.counts.turns : 0),
+        escapeHtml(run.counts ? run.counts.agentRuns : 0),
+        escapeHtml(run.counts ? run.counts.verifyRuns : 0),
+        escapeHtml(run.counts ? run.counts.activeEscalations : 0),
+      ],
+    })),
+    "No archived live runs",
+  );
+  if (runs.length < 2) {
+    latestRunComparison = null;
+    els.historyComparisonLabel.textContent = "";
+    els.historyComparison.innerHTML = '<div class="item muted">Need at least two archived runs for comparison.</div>';
+  }
+  els.historyRuns.querySelectorAll("[data-run]").forEach((node) => {
+    node.addEventListener("click", () => {
+      selectedRunId = node.getAttribute("data-run");
+      renderHistory();
+      loadHistoryRun(selectedRunId);
+    });
+  });
+}
+
+async function loadHistoryRun(runId) {
+  const response = await fetch("/api/history/run/" + encodeURIComponent(runId), { cache: "no-store" });
+  selectedRunDetail = response.ok ? await response.json() : null;
+  renderHistoryArtifactIndex();
+}
+
+async function loadLatestRunComparison() {
+  const response = await fetch("/api/history/compare", { cache: "no-store" });
+  latestRunComparison = response.ok ? await response.json() : null;
+  renderHistoryComparison();
+}
+
+function renderHistoryComparison() {
+  if (!latestRunComparison) {
+    els.historyComparisonLabel.textContent = "";
+    els.historyComparison.innerHTML = '<div class="item muted">Need at least two archived runs for comparison.</div>';
+    return;
+  }
+  els.historyComparisonLabel.textContent = latestRunComparison.left.runId + " -> " + latestRunComparison.right.runId;
+  els.historyComparison.innerHTML =
+    '<article class="item">' +
+    '<div class="title">' + escapeHtml(latestRunComparison.deltas.finalOutcome) + '</div>' +
+    '<div class="sub">classification: ' + escapeHtml(latestRunComparison.deltas.classification) + '</div>' +
+    '<div class="sub">fault: ' + escapeHtml(latestRunComparison.deltas.faultMode) + '</div>' +
+    '<div class="sub">' + escapeHtml(latestRunComparison.interpretation) + '</div>' +
+    '</article>' +
+    tableHtml(
+      ["Metric", "Delta"],
+      Object.entries(latestRunComparison.deltas.counts).map(([key, value]) => [escapeHtml(key), escapeHtml(value)]),
+      "No deltas",
+    );
+}
+
+function renderHistoryArtifactIndex() {
+  if (!selectedRunDetail) {
+    els.historyArtifactLabel.textContent = "";
+    els.historyArtifactIndex.innerHTML = '<div class="muted">Select an archived run to inspect its artifact index.</div>';
+    return;
+  }
+  const summary = selectedRunDetail.summary;
+  const index = selectedRunDetail.artifactIndex;
+  els.historyArtifactLabel.textContent = summary.runId;
+  const items = index && Array.isArray(index.items) ? index.items : [];
+  els.historyArtifactIndex.innerHTML =
+    '<div class="detail-grid">' +
+    detailField("Run", summary.runId) +
+    detailField("Outcome", summary.finalOutcome) +
+    detailField("Classifier", summary.outcomeClassification ? summary.outcomeClassification.code : "unknown") +
+    detailField("Fault", summary.fault ? summary.fault.mode : "unknown") +
+    detailField("Turns", summary.counts ? summary.counts.turns : 0) +
+    detailField("Agent Runs", summary.counts ? summary.counts.agentRuns : 0) +
+    '</div>' +
+    '<h3>Classifier</h3>' +
+    '<p>' + escapeHtml(summary.outcomeClassification ? summary.outcomeClassification.explanation : "No classifier explanation.") + '</p>' +
+    '<h3>Indexed Artifacts</h3>' +
+    tableHtml(
+      ["Category", "Key", "Exists", "Path"],
+      items.map((item) => [
+        escapeHtml(item.category),
+        '<strong>' + escapeHtml(item.key) + '</strong><div class="sub">' + escapeHtml(item.description || "") + '</div>',
+        item.exists ? pill("yes") : pill("missing"),
+        escapeHtml(item.path),
+      ]),
+      "No artifact index items",
+    );
 }
 
 async function loadReport(sliceId) {
@@ -2301,10 +2461,12 @@ program
   .option("--host <host>", "bind host", "127.0.0.1")
   .option("--port <port>", "bind port; use 0 to choose a free port", parsePort, 4317)
   .option("--events <count>", "default snapshot event count", parseInteger, 80)
-  .action((options: { workspace: string; host: string; port: number; events: number }) => {
+  .option("--history-root <path>", "live-agent run history root; defaults beside .swarm-demo workspaces")
+  .action((options: { workspace: string; host: string; port: number; events: number; historyRoot?: string }) => {
     const workspace = path.resolve(options.workspace);
     ensureInitialized(workspace);
-    const server = createWebViewerServer({ workspace, defaultEventCount: options.events });
+    const historyRoot = options.historyRoot ? path.resolve(options.historyRoot) : defaultLiveRunHistoryRoot(workspace);
+    const server = createWebViewerServer({ workspace, defaultEventCount: options.events, historyRoot });
     server.on("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "EADDRINUSE") {
         console.error(`Port ${options.port} is already in use on ${options.host}.`);
@@ -2323,6 +2485,7 @@ program
       const port = typeof address === "object" && address ? address.port : options.port;
       console.log("Agent Swarm web observability viewer");
       console.log(`  workspace: ${workspace}`);
+      console.log(`  history: ${historyRoot}`);
       console.log(`  url: http://${options.host}:${port}/`);
       console.log("  mode: read-only");
     });
@@ -3665,7 +3828,7 @@ function printStatus(): void {
   }
 }
 
-function createWebViewerServer(input: { workspace: string; defaultEventCount: number }): http.Server {
+function createWebViewerServer(input: { workspace: string; defaultEventCount: number; historyRoot: string }): http.Server {
   return http.createServer((request, response) => {
     try {
       const requestUrl = new URL(request.url ?? "/", "http://localhost");
@@ -3684,6 +3847,33 @@ function createWebViewerServer(input: { workspace: string; defaultEventCount: nu
       }
       if (requestUrl.pathname === "/assets/app.js") {
         sendText(response, 200, WEB_VIEWER_JS, "text/javascript; charset=utf-8");
+        return;
+      }
+      if (requestUrl.pathname === "/api/history/runs") {
+        sendJson(response, listLiveRunHistory(input.historyRoot));
+        return;
+      }
+      if (requestUrl.pathname.startsWith("/api/history/run/")) {
+        const runId = decodeURIComponent(requestUrl.pathname.slice("/api/history/run/".length));
+        const detail = loadLiveRunHistoryDetail(input.historyRoot, runId);
+        if (!detail) {
+          sendJson(response, { error: "Archived run not found" }, 404);
+          return;
+        }
+        sendJson(response, detail);
+        return;
+      }
+      if (requestUrl.pathname === "/api/history/compare") {
+        const comparison = compareLiveRunHistory(
+          input.historyRoot,
+          requestUrl.searchParams.get("left") ?? undefined,
+          requestUrl.searchParams.get("right") ?? undefined,
+        );
+        if (!comparison) {
+          sendJson(response, { error: "Need at least two archived runs to compare" }, 404);
+          return;
+        }
+        sendJson(response, comparison);
         return;
       }
 
@@ -3802,6 +3992,193 @@ function contentTypeForPath(filePath: string): string {
   if (ext === ".log" || ext === ".txt") return "text/plain; charset=utf-8";
   if (ext === ".md") return "text/markdown; charset=utf-8";
   return "application/octet-stream";
+}
+
+type LiveRunHistoryRecord = {
+  runId: string;
+  scenario?: string;
+  runMode?: string;
+  phase?: string;
+  driver?: string;
+  faultMode?: string;
+  generatedAt?: string;
+  startedAt?: string;
+  finalOutcome?: string;
+  finalReason?: string;
+  classificationCode?: string;
+  classificationSeverity?: string;
+  sliceId?: string;
+  finalSliceStatus?: string;
+  counts?: Record<string, number>;
+  summary: string;
+  artifactIndex: string;
+  artifactIndexMarkdown?: string;
+  originalSummary?: string;
+  originalArtifactIndex?: string;
+  originalArtifactIndexMarkdown?: string;
+};
+
+function defaultLiveRunHistoryRoot(workspace: string): string {
+  const resolved = path.resolve(workspace);
+  const parent = path.dirname(resolved);
+  if (path.basename(parent).toLowerCase() === ".swarm-demo") {
+    return path.join(parent, "live-agent-run-history");
+  }
+  return path.join(swarmDir(resolved), "run-history");
+}
+
+function listLiveRunHistory(historyRoot: string): { historyRoot: string; exists: boolean; runs: LiveRunHistoryRecord[]; updatedAt?: string } {
+  const root = path.resolve(historyRoot);
+  const indexPath = path.join(root, "runs.json");
+  if (!fs.existsSync(indexPath)) return { historyRoot: root, exists: false, runs: [] };
+  const index = safeReadHistoryJson(root, indexPath) as { updatedAt?: string; runs?: LiveRunHistoryRecord[] };
+  const runs = (index.runs ?? []).map((run) => ({ ...run })).sort((left, right) => String(left.generatedAt ?? "").localeCompare(String(right.generatedAt ?? "")));
+  return { historyRoot: root, exists: true, updatedAt: index.updatedAt, runs };
+}
+
+function loadLiveRunHistoryDetail(
+  historyRoot: string,
+  runId: string,
+): { historyRoot: string; record: LiveRunHistoryRecord; summary: Record<string, unknown>; artifactIndex: Record<string, unknown>; artifactIndexMarkdown?: string } | undefined {
+  const root = path.resolve(historyRoot);
+  const record = listLiveRunHistory(root).runs.find((run) => run.runId === runId);
+  if (!record) return undefined;
+  return {
+    historyRoot: root,
+    record,
+    summary: safeReadHistoryJson(root, record.summary) as Record<string, unknown>,
+    artifactIndex: safeReadHistoryJson(root, record.artifactIndex) as Record<string, unknown>,
+    artifactIndexMarkdown: record.artifactIndexMarkdown ? safeReadHistoryText(root, record.artifactIndexMarkdown) : undefined,
+  };
+}
+
+function compareLiveRunHistory(historyRoot: string, leftId?: string, rightId?: string): Record<string, unknown> | undefined {
+  const history = listLiveRunHistory(historyRoot);
+  if (history.runs.length < 2 && (!leftId || !rightId)) return undefined;
+  const selected = selectHistoryRuns(history.runs, leftId, rightId);
+  if (!selected) return undefined;
+  const leftDetail = loadLiveRunHistoryDetail(history.historyRoot, selected.left.runId);
+  const rightDetail = loadLiveRunHistoryDetail(history.historyRoot, selected.right.runId);
+  if (!leftDetail || !rightDetail) return undefined;
+  const left = summarizeHistoryRun(leftDetail.summary, selected.left);
+  const right = summarizeHistoryRun(rightDetail.summary, selected.right);
+  const countKeys = ["turns", "verifyRuns", "lanes", "slices", "agentRuns", "evidence", "activeEscalations", "graphNodes", "graphEdges", "timelineItems"];
+  const countDeltas = Object.fromEntries(countKeys.map((key) => [key, (right.counts[key] ?? 0) - (left.counts[key] ?? 0)]));
+  const changes = {
+    finalOutcomeChanged: left.finalOutcome !== right.finalOutcome,
+    classificationChanged: left.classification.code !== right.classification.code,
+    faultModeChanged: left.faultMode !== right.faultMode,
+    phaseChanged: left.phase !== right.phase,
+    finalSliceStatusChanged: left.finalSliceStatus !== right.finalSliceStatus,
+  };
+  return {
+    generatedAt: new Date().toISOString(),
+    historyRoot: history.historyRoot,
+    mode: selected.mode,
+    left,
+    right,
+    changes,
+    deltas: {
+      counts: countDeltas,
+      finalOutcome: `${left.finalOutcome} -> ${right.finalOutcome}`,
+      classification: `${left.classification.code} -> ${right.classification.code}`,
+      faultMode: `${left.faultMode} -> ${right.faultMode}`,
+    },
+    artifacts: {
+      leftSummary: selected.left.summary,
+      rightSummary: selected.right.summary,
+      leftArtifactIndex: selected.left.artifactIndex,
+      rightArtifactIndex: selected.right.artifactIndex,
+    },
+    interpretation: interpretHistoryComparison(left, right, changes, countDeltas),
+  };
+}
+
+function selectHistoryRuns(
+  runs: LiveRunHistoryRecord[],
+  leftId?: string,
+  rightId?: string,
+): { left: LiveRunHistoryRecord; right: LiveRunHistoryRecord; mode: "latest-two" | "explicit" } | undefined {
+  const sorted = [...runs].sort((left, right) => String(left.generatedAt ?? "").localeCompare(String(right.generatedAt ?? "")));
+  if (!leftId && !rightId) {
+    const left = sorted.at(-2);
+    const right = sorted.at(-1);
+    return left && right ? { left, right, mode: "latest-two" } : undefined;
+  }
+  if (!leftId || !rightId) return undefined;
+  const left = sorted.find((run) => run.runId === leftId);
+  const right = sorted.find((run) => run.runId === rightId);
+  return left && right ? { left, right, mode: "explicit" } : undefined;
+}
+
+function summarizeHistoryRun(summary: Record<string, unknown>, record: LiveRunHistoryRecord) {
+  const outcomeClassification = objectValue(summary.outcomeClassification);
+  const fault = objectValue(summary.fault);
+  return {
+    runId: stringValue(summary.runId) ?? record.runId,
+    scenario: stringValue(summary.scenario) ?? record.scenario,
+    runMode: stringValue(summary.runMode) ?? record.runMode,
+    phase: stringValue(summary.phase) ?? record.phase,
+    driver: stringValue(summary.driver) ?? record.driver,
+    faultMode: stringValue(fault?.mode) ?? record.faultMode,
+    startedAt: stringValue(summary.startedAt) ?? record.startedAt,
+    generatedAt: stringValue(summary.generatedAt) ?? record.generatedAt,
+    finalOutcome: stringValue(summary.finalOutcome) ?? record.finalOutcome ?? "unknown",
+    finalReason: stringValue(summary.finalReason) ?? record.finalReason,
+    classification: {
+      code: stringValue(outcomeClassification?.code) ?? record.classificationCode ?? "unknown",
+      severity: stringValue(outcomeClassification?.severity) ?? record.classificationSeverity ?? "unknown",
+      explanation: stringValue(outcomeClassification?.explanation),
+    },
+    sliceId: stringValue(summary.sliceId) ?? record.sliceId,
+    finalSliceStatus: stringValue(summary.finalSliceStatus) ?? record.finalSliceStatus,
+    counts: pickComparableHistoryCounts(objectValue(summary.counts) ?? record.counts),
+  };
+}
+
+function pickComparableHistoryCounts(counts: Record<string, unknown> | Record<string, number> | undefined): Record<string, number> {
+  const keys = ["turns", "verifyRuns", "lanes", "slices", "agentRuns", "evidence", "activeEscalations", "graphNodes", "graphEdges", "timelineItems"];
+  return Object.fromEntries(keys.map((key) => [key, numberValue(counts?.[key]) ?? 0]));
+}
+
+function interpretHistoryComparison(
+  left: ReturnType<typeof summarizeHistoryRun>,
+  right: ReturnType<typeof summarizeHistoryRun>,
+  changes: Record<string, boolean>,
+  countDeltas: Record<string, number>,
+): string {
+  if (left.finalOutcome !== "accepted" && right.finalOutcome === "accepted") return "Run outcome improved to accepted.";
+  if (left.finalOutcome === "accepted" && right.finalOutcome !== "accepted") {
+    return "Run outcome moved away from accepted; inspect classification and blockers before treating this as progress.";
+  }
+  if (changes.classificationChanged) return "Outcome classification changed; inspect the archived summaries for the new stop reason.";
+  if (Object.values(countDeltas).some((value) => value !== 0)) return "Lifecycle shape changed while outcome stayed comparable; inspect count deltas and artifact indexes.";
+  return "No material outcome or lifecycle count changes detected.";
+}
+
+function safeReadHistoryJson(historyRoot: string, filePath: string): unknown {
+  return JSON.parse(safeReadHistoryText(historyRoot, filePath));
+}
+
+function safeReadHistoryText(historyRoot: string, filePath: string): string {
+  const root = path.resolve(historyRoot);
+  const resolved = path.resolve(filePath);
+  if (!resolved.toLowerCase().startsWith(`${root.toLowerCase()}${path.sep}`)) {
+    throw new Error(`Archived run path escapes history root: ${resolved}`);
+  }
+  return fs.readFileSync(resolved, "utf8");
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function parseOptionalPositiveInteger(value: string | null): number | undefined {

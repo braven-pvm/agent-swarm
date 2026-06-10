@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { refreshCheckpoint } from "../dist/checkpoints.js";
+import { createEvent } from "../dist/events.js";
+import { makeId } from "../dist/ids.js";
 import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,8 +26,10 @@ const maxRuntimeSeconds = Number.parseInt(args["max-runtime-seconds"] ?? "600", 
 const maxSlices = Number.parseInt(args["max-slices"] ?? "5", 10);
 const maxAgentRuns = Number.parseInt(args["max-agent-runs"] ?? "12", 10);
 const faultMode = args.fault ?? "none";
-if (!["none", "source-mutation", "reviewer-repair", "stale-run"].includes(faultMode)) {
-  throw new Error(`Invalid --fault ${faultMode}; expected none, source-mutation, reviewer-repair, or stale-run`);
+if (!["none", "source-mutation", "reviewer-repair", "stale-run", "context-handoff", "low-signal"].includes(faultMode)) {
+  throw new Error(
+    `Invalid --fault ${faultMode}; expected none, source-mutation, reviewer-repair, stale-run, context-handoff, or low-signal`,
+  );
 }
 const runPhase = faultMode === "none" ? "phase-5c-autonomous-acceptance-loop" : "phase-6-fault-injection";
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -41,9 +46,14 @@ const dashboardSpec = path.join(dashboardTarget, "specs", "invoice-dashboard.md"
 const manifestPath = path.join(workspace, "live-agent-smoke.json");
 const summaryPath = path.resolve(args.summary ?? path.join(workspace, "live-agent-run-summary.json"));
 const artifactsPath = path.resolve(args.artifacts ?? path.join(workspace, "live-agent-run-artifacts"));
+const historyRoot = path.resolve(args["history-root"] ?? path.join(repoRoot, ".swarm-demo", "live-agent-run-history"));
+const historyEnabled = args.history !== "false";
 const scenarioEntityId = `scenario:${scenario}`;
+const runStartedAt = new Date().toISOString();
+const runId = sanitizeRunId(args["run-id"] ?? `LAR-${compactTimestamp(runStartedAt)}-${scenario}-${faultMode}-${process.pid}`);
 
 assertApprovedWorkspace(workspace);
+if (historyEnabled) assertApprovedHistoryRoot(historyRoot, workspace);
 if (!fs.existsSync(cli)) throw new Error(`Built CLI not found: ${cli}. Run npm run build first.`);
 if (resetBeforeRun || !fs.existsSync(path.join(workspace, ".swarm", "state.db"))) {
   resetScenario();
@@ -68,6 +78,23 @@ const staleRecovery = {
   markOutputPath: undefined,
   restartOutputPath: undefined,
   restartActor: "live-recovery-worker",
+};
+const contextHandoff = {
+  sliceId: undefined,
+  laneId: undefined,
+  workerRunId: undefined,
+  generatedAtTurn: undefined,
+  checkpointIds: {},
+  packetPaths: {},
+  checkpointOutputPaths: {},
+};
+const lowSignal = {
+  sliceId: undefined,
+  laneId: undefined,
+  injectedAtTurn: undefined,
+  escalationId: undefined,
+  checkpointId: undefined,
+  warningPath: undefined,
 };
 
 const startedAt = Date.now();
@@ -113,6 +140,18 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
   const staleAction = handleStaleRunFault(turn, before);
   if (staleAction) {
     turns.push(staleAction);
+    continue;
+  }
+
+  const contextHandoffAction = handleContextHandoffFault(turn, before);
+  if (contextHandoffAction) {
+    turns.push(contextHandoffAction);
+    continue;
+  }
+
+  const lowSignalAction = handleLowSignalFault(turn, before);
+  if (lowSignalAction) {
+    turns.push(lowSignalAction);
     continue;
   }
 
@@ -234,6 +273,9 @@ const snapshotPath = path.join(artifactsPath, "observe.json");
 const graphPath = path.join(artifactsPath, "graph.json");
 const reportPath = path.join(artifactsPath, "slice-report.md");
 const timelinePath = path.join(artifactsPath, "timeline.json");
+const artifactIndexPath = path.join(artifactsPath, "artifact-index.json");
+const artifactIndexMarkdownPath = path.join(artifactsPath, "artifact-index.md");
+const historyPaths = historyEnabled ? buildHistoryPaths(runId) : undefined;
 fs.writeFileSync(snapshotPath, `${JSON.stringify(finalSnapshot, null, 2)}\n`, "utf8");
 fs.writeFileSync(graphPath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
 fs.writeFileSync(reportPath, report, "utf8");
@@ -259,11 +301,64 @@ const staleRestartRun = staleRecovery.sliceId
 const staleRunEscalationActive = finalSnapshot.activeEscalations.some(
   (item) => item.entityType === "slice" && item.entityId === staleRecovery.sliceId && item.message.includes(staleRecovery.staleRunId),
 );
+const contextHandoffSlice = contextHandoff.sliceId ? finalSnapshot.slices.find((slice) => slice.id === contextHandoff.sliceId) : undefined;
+const contextHandoffReviewerRuns = contextHandoff.sliceId
+  ? finalSnapshot.agentRuns.filter((run) => run.sliceId === contextHandoff.sliceId && run.role === "reviewer")
+  : [];
+const contextHandoffPackets = contextHandoffPacketAssertions();
+const lowSignalWarning = lowSignal.escalationId
+  ? finalSnapshot.activeEscalations.find((item) => item.id === lowSignal.escalationId)
+  : undefined;
+const lowSignalEvent = finalSnapshot.recentEvents.find(
+  (event) => event.type === "planner.low_signal_work" && event.payload?.faultMode === "low-signal",
+);
+const lowSignalCheckpoint = lowSignal.laneId
+  ? finalSnapshot.checkpoints.find(
+      (checkpoint) =>
+        checkpoint.role === "planner" && checkpoint.entityType === "lane" && checkpoint.entityId === lowSignal.laneId,
+    )
+  : undefined;
+const outcomeClassification = classifyOutcome({
+  finalOutcome,
+  finalReason,
+  faultMode,
+  finalSnapshot,
+  finalSlice,
+  verifyRuns,
+  turns,
+  staleRecovery,
+  finalSourceMutations,
+});
+const artifactPaths = {
+  summary: summaryPath,
+  snapshot: snapshotPath,
+  graph: graphPath,
+  report: reportPath,
+  timeline: timelinePath,
+  workerEvents: workerRun?.eventsPath,
+  workerResult: workerRun?.resultPath,
+  reviewerEvents: reviewerRun?.eventsPath,
+  reviewerResult: reviewerRun?.resultPath,
+  verificationOutput: verifyRuns.at(-1)?.outputPath,
+  recoveryScan: staleRecovery.scanOutputPath,
+  recoveryMark: staleRecovery.markOutputPath,
+  recoveryRestart: staleRecovery.restartOutputPath,
+  contextWorkerPacket: contextHandoff.packetPaths.worker,
+  contextReviewerPacket: contextHandoff.packetPaths.reviewer,
+  contextVerifierPacket: contextHandoff.packetPaths.verifier,
+  contextOverseerPacket: contextHandoff.packetPaths.overseer,
+  contextRecoveryPacket: contextHandoff.packetPaths.recovery,
+  lowSignalWarning: lowSignal.warningPath,
+  artifactIndex: artifactIndexPath,
+  artifactIndexMarkdown: artifactIndexMarkdownPath,
+};
 
 const summary = {
+  runId,
   workspace,
   driver,
   runMode: finalSnapshot.runMode,
+  startedAt: runStartedAt,
   generatedAt: new Date().toISOString(),
   phase: runPhase,
   scenario,
@@ -273,6 +368,7 @@ const summary = {
   },
   finalOutcome,
   finalReason,
+  outcomeClassification,
   sliceId: selectedSliceId,
   finalSliceStatus: finalSlice?.status,
   limits: {
@@ -301,6 +397,8 @@ const summary = {
   repairClearances,
   staleRecoveryClearances,
   staleRecovery: faultMode === "stale-run" ? staleRecovery : undefined,
+  contextHandoff: faultMode === "context-handoff" ? contextHandoff : undefined,
+  lowSignal: faultMode === "low-signal" ? lowSignal : undefined,
   runs: {
     overseers: finalSnapshot.agentRuns.filter((run) => run.role === "overseer" && run.entityId === scenarioEntityId),
     workers: workerRuns,
@@ -310,7 +408,14 @@ const summary = {
   },
   review: finalSlice?.reviewResult,
   sourceMutations: finalSourceMutations,
+  history: historyPaths
+    ? {
+        enabled: true,
+        ...historyPaths,
+      }
+    : { enabled: false },
   assertions: {
+    runIdRecorded: Boolean(runId),
     runModeIsLive: finalSnapshot.runMode === "live-agent-smoke",
     faultInjected: faultMode === "none" || injectedFaults.length > 0,
     faultDetected:
@@ -319,7 +424,13 @@ const summary = {
       (faultMode === "reviewer-repair" && finalSnapshot.recentEvents.some((event) => event.type === "review.blocked_acceptance")) ||
       (faultMode === "stale-run" &&
         staleRun?.status === "stale" &&
-        finalSnapshot.recentEvents.some((event) => event.type === "recovery.marked_stale_run")),
+        finalSnapshot.recentEvents.some((event) => event.type === "recovery.marked_stale_run")) ||
+      (faultMode === "context-handoff" &&
+        Boolean(contextHandoff.generatedAtTurn) &&
+        finalSnapshot.recentEvents.some(
+          (event) => event.type === "checkpoint.refreshed" && event.actor === "live-context-handoff",
+        )) ||
+      (faultMode === "low-signal" && Boolean(lowSignalWarning) && Boolean(lowSignalEvent)),
     sourceMutationStoppedBeforeHiddenWork: faultMode !== "source-mutation" || finalSnapshot.agentRuns.length === 0,
     reviewerRepairLoopExercised:
       faultMode !== "reviewer-repair" ||
@@ -340,6 +451,45 @@ const summary = {
     staleRunEscalationCleared: faultMode !== "stale-run" || staleRecoveryClearances.length > 0,
     staleRunBlockerNotActiveAfterAcceptance:
       faultMode !== "stale-run" || finalOutcome !== "accepted" || !staleRunEscalationActive,
+    contextHandoffPacketsGenerated:
+      faultMode !== "context-handoff" ||
+      Boolean(
+        contextHandoff.generatedAtTurn &&
+          contextHandoffPackets.worker &&
+          contextHandoffPackets.reviewer &&
+          contextHandoffPackets.verifier &&
+          contextHandoffPackets.overseer &&
+          contextHandoffPackets.recovery,
+      ),
+    contextHandoffCheckpointsVisible:
+      faultMode !== "context-handoff" ||
+      ["worker", "reviewer", "verifier"].every((role) =>
+        finalSnapshot.checkpoints.some(
+          (checkpoint) =>
+            checkpoint.role === role &&
+            checkpoint.entityType === "slice" &&
+            checkpoint.entityId === contextHandoff.sliceId,
+        ),
+      ),
+    contextHandoffContinuedAfterPacket:
+      faultMode !== "context-handoff" ||
+      Boolean(
+        contextHandoffSlice?.status === "accepted" &&
+          contextHandoffReviewerRuns.length > 0 &&
+          verifyRuns.some((run) => run.turn > contextHandoff.generatedAtTurn && run.accepted),
+      ),
+    lowSignalWarningVisible:
+      faultMode !== "low-signal" ||
+      Boolean(
+        lowSignalWarning?.level === "warning" &&
+          lowSignalWarning.entityType === "lane" &&
+          lowSignalWarning.message.includes("Low-signal slice cadence detected"),
+      ),
+    lowSignalEventVisible: faultMode !== "low-signal" || Boolean(lowSignalEvent),
+    lowSignalCheckpointVisible: faultMode !== "low-signal" || Boolean(lowSignalCheckpoint),
+    lowSignalDoesNotBypassVerification:
+      faultMode !== "low-signal" ||
+      Boolean(verifyRuns.some((run) => run.turn > lowSignal.injectedAtTurn && run.accepted) && finalSlice?.status === "accepted"),
     overseerRan:
       faultMode === "source-mutation" ||
       finalSnapshot.agentRuns.some((run) => run.role === "overseer" && run.entityId === scenarioEntityId),
@@ -367,39 +517,469 @@ const summary = {
       finalOutcome === "accepted" ||
       finalSnapshot.activeEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level)),
   },
-  artifacts: {
-    summary: summaryPath,
-    snapshot: snapshotPath,
-    graph: graphPath,
-    report: reportPath,
-    timeline: timelinePath,
-    workerEvents: workerRun?.eventsPath,
-    workerResult: workerRun?.resultPath,
-    reviewerEvents: reviewerRun?.eventsPath,
-    reviewerResult: reviewerRun?.resultPath,
-    verificationOutput: verifyRuns.at(-1)?.outputPath,
-    recoveryScan: staleRecovery.scanOutputPath,
-    recoveryMark: staleRecovery.markOutputPath,
-    recoveryRestart: staleRecovery.restartOutputPath,
-  },
+  artifacts: artifactPaths,
 };
+
+fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+
+const artifactIndex = buildArtifactIndex(summary);
+fs.writeFileSync(artifactIndexPath, `${JSON.stringify(artifactIndex, null, 2)}\n`, "utf8");
+fs.writeFileSync(artifactIndexMarkdownPath, renderArtifactIndexMarkdown(artifactIndex), "utf8");
+summary.artifactIndex = {
+  path: artifactIndexPath,
+  markdownPath: artifactIndexMarkdownPath,
+  itemCount: artifactIndex.items.length,
+  missingExpected: artifactIndex.items.filter((item) => item.expected && !item.exists).map((item) => item.key),
+};
+summary.assertions.artifactIndexWritten = fs.existsSync(artifactIndexPath) && fs.existsSync(artifactIndexMarkdownPath);
+summary.assertions.artifactIndexClassifiesOutcome = artifactIndex.classification.code === outcomeClassification.code;
+summary.assertions.artifactIndexLinksCoreEvidence =
+  ["summary", "snapshot", "graph", "report", "timeline"].every((key) =>
+    artifactIndex.items.some((item) => item.key === key && item.exists),
+  ) &&
+  (finalOutcome !== "accepted" ||
+    ["workerResult", "reviewerResult", "verificationOutput"].every((key) =>
+      artifactIndex.items.some((item) => item.key === key && item.exists),
+    ));
+if (historyEnabled) {
+  archiveRunHistory(summary, artifactIndex);
+}
+summary.assertions.runHistoryArchived =
+  !historyEnabled ||
+  Boolean(
+    historyPaths &&
+      fs.existsSync(historyPaths.summary) &&
+      fs.existsSync(historyPaths.artifactIndex) &&
+      fs.existsSync(historyPaths.artifactIndexMarkdown) &&
+      fs.existsSync(historyPaths.runsIndex),
+  );
 
 updateManifest({
   phase: runPhase,
   runMode: "live-agent-smoke",
   liveRun: {
+    runId,
     command: "npm run demo:live-agent:run",
     driver,
     summary: summaryPath,
     fault: faultMode,
     finalOutcome,
     finalReason,
+    outcomeClassification,
+    artifactIndex: artifactIndexPath,
+    history: summary.history,
     updatedAt: new Date().toISOString(),
   },
 });
-fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
 fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+if (historyEnabled) {
+  archiveRunHistory(summary, artifactIndex);
+}
 console.log(JSON.stringify(summary, null, 2));
+
+function classifyOutcome({
+  finalOutcome,
+  finalReason,
+  faultMode,
+  finalSnapshot,
+  finalSlice,
+  verifyRuns,
+  turns,
+  staleRecovery,
+  finalSourceMutations,
+}) {
+  const activeBlockingEscalations = finalSnapshot.activeEscalations.filter((item) =>
+    ["blocker", "human_required", "critical"].includes(item.level),
+  );
+  const latestVerify = verifyRuns.at(-1);
+  const noProgressTurn = turns
+    .filter((turn) => turn.kind === "overseer")
+    .find((turn) => {
+      const summary = turn.commandSummary;
+      return summary && summary.executed === 0 && (summary.blocked > 0 || summary.failed > 0);
+    });
+  const evidence = {
+    sliceId: finalSlice?.id,
+    sliceStatus: finalSlice?.status,
+    activeBlockingEscalations: activeBlockingEscalations.map((item) => ({
+      id: item.id,
+      level: item.level,
+      entityType: item.entityType,
+      entityId: item.entityId,
+      message: item.message,
+    })),
+  };
+
+  if (finalSourceMutations.some((item) => item.mutated)) {
+    return {
+      code: "source_mutation",
+      severity: "human_required",
+      explanation: "A registered immutable source spec changed during the run, so the harness stopped affected work.",
+      evidence: {
+        ...evidence,
+        mutatedSources: finalSourceMutations.filter((item) => item.mutated),
+      },
+    };
+  }
+
+  if (finalOutcome === "accepted") {
+    return {
+      code: "accepted",
+      severity: "accepted",
+      explanation: "The selected slice reached accepted status after worker evidence, independent review, and deterministic verification.",
+      evidence: {
+        ...evidence,
+        acceptedVerifyRun: latestVerify?.accepted ? latestVerify : undefined,
+        reviewStatus: finalSlice?.reviewResult?.status,
+      },
+    };
+  }
+
+  if (/Max (runtime|turns|slices|agent runs)/i.test(finalReason ?? "")) {
+    return {
+      code: "limit_exceeded",
+      severity: "blocked",
+      explanation: "The run stopped because one of the configured scenario bounds was reached.",
+      evidence: {
+        ...evidence,
+        finalReason,
+      },
+    };
+  }
+
+  if (faultMode === "stale-run" && staleRecovery.injectedAtTurn && !staleRecovery.restartedAtTurn) {
+    return {
+      code: "recovery_blocked",
+      severity: "blocked",
+      explanation: "A stale worker run was detected but recovery did not complete before the run stopped.",
+      evidence: {
+        ...evidence,
+        staleRecovery,
+      },
+    };
+  }
+
+  if (latestVerify && !latestVerify.accepted) {
+    return {
+      code: "verification_failed",
+      severity: finalOutcome === "human_required" ? "human_required" : "blocked",
+      explanation: "Deterministic verification ran but did not accept the slice.",
+      evidence: {
+        ...evidence,
+        latestVerify,
+      },
+    };
+  }
+
+  if (hasHumanRequired(finalSnapshot)) {
+    return {
+      code: "human_required",
+      severity: "human_required",
+      explanation: "A human-required or critical escalation is active.",
+      evidence,
+    };
+  }
+
+  if (noProgressTurn) {
+    return {
+      code: "orchestration_no_progress",
+      severity: "blocked",
+      explanation: "An overseer execution turn completed without executing any useful command and reported blocked or failed commands.",
+      evidence: {
+        ...evidence,
+        turn: noProgressTurn.turn,
+        commandSummary: noProgressTurn.commandSummary,
+      },
+    };
+  }
+
+  if (activeBlockingEscalations.length > 0) {
+    return {
+      code: "blocked_escalation",
+      severity: "blocked",
+      explanation: "One or more blocker-level escalations remain active.",
+      evidence,
+    };
+  }
+
+  return {
+    code: "blocked_unknown",
+    severity: finalOutcome === "human_required" ? "human_required" : "blocked",
+    explanation: "The run stopped without acceptance, but no more specific classifier matched the final state.",
+    evidence: {
+      ...evidence,
+      finalReason,
+    },
+  };
+}
+
+function buildArtifactIndex(summary) {
+  const itemsByPath = new Map();
+  const addArtifact = ({ key, category, artifactPath, description, expected = true }) => {
+    if (!artifactPath || ["artifactIndex", "artifactIndexMarkdown"].includes(key)) return;
+    const resolvedPath = path.resolve(artifactPath);
+    if (itemsByPath.has(resolvedPath)) return;
+    itemsByPath.set(resolvedPath, {
+      key,
+      category,
+      path: resolvedPath,
+      exists: fs.existsSync(resolvedPath),
+      expected,
+      description,
+    });
+  };
+
+  for (const [key, artifactPath] of Object.entries(summary.artifacts)) {
+    addArtifact({
+      key,
+      category: artifactCategory(key),
+      artifactPath,
+      description: artifactDescription(key),
+      expected: isExpectedArtifact(key, summary),
+    });
+  }
+
+  for (const turn of summary.turns) {
+    const pathFields = [
+      "outputPath",
+      "decisionPath",
+      "scanOutputPath",
+      "markOutputPath",
+      "restartOutputPath",
+      "warningPath",
+    ];
+    for (const field of pathFields) {
+      addArtifact({
+        key: `turn-${turn.turn}-${turn.kind}-${field}`,
+        category: "turn",
+        artifactPath: turn[field],
+        description: `Turn ${turn.turn} ${turn.kind} ${field}.`,
+        expected: true,
+      });
+    }
+  }
+
+  const items = [...itemsByPath.values()].sort((left, right) =>
+    `${left.category}:${left.key}`.localeCompare(`${right.category}:${right.key}`),
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    workspace: summary.workspace,
+    runMode: summary.runMode,
+    phase: summary.phase,
+    scenario: summary.scenario,
+    fault: summary.fault,
+    finalOutcome: summary.finalOutcome,
+    finalReason: summary.finalReason,
+    classification: summary.outcomeClassification,
+    counts: {
+      items: items.length,
+      missingExpected: items.filter((item) => item.expected && !item.exists).length,
+      byCategory: items.reduce((accumulator, item) => {
+        accumulator[item.category] = (accumulator[item.category] ?? 0) + 1;
+        return accumulator;
+      }, {}),
+    },
+    quickOpen: {
+      summary: summary.artifacts.summary,
+      snapshot: summary.artifacts.snapshot,
+      report: summary.artifacts.report,
+      timeline: summary.artifacts.timeline,
+      latestWorkerResult: summary.artifacts.workerResult,
+      latestReviewerResult: summary.artifacts.reviewerResult,
+      latestVerificationOutput: summary.artifacts.verificationOutput,
+    },
+    items,
+  };
+}
+
+function renderArtifactIndexMarkdown(index) {
+  const lines = [
+    "# Live Agent Smoke Artifact Index",
+    "",
+    `Generated: ${index.generatedAt}`,
+    `Workspace: ${index.workspace}`,
+    `Scenario: ${index.scenario}`,
+    `Phase: ${index.phase}`,
+    `Fault: ${index.fault.mode}`,
+    `Outcome: ${index.finalOutcome}`,
+    `Classification: ${index.classification.code} (${index.classification.severity})`,
+    "",
+    "## Classification",
+    "",
+    index.classification.explanation,
+    "",
+    "## Quick Open",
+    "",
+    ...Object.entries(index.quickOpen)
+      .filter(([, value]) => value)
+      .map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## Artifacts",
+    "",
+    "| Category | Key | Exists | Path |",
+    "| --- | --- | --- | --- |",
+  ];
+  for (const item of index.items) {
+    lines.push(
+      `| ${escapeMarkdownTableCell(item.category)} | ${escapeMarkdownTableCell(item.key)} | ${
+        item.exists ? "yes" : "no"
+      } | ${escapeMarkdownTableCell(item.path)} |`,
+    );
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function artifactCategory(key) {
+  if (["summary", "snapshot", "graph", "report", "timeline"].includes(key)) return "run";
+  if (key.includes("worker") || key.includes("reviewer")) return "agent";
+  if (key.includes("verification")) return "verification";
+  if (key.includes("recovery")) return "recovery";
+  if (key.includes("context")) return "handoff";
+  if (key.includes("lowSignal")) return "warning";
+  return "other";
+}
+
+function artifactDescription(key) {
+  const descriptions = {
+    summary: "Final machine-readable run summary.",
+    snapshot: "Final observe snapshot with lanes, slices, agents, events, checkpoints, and escalations.",
+    graph: "Final dependency and activity graph.",
+    report: "Selected slice report with FR/AC evidence.",
+    timeline: "Selected slice timeline.",
+    workerEvents: "Latest worker JSONL event stream.",
+    workerResult: "Latest structured worker result.",
+    reviewerEvents: "Latest reviewer JSONL event stream.",
+    reviewerResult: "Latest structured independent review result.",
+    verificationOutput: "Latest deterministic verification command output.",
+    recoveryScan: "Recovery scan output.",
+    recoveryMark: "Recovery mark-stale output.",
+    recoveryRestart: "Recovery restart output.",
+    contextWorkerPacket: "Worker resume packet generated at context handoff.",
+    contextReviewerPacket: "Reviewer resume packet generated at context handoff.",
+    contextVerifierPacket: "Verifier resume packet generated at context handoff.",
+    contextOverseerPacket: "Overseer resume packet generated at context handoff.",
+    contextRecoveryPacket: "Recovery resume packet generated at context handoff.",
+    lowSignalWarning: "Lane-scoped low-signal/proof-churn warning artifact.",
+  };
+  return descriptions[key] ?? "Run artifact.";
+}
+
+function isExpectedArtifact(key, summary) {
+  if (["summary", "snapshot", "graph", "report", "timeline"].includes(key)) return true;
+  if (summary.fault.mode === "source-mutation") return false;
+  if (["workerResult", "reviewerResult", "verificationOutput"].includes(key)) return summary.finalOutcome === "accepted";
+  return Boolean(summary.artifacts[key]);
+}
+
+function escapeMarkdownTableCell(value) {
+  return String(value ?? "").replaceAll("|", "\\|");
+}
+
+function buildHistoryPaths(runId) {
+  const runDir = path.join(historyRoot, runId);
+  return {
+    root: historyRoot,
+    runDir,
+    runsIndex: path.join(historyRoot, "runs.json"),
+    summary: path.join(runDir, "summary.json"),
+    artifactIndex: path.join(runDir, "artifact-index.json"),
+    artifactIndexMarkdown: path.join(runDir, "artifact-index.md"),
+    originalSummary: summaryPath,
+    originalArtifactIndex: artifactIndexPath,
+    originalArtifactIndexMarkdown: artifactIndexMarkdownPath,
+  };
+}
+
+function archiveRunHistory(summary, artifactIndex) {
+  const paths = summary.history?.enabled ? summary.history : undefined;
+  if (!paths) return;
+  fs.mkdirSync(paths.runDir, { recursive: true });
+  fs.writeFileSync(paths.summary, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  fs.writeFileSync(paths.artifactIndex, `${JSON.stringify(artifactIndex, null, 2)}\n`, "utf8");
+  fs.writeFileSync(paths.artifactIndexMarkdown, renderArtifactIndexMarkdown(artifactIndex), "utf8");
+
+  const index = fs.existsSync(paths.runsIndex)
+    ? JSON.parse(fs.readFileSync(paths.runsIndex, "utf8"))
+    : { version: 1, root: historyRoot, generatedAt: new Date().toISOString(), runs: [] };
+  const record = createHistoryRecord(summary);
+  const withoutCurrent = (index.runs ?? []).filter((item) => item.runId !== summary.runId);
+  const runs = [...withoutCurrent, record].sort((left, right) =>
+    String(left.generatedAt ?? "").localeCompare(String(right.generatedAt ?? "")),
+  );
+  fs.mkdirSync(historyRoot, { recursive: true });
+  fs.writeFileSync(
+    paths.runsIndex,
+    `${JSON.stringify(
+      {
+        version: 1,
+        root: historyRoot,
+        generatedAt: index.generatedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        runs,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function createHistoryRecord(summary) {
+  return {
+    runId: summary.runId,
+    scenario: summary.scenario,
+    runMode: summary.runMode,
+    phase: summary.phase,
+    driver: summary.driver,
+    faultMode: summary.fault.mode,
+    startedAt: summary.startedAt,
+    generatedAt: summary.generatedAt,
+    finalOutcome: summary.finalOutcome,
+    finalReason: summary.finalReason,
+    classificationCode: summary.outcomeClassification.code,
+    classificationSeverity: summary.outcomeClassification.severity,
+    sliceId: summary.sliceId,
+    finalSliceStatus: summary.finalSliceStatus,
+    counts: pickComparableCounts(summary.counts),
+    workspace: summary.workspace,
+    summary: summary.history.summary,
+    artifactIndex: summary.history.artifactIndex,
+    artifactIndexMarkdown: summary.history.artifactIndexMarkdown,
+    originalSummary: summary.history.originalSummary,
+    originalArtifactIndex: summary.history.originalArtifactIndex,
+    originalArtifactIndexMarkdown: summary.history.originalArtifactIndexMarkdown,
+  };
+}
+
+function pickComparableCounts(counts = {}) {
+  return {
+    turns: counts.turns ?? 0,
+    verifyRuns: counts.verifyRuns ?? 0,
+    lanes: counts.lanes ?? 0,
+    slices: counts.slices ?? 0,
+    agentRuns: counts.agentRuns ?? 0,
+    evidence: counts.evidence ?? 0,
+    activeEscalations: counts.activeEscalations ?? 0,
+    graphNodes: counts.graphNodes ?? 0,
+    graphEdges: counts.graphEdges ?? 0,
+    timelineItems: counts.timelineItems ?? 0,
+  };
+}
+
+function compactTimestamp(value) {
+  return value.replace(/[^0-9A-Za-z]/g, "").slice(0, 15);
+}
+
+function sanitizeRunId(value) {
+  const normalized = String(value ?? "").trim().replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-");
+  if (!normalized || normalized === "." || normalized === "..") {
+    throw new Error("Invalid --run-id; expected at least one alphanumeric, dot, underscore, or hyphen.");
+  }
+  return normalized.slice(0, 120);
+}
 
 function resetScenario() {
   if (samePath(workspace, defaultWorkspace)) {
@@ -527,6 +1107,22 @@ function injectConfiguredFault() {
       },
     ];
   }
+  if (faultMode === "context-handoff") {
+    return [
+      {
+        mode: faultMode,
+        expectedDetection: "resume packets and latest checkpoints allow fresh roles to continue from durable harness state",
+      },
+    ];
+  }
+  if (faultMode === "low-signal") {
+    return [
+      {
+        mode: faultMode,
+        expectedDetection: "planner low-signal warning remains visible while review and verification still gate acceptance",
+      },
+    ];
+  }
   return [];
 }
 
@@ -601,6 +1197,179 @@ function handleStaleRunFault(turn, snapshot) {
   };
 }
 
+function handleContextHandoffFault(turn, snapshot) {
+  if (faultMode !== "context-handoff" || contextHandoff.generatedAtTurn) return undefined;
+  const slice = snapshot.slices.find(
+    (item) =>
+      item.status === "implemented" &&
+      item.evidence.some((evidence) => evidence.kind === "worker_result") &&
+      !item.evidence.some((evidence) => evidence.kind === "review_result"),
+  );
+  if (!slice) return undefined;
+
+  const workerRun = snapshot.agentRuns
+    .filter((run) => run.sliceId === slice.id && run.role === "worker" && run.status === "completed")
+    .at(-1);
+  if (!workerRun) return undefined;
+
+  contextHandoff.sliceId = slice.id;
+  contextHandoff.laneId = slice.laneId;
+  contextHandoff.workerRunId = workerRun.id;
+  contextHandoff.generatedAtTurn = turn;
+
+  const checkpointSpecs = [
+    { key: "worker", role: "worker", entity: `slice:${slice.id}` },
+    { key: "reviewer", role: "reviewer", entity: `slice:${slice.id}` },
+    { key: "verifier", role: "verifier", entity: `slice:${slice.id}` },
+    { key: "overseer", role: "overseer", entity: `lane:${slice.laneId}` },
+  ];
+  for (const spec of checkpointSpecs) {
+    const output = runSwarm([
+      "checkpoint",
+      "create",
+      "--entity",
+      spec.entity,
+      "--role",
+      spec.role,
+      "--actor",
+      "live-context-handoff",
+    ]);
+    const outputPath = path.join(artifactsPath, `turn-${turn}-checkpoint-${spec.key}.txt`);
+    fs.writeFileSync(outputPath, output, "utf8");
+    contextHandoff.checkpointOutputPaths[spec.key] = outputPath;
+    contextHandoff.checkpointIds[spec.key] = parseCheckpointId(output);
+  }
+
+  const packetSpecs = [
+    { key: "worker", args: ["resume-context", "--entity", `slice:${slice.id}`, "--role", "worker"] },
+    { key: "reviewer", args: ["resume-context", "--entity", `slice:${slice.id}`, "--role", "reviewer"] },
+    { key: "verifier", args: ["resume-context", "--entity", `slice:${slice.id}`, "--role", "verifier"] },
+    { key: "overseer", args: ["resume-context", "--entity", `lane:${slice.laneId}`, "--role", "overseer"] },
+    { key: "recovery", args: ["resume-context", "--run", workerRun.id] },
+  ];
+  for (const spec of packetSpecs) {
+    const output = runSwarm(spec.args);
+    const outputPath = path.join(artifactsPath, `turn-${turn}-resume-${spec.key}.md`);
+    fs.writeFileSync(outputPath, output, "utf8");
+    contextHandoff.packetPaths[spec.key] = outputPath;
+  }
+
+  const after = observe(220);
+  return {
+    turn,
+    kind: "context-handoff",
+    sliceId: slice.id,
+    laneId: slice.laneId,
+    workerRunId: workerRun.id,
+    checkpointIds: contextHandoff.checkpointIds,
+    packetPaths: contextHandoff.packetPaths,
+    checkpointCountAfter: after.checkpoints.length,
+    eventTypesAfter: after.recentEvents.slice(-8).map((event) => event.type),
+  };
+}
+
+function handleLowSignalFault(turn, snapshot) {
+  if (faultMode !== "low-signal" || lowSignal.injectedAtTurn) return undefined;
+  const slice = snapshot.slices.find(
+    (item) =>
+      item.status === "implemented" &&
+      item.evidence.some((evidence) => evidence.kind === "worker_result") &&
+      !item.evidence.some((evidence) => evidence.kind === "review_result"),
+  );
+  if (!slice) return undefined;
+
+  const warning = insertLowSignalWarning(slice, turn);
+  return {
+    turn,
+    kind: "low-signal-warning",
+    sliceId: slice.id,
+    laneId: slice.laneId,
+    escalationId: warning.escalationId,
+    checkpointId: warning.checkpointId,
+    warningPath: warning.warningPath,
+    message: warning.message,
+  };
+}
+
+function insertLowSignalWarning(slice, turn) {
+  const now = new Date().toISOString();
+  const message =
+    "Low-signal slice cadence detected: proof-churn sentinel saw work that could pass mechanically without a visible downstream decision.";
+  const reason =
+    "The live smoke injected this warning to prove proof-churn concerns stay visible without bypassing reviewer and deterministic verification gates.";
+  const escalation = {
+    id: makeId("escalation"),
+    level: "warning",
+    status: "active",
+    entityType: "lane",
+    entityId: slice.laneId,
+    message,
+    reason,
+    createdBy: "live-proof-churn-sentinel",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const store = new SwarmStore(workspace);
+  try {
+    store.insertEscalation(escalation);
+    store.addEvent(
+      createEvent({
+        actor: "live-proof-churn-sentinel",
+        type: "planner.low_signal_work",
+        entityType: "lane",
+        entityId: slice.laneId,
+        payload: {
+          faultMode: "low-signal",
+          escalationId: escalation.id,
+          level: escalation.level,
+          sliceIds: [slice.id],
+          threshold: 1,
+          reason,
+          suggestedAction:
+            "Keep the warning visible, require independent review and deterministic verification, then decide whether a larger readiness pack is needed.",
+        },
+      }),
+    );
+    const checkpoint = refreshCheckpoint({
+      store,
+      role: "planner",
+      entityType: "lane",
+      entityId: slice.laneId,
+      actor: "live-proof-churn-sentinel",
+      reason: "Injected low-signal/proof-churn warning for live smoke.",
+    });
+    lowSignal.sliceId = slice.id;
+    lowSignal.laneId = slice.laneId;
+    lowSignal.injectedAtTurn = turn;
+    lowSignal.escalationId = escalation.id;
+    lowSignal.checkpointId = checkpoint.id;
+  } finally {
+    store.close();
+  }
+
+  lowSignal.warningPath = path.join(artifactsPath, `turn-${turn}-low-signal-warning.json`);
+  fs.writeFileSync(
+    lowSignal.warningPath,
+    `${JSON.stringify(
+      {
+        mode: "low-signal",
+        injectedAtTurn: turn,
+        sliceId: slice.id,
+        laneId: slice.laneId,
+        escalationId: escalation.id,
+        checkpointId: lowSignal.checkpointId,
+        message,
+        reason,
+        expectedContinuation: "Independent review and deterministic verification must still pass before acceptance.",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  return { escalationId: escalation.id, checkpointId: lowSignal.checkpointId, warningPath: lowSignal.warningPath, message };
+}
+
 function injectStaleAgentRun(sliceId, turn) {
   const staleTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const store = new SwarmStore(workspace);
@@ -634,6 +1403,24 @@ function injectStaleAgentRun(sliceId, turn) {
   staleRecovery.injectedAtTurn = turn;
 }
 
+function contextHandoffPacketAssertions() {
+  if (faultMode !== "context-handoff") return {};
+  return {
+    worker: packetIncludes("worker", ["Resume Packet: worker slice:", "Worker Focus", "FR/AC Scope", "Guardrails"]),
+    reviewer: packetIncludes("reviewer", ["Resume Packet: reviewer slice:", "Reviewer / Sleuth Focus", "Worker claims"]),
+    verifier: packetIncludes("verifier", ["Resume Packet: verifier slice:", "Verifier Focus", "Block acceptance unless every in-scope FR/AC"]),
+    overseer: packetIncludes("overseer", ["Resume Packet: overseer lane:", "Planner / Overseer Focus", "Active slices"]),
+    recovery: packetIncludes("recovery", ["Resume Packet: recovery agent_run:", "Recovery Focus", "Artifact paths"]),
+  };
+}
+
+function packetIncludes(key, expected) {
+  const packetPath = contextHandoff.packetPaths[key];
+  if (!packetPath || !fs.existsSync(packetPath)) return false;
+  const content = fs.readFileSync(packetPath, "utf8");
+  return expected.every((text) => content.includes(text));
+}
+
 function clearResolvedRepairEscalations(sliceId, activeEscalations, turn) {
   const clearable = activeEscalations.filter((escalation) => {
     if (escalation.entityType !== "slice" || escalation.entityId !== sliceId) return false;
@@ -660,6 +1447,11 @@ function clearResolvedRepairEscalations(sliceId, activeEscalations, turn) {
     });
   }
   return cleared;
+}
+
+function parseCheckpointId(output) {
+  const match = /Refreshed checkpoint (CHK-[a-f0-9]+)/i.exec(output);
+  return match?.[1];
 }
 
 function clearResolvedStaleRecoveryEscalations(sliceId, activeEscalations, turn) {
@@ -764,6 +1556,22 @@ function assertApprovedWorkspace(target) {
   }
   if (samePath(resolved, repoRoot) || samePath(resolved, path.dirname(repoRoot)) || samePath(resolved, demoRoot)) {
     throw new Error(`Refusing unsafe live smoke workspace: ${resolved}`);
+  }
+}
+
+function assertApprovedHistoryRoot(target, currentWorkspace) {
+  const demoRoot = path.join(repoRoot, ".swarm-demo");
+  const resolved = path.resolve(target);
+  const resolvedLower = resolved.toLowerCase();
+  const workspaceLower = path.resolve(currentWorkspace).toLowerCase();
+  if (!resolvedLower.startsWith(`${demoRoot.toLowerCase()}${path.sep}`)) {
+    throw new Error(`Refusing to write live smoke history outside ${demoRoot}: ${resolved}`);
+  }
+  if (samePath(resolved, repoRoot) || samePath(resolved, path.dirname(repoRoot)) || samePath(resolved, demoRoot)) {
+    throw new Error(`Refusing unsafe live smoke history root: ${resolved}`);
+  }
+  if (samePath(resolved, currentWorkspace) || resolvedLower.startsWith(`${workspaceLower}${path.sep}`)) {
+    throw new Error(`Refusing to write live smoke history inside reset workspace: ${resolved}`);
   }
 }
 

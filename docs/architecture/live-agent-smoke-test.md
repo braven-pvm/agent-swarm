@@ -123,7 +123,7 @@ npm run demo:live-agent:serve
 npm run demo:live-agent:run
 ```
 
-Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, bounded overseer execution for planning-safe harness commands, bounded worker/reviewer child dispatch, and the autonomous acceptance loop are implemented. Fault injection and full-product mode are next.
+Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, bounded overseer execution for planning-safe harness commands, bounded worker/reviewer child dispatch, the autonomous acceptance loop, Phase 6A-6E fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented. Full-product mode is next.
 
 The serve command should keep the read-only UI open. The run command should populate state over time so the user can watch:
 
@@ -396,11 +396,11 @@ Add package scripts:
 }
 ```
 
-The run script repeatedly launches the overseer, lets it dispatch workers/reviewers, runs deterministic verification after reviewer acceptance, and writes a summary artifact.
+The run script repeatedly launches the overseer, lets it dispatch workers/reviewers, runs deterministic verification after reviewer acceptance, writes a summary artifact plus JSON/Markdown artifact index with an explicit `outcomeClassification`, and archives reset-resistant run history for comparison. The local web viewer can read that history through read-only APIs and show archived runs, latest-run comparison, classifier explanation, and artifact index detail.
 
 ### Slice 6: Add live smoke assertions
 
-Status: implemented for default CI with fake Codex on the real runner paths; a non-default real Codex smoke remains useful for manual validation.
+Status: implemented for default CI with fake Codex on the real runner paths, including Phase 7A artifact index/outcome-classification assertions, Phase 7B-1 run-history comparison assertions, and Phase 7B-2 web history API assertions. A non-default real Codex smoke remains useful for manual validation.
 
 Add an optional test or smoke checker that does not run in default CI:
 
