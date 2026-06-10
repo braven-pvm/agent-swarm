@@ -75,7 +75,7 @@ The current prototype supports:
 - verifier gates using worker-result evidence and FR/AC coverage
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters via `swarm review`
 - reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
-- visible Codex/fixture overseer dispatch through `swarm orchestrate`
+- visible overseer dispatch (fixture, codex, claude) through the driver registry via `swarm orchestrate`
 - overseer JSONL event ingestion, heartbeats, structured planning decisions, prompt artifacts, and overseer checkpoints
 - bounded overseer command execution through `swarm orchestrate --execute`
 - overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
@@ -126,7 +126,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 57/57 passing
+npm test -> 58/58 passing
 ```
 
 ## Useful Demo Commands

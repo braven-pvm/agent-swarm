@@ -49,6 +49,8 @@ protocol:
 
 `swarm review <slice> --driver claude` runs an independent reviewer under `--permission-mode plan`. The `inspectSourceMutations` before/after check remains as defense-in-depth against any driver mutating immutable source specs.
 
+The visible overseer (`swarm orchestrate`) dispatches through the same registry under the read-only posture, reusing `readOnly` + `resultSchema` (the overseer-decision schema). `swarm orchestrate --driver claude` runs the overseer under `--permission-mode plan`. The overseer agent run is read-only analysis; the separate bounded `--execute` command flow is harness-driven and unaffected.
+
 ## Manual live smoke (not part of npm test)
 
 ```powershell

@@ -51,7 +51,7 @@ Implemented and covered by tests:
 - verifier acceptance gate with per-FR/AC evidence coverage
 - independent reviewer runner through `swarm review`; reviewer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
-- visible overseer runner through `swarm orchestrate`
+- visible overseer runner through `swarm orchestrate`; overseer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
 - overseer JSONL events, heartbeat, structured decision artifact, prompt artifact, and role/entity checkpoint
 - bounded overseer command execution through `swarm orchestrate --execute`
 - overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
@@ -71,7 +71,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 57/57 passing
+npm test -> 58/58 passing
 git diff --check -> clean
 ```
 
