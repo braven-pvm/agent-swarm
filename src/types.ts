@@ -22,6 +22,7 @@ export type HeartbeatState =
   | "blocked";
 
 export type RunMode = "unspecified" | "fixture" | "scripted-codex" | "live-agent-smoke";
+export type AgentRole = "overseer" | "planner" | "worker" | "verifier" | "reviewer" | "recovery";
 
 export interface SourceRef {
   adapterId: string;
@@ -151,6 +152,9 @@ export interface HeartbeatRecord {
 export interface AgentRunRecord {
   id: string;
   sliceId: string;
+  role?: AgentRole;
+  entityType?: EntityType;
+  entityId?: string;
   actor: string;
   driver: string;
   status: "running" | "completed" | "failed" | "stale" | "released";

@@ -1,6 +1,6 @@
 import { createEvent } from "./events.js";
 import type { SwarmStore } from "./storage.js";
-import type { HeartbeatState } from "./types.js";
+import type { EntityType, HeartbeatState } from "./types.js";
 
 export interface WorkerEventIngestResult {
   eventCount: number;
@@ -14,6 +14,8 @@ export interface WorkerJsonlIngestContext {
   actor: string;
   sliceId: string;
   driver?: string;
+  entityType?: EntityType;
+  entityId?: string;
   eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
 }
@@ -29,6 +31,8 @@ export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: str
     actor: input.actor,
     sliceId: input.sliceId,
     driver: input.driver,
+    entityType: input.entityType,
+    entityId: input.entityId,
     eventPrefix: input.eventPrefix,
     classify: input.classify,
   });
@@ -87,12 +91,14 @@ function ingestLine(
   if (!parsed.ok) {
     state.parseErrorCount += 1;
     const eventPrefix = input.eventPrefix ?? "worker";
+    const entityType = input.entityType ?? "slice";
+    const entityId = input.entityId ?? input.sliceId;
     input.store.addEvent(
       createEvent({
         actor: input.actor,
         type: `${eventPrefix}.agent_event.parse_failed`,
-        entityType: "slice",
-        entityId: input.sliceId,
+        entityType,
+        entityId,
         payload: {
           lineNumber: state.lineNumber,
           driver: input.driver,
@@ -106,6 +112,8 @@ function ingestLine(
 
   const payload = asPayload(parsed.value);
   const eventPrefix = input.eventPrefix ?? "worker";
+  const entityType = input.entityType ?? "slice";
+  const entityId = input.entityId ?? input.sliceId;
   state.sessionId ??= findSessionId(payload);
   const heartbeatState = input.classify?.(payload) ?? inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
@@ -114,8 +122,8 @@ function ingestLine(
     createEvent({
       actor: input.actor,
       type: `${eventPrefix}.agent_event`,
-      entityType: "slice",
-      entityId: input.sliceId,
+      entityType,
+      entityId,
       payload: {
         lineNumber: state.lineNumber,
         driver: input.driver,
@@ -129,8 +137,8 @@ function ingestLine(
     actor: input.actor,
     state: heartbeatState,
     detail: `Observed worker JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
-    entityType: "slice",
-    entityId: input.sliceId,
+    entityType,
+    entityId,
   });
 }
 

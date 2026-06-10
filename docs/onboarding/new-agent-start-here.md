@@ -75,6 +75,10 @@ The current prototype supports:
 - verifier gates using worker-result evidence and FR/AC coverage
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters via `swarm review`
 - reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
+- visible Codex/fixture overseer dispatch through `swarm orchestrate`
+- overseer JSONL event ingestion, heartbeats, structured planning decisions, prompt artifacts, and overseer checkpoints
+- bounded overseer command execution through `swarm orchestrate --execute`
+- overseer command events/artifacts and Phase 5A allowlist/blocking
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, revive, and restart
 - latest-only role/entity checkpoints
@@ -116,7 +120,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 49/49 passing
+npm test -> 52/52 passing
 ```
 
 ## Useful Demo Commands
@@ -138,6 +142,13 @@ node dist\cli.js serve --workspace .swarm-demo\observability --host 127.0.0.1 --
 
 ```powershell
 npm run demo:resume-context
+```
+
+```powershell
+npm run demo:live-agent:reset
+npm run demo:live-agent:overseer:fixture
+npm run demo:live-agent:overseer:execute:fixture
+npm run demo:live-agent:serve
 ```
 
 Use `--port 0` if a fixed port is busy.
@@ -174,13 +185,17 @@ Run-mode boundary:
 
 - `demo:web-observability`: fixture regression.
 - `demo:web-observability:codex`: scripted planning with real Codex workers.
-- full live-agent overseer smoke: not implemented yet; see `docs/architecture/live-agent-smoke-test.md`.
+- full live-agent overseer smoke: partially implemented through Phase 5A; child-agent dispatch and full-product mode are still pending.
 - live smoke Phase 1 reset/run-mode setup: implemented with `npm run demo:live-agent:reset` and `npm run demo:live-agent:serve`.
 - live smoke Phase 2 reviewer runner: implemented with `swarm review <slice-id> --actor <actor> --driver codex`.
 - live smoke Phase 3 scripted worker+reviewer rehearsal: implemented with `npm run demo:live-agent:scripted`.
+- live smoke Phase 4 visible overseer runner: implemented with `swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke`.
+  Convenience scripts: `npm run demo:live-agent:overseer` and `npm run demo:live-agent:overseer:fixture`.
+- live smoke Phase 5A bounded overseer command execution: implemented with `swarm orchestrate --execute`.
+  Convenience scripts: `npm run demo:live-agent:overseer:execute` and `npm run demo:live-agent:overseer:execute:fixture`.
 
 ## Next Coherent Slice
 
-Next slice: visible overseer agent.
+Next slice: worker/reviewer dispatch.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Next implement Phase 4: a visible overseer agent that reads harness state, emits JSONL heartbeat/events, produces a structured planning decision, and stores that decision as an event/checkpoint. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Phase 4 is implemented: `swarm orchestrate` launches a visible overseer, streams JSONL into harness events/heartbeats, writes the full prompt as an artifact, validates a structured decision, and stores that decision as event/checkpoint state. Phase 5A is implemented: `swarm orchestrate --execute` can run allowlisted planning-safe harness commands such as `slices pull`, records command events/artifacts, and blocks worker/reviewer/verifier dispatch. Next implement Phase 5B: let the overseer dispatch workers/reviewers through the harness, observe state between transitions, and stop accepted/blocked/human-required with evidence. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.

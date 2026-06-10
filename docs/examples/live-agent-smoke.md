@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, and Phase 3 scripted worker+reviewer rehearsal are implemented. Real overseer, live run, and full-product mode are still planned.
+Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, and Phase 5A bounded command execution are implemented. Child-agent dispatch, autonomous live run, and full-product mode are still planned.
 
 This demo is the resettable real-world smoke test for the harness. Unlike fixture demos, it must use a real Codex overseer/planner to coordinate real Codex workers and real Codex verifier/reviewer agents.
 
@@ -32,7 +32,40 @@ Launch the real overseer/planner:
 npm run demo:live-agent:run
 ```
 
-`demo:live-agent:run` is not implemented yet. It is the later live overseer phase.
+`demo:live-agent:run` is not implemented yet. It is the later autonomous overseer phase.
+
+Run the Phase 4 visible overseer manually:
+
+```powershell
+npm run demo:live-agent:reset
+npm run demo:live-agent:overseer
+Push-Location .swarm-demo\live-agent-smoke
+node ..\..\dist\cli.js watch --once --view agents
+Pop-Location
+```
+
+This launches Codex through the real overseer runner, records the overseer as `overseer` on `harness:scenario:live-agent-smoke`, streams `overseer.codex_event` events, writes a structured decision artifact, and stores the planning decision as events/checkpoints. Phase 4 recommends commands only; it does not dispatch child workers yet.
+
+Cheap local variant without spending Codex cycles:
+
+```powershell
+npm run demo:live-agent:overseer:fixture
+```
+
+Run the Phase 5A bounded execution path:
+
+```powershell
+npm run demo:live-agent:reset
+npm run demo:live-agent:overseer:execute
+```
+
+Cheap local variant:
+
+```powershell
+npm run demo:live-agent:overseer:execute:fixture
+```
+
+This executes only allowlisted harness commands from the overseer decision. In Phase 5A that means read/planning commands and `slices pull`; worker, reviewer, and verifier dispatch commands are blocked with visible `overseer.command_blocked` events. A successful fixture execution creates the first backend lane/slice and command artifacts under `.swarm/artifacts/scenario-live-agent-smoke/`.
 
 Run the Phase 3 scripted Codex rehearsal:
 
@@ -47,13 +80,15 @@ This is not the autonomous overseer smoke. It resets the live smoke workspace, l
 .swarm-demo/live-agent-smoke/live-agent-scripted-artifacts/
 ```
 
-Current manual Phase 2 reviewer path after a slice exists:
+Current manual reviewer path after a slice exists:
 
 ```powershell
 node dist\cli.js review <slice-id> --actor independent-reviewer --driver codex
 ```
 
 For CI-style coverage, `tests/review-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` runner path.
+
+For Phase 4 and Phase 5A CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer runner path, including `--execute` and command blocking.
 
 Future full-product mode:
 

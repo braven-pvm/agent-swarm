@@ -48,6 +48,8 @@ Implemented as of 2026-06-10:
 - verification gates with per-FR/AC evidence coverage
 - independent reviewer runner with structured review evidence and review-gated verification
 - scripted live worker+reviewer rehearsal for the live smoke workspace
+- visible overseer runner with structured planning decisions and scenario-scoped observability
+- bounded overseer command execution for planning-safe harness commands
 - reports, timeline, graph, observe, and watch
 - stale-run recovery, revive, and restart
 - checkpoints and role-specific resume packets
@@ -56,10 +58,10 @@ Implemented as of 2026-06-10:
 
 Not yet implemented:
 
-- real Codex overseer/planner coordinating real workers and verifiers
-- live/full-product run modes beyond Phase 3 scripted worker+reviewer rehearsal
+- real Codex overseer/planner dispatching child workers/reviewers after bounded command execution
+- live/full-product run modes beyond Phase 5A bounded overseer command execution
 
-Latest known full verification: `npm test` passes 27/27 and `git diff --check` is clean.
+Latest known full verification: `npm test` passes 30/30 and `git diff --check` is clean.
 
 ## Functional Requirements
 
@@ -495,4 +497,4 @@ Expected outcome:
 - SQLite library/ORM: `better-sqlite3` direct vs Drizzle.
 - TUI library for `swarm watch`.
 - Exact Codex worker output schema.
-- Exact command shape for `swarm orchestrate` and the Codex verifier/reviewer runner.
+- Bounded execution model for `swarm orchestrate` once the overseer is allowed to run child harness commands.
