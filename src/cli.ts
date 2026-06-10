@@ -2921,6 +2921,9 @@ async function executeReviewRun(input: {
   validateSliceDispatchContract(slice);
   const target = input.store.targetById(slice.targetId);
   if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+  if (input.driver !== "fixture" && !getWorkerDriver(input.driver)) {
+    throw new Error(`Invalid reviewer driver: ${input.driver}. Expected one of: ${["fixture", ...workerDriverIds()].sort().join(", ")}.`);
+  }
   const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
   const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
   fs.mkdirSync(artifactPath, { recursive: true });
@@ -3036,6 +3039,7 @@ async function executeReviewRun(input: {
       store: input.store,
       actor: input.actor,
       sliceId: slice.id,
+      driver: input.driver,
       jsonl: result.stdout ?? "",
       eventPrefix: "reviewer",
     });
@@ -3086,6 +3090,8 @@ async function executeReviewRun(input: {
           exitCode: result.status,
           driver: input.driver,
           ok: reviewFinalization.ok,
+          structuredResultWritten: reviewFinalization.structuredResultWritten,
+          failureReason: reviewFinalization.failureReason,
           costUsd: reviewFinalization.costUsd,
           runId,
           eventsPath: jsonlPath,
@@ -3119,6 +3125,8 @@ async function executeReviewRun(input: {
         entityId: slice.id,
         payload: {
           exitCode: result.status,
+          driver: input.driver,
+          failureReason: reviewFinalization.failureReason,
           runId,
           eventsPath: jsonlPath,
           resultPath,
