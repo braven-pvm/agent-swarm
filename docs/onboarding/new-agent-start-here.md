@@ -81,10 +81,15 @@ The current prototype supports:
 - overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
 - overseer-dispatched worker/reviewer child agents with explicit actor, `--driver codex`, evidence gating, and visible command metadata
 - autonomous live acceptance loop through `npm run demo:live-agent:run`
-- live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, and report
+- live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, report, artifact index, outcome classification, run history, and run comparison
 - source-mutation fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
 - reviewer-repair fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
 - stale-run recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
+- context-handoff fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`
+- low-signal/proof-churn fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`
+- live-run artifact index and outcome classification through `live-agent-run-artifacts/artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`
+- reset-resistant live-run history and comparison through `.swarm-demo/live-agent-run-history/` and `npm run demo:live-agent:compare`
+- web viewer History tab with archived live runs, latest-run comparison, and selected-run artifact index details
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, revive, and restart
 - latest-only role/entity checkpoints
@@ -98,7 +103,7 @@ Important correction: the web-observability E2E harness is fixture-driven by def
 
 The web viewer is now product-shaped enough for local use:
 
-- top-level tabs: Overview, Specs, Work, Agents, Events
+- top-level tabs: Overview, Specs, Work, Agents, Events, History
 - domain readiness table
 - specs table with domain/tag/priority/ref/section data
 - spec search with domain filter and selected-spec-only search
@@ -106,8 +111,10 @@ The web viewer is now product-shaped enough for local use:
 - rendered slice markdown reports
 - lane, slice, agent, heartbeat, blocker, and event tables
 - read-only source detail API
+- read-only history APIs: `/api/history/runs`, `/api/history/run/:runId`, `/api/history/compare`
+- History tab for archived live runs, latest-run deltas, classifier explanation, and artifact-index rows
 
-It is still intentionally dependency-light and does not yet include a graph visualization, browser screenshot tests, historical run picker, or write actions.
+It is still intentionally dependency-light and does not yet include a graph visualization, browser screenshot tests, or write actions.
 
 The web-observability E2E harness now provides browser-facing smoke coverage without adding a browser dependency. It starts `swarm serve`, probes the served HTML/JS/APIs, exercises tab/search logic through a lightweight fake DOM, and writes artifacts for review.
 
@@ -126,7 +133,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 57/57 passing
+npm test -> 60/60 passing
 ```
 
 ## Useful Demo Commands
@@ -155,6 +162,7 @@ npm run demo:live-agent:reset
 npm run demo:live-agent:overseer:fixture
 npm run demo:live-agent:overseer:execute:fixture
 npm run demo:live-agent:serve
+npm run demo:live-agent:compare
 ```
 
 Use `--port 0` if a fixed port is busy.
@@ -191,7 +199,7 @@ Run-mode boundary:
 
 - `demo:web-observability`: fixture regression.
 - `demo:web-observability:codex`: scripted planning with real Codex workers.
-- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, and Phase 6C stale-run recovery fault are implemented; context/full-product modes are still pending.
+- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, Phase 6C stale-run recovery fault, Phase 6D context-handoff fault, Phase 6E low-signal/proof-churn fault, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented; full-product mode is still pending.
 - live smoke Phase 1 reset/run-mode setup: implemented with `npm run demo:live-agent:reset` and `npm run demo:live-agent:serve`.
 - live smoke Phase 2 reviewer runner: implemented with `swarm review <slice-id> --actor <actor> --driver codex`.
 - live smoke Phase 3 scripted worker+reviewer rehearsal: implemented with `npm run demo:live-agent:scripted`.
@@ -209,9 +217,19 @@ Run-mode boundary:
   The fault makes the first reviewer return `repair_required`, dispatches a repair worker, accepts on the second review, clears only resolved review blockers, and then runs deterministic verification.
 - live smoke Phase 6C stale-run recovery fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`.
   The fault lets the overseer create the slice, injects a stale worker, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale blocker only after independent review accepts, and then runs deterministic verification.
+- live smoke Phase 6D context-handoff fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`.
+  The fault waits for worker evidence, refreshes worker/reviewer/verifier/overseer checkpoints, writes role-specific resume packets, and then requires the loop to continue through independent review and deterministic verification.
+- live smoke Phase 6E low-signal/proof-churn fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`.
+  The fault waits for worker evidence, raises a lane-scoped warning and `planner.low_signal_work` event, refreshes a planner checkpoint, writes a warning artifact, and then requires independent review and deterministic verification before acceptance.
+- live smoke Phase 7A artifact index/outcome classification: implemented in `scripts/run-live-agent-demo.mjs`.
+  Every live run writes `artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`; the live-runner E2E confirms baseline and all Phase 6 fault modes produce classification-aligned indexes.
+- live smoke Phase 7B-1 run history/comparison: implemented in `scripts/run-live-agent-demo.mjs` and `scripts/compare-live-agent-runs.mjs`.
+  Every live run can archive summary/index artifacts outside the reset workspace; `npm run demo:live-agent:compare` compares archived runs by outcome, classifier, fault mode, lifecycle counts, and artifact paths.
+- live smoke Phase 7B-2 web history/artifact detail: implemented in `src/cli.ts` and `tests/web-viewer.e2e.test.js`.
+  `swarm serve --history-root <path>` exposes archived live runs, latest-run comparison, and selected-run artifact index detail in the History tab.
 
 ## Next Coherent Slice
 
-Next slice: context handoff fault or Phase 7 hardening.
+Next slice: Phase 8 full-product foundation.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Phase 4 is implemented: `swarm orchestrate` launches a visible overseer, streams JSONL into harness events/heartbeats, writes the full prompt as an artifact, validates a structured decision, and stores that decision as event/checkpoint state. Phase 5A is implemented: `swarm orchestrate --execute` can run allowlisted planning-safe harness commands such as `slices pull` and records command events/artifacts. Phase 5B is implemented: `swarm orchestrate --execute` can dispatch bounded worker/reviewer child agents for existing slices, with explicit actors, `--driver codex`, reviewer evidence gating, and visible command metadata; deterministic `verify` remains blocked inside overseer execution. Phase 5C is implemented: `npm run demo:live-agent:run` repeatedly invokes the visible overseer, carries state through pull -> worker -> review, runs deterministic `verify` after reviewer acceptance, enforces basic scenario limits, checks source hashes, and stops accepted/blocked/human-required with artifacts. Phase 6A is implemented: source mutation fault injection stops before hidden agent work and raises `human_required`. Phase 6B is implemented: reviewer repair blocks once, sends work back through the worker/reviewer path, clears the resolved review blocker, and verifies. Phase 6C is implemented: stale-run recovery marks a stale worker, restarts a fresh worker, clears only after review acceptance, and verifies. Next implement context resume packet handoff under the live loop or start Phase 7 hardening. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Phase 4 is implemented: `swarm orchestrate` launches a visible overseer, streams JSONL into harness events/heartbeats, writes the full prompt as an artifact, validates a structured decision, and stores that decision as event/checkpoint state. Phase 5A is implemented: `swarm orchestrate --execute` can run allowlisted planning-safe harness commands such as `slices pull` and records command events/artifacts. Phase 5B is implemented: `swarm orchestrate --execute` can dispatch bounded worker/reviewer child agents for existing slices, with explicit actors, `--driver codex`, reviewer evidence gating, and visible command metadata; deterministic `verify` remains blocked inside overseer execution. Phase 5C is implemented: `npm run demo:live-agent:run` repeatedly invokes the visible overseer, carries state through pull -> worker -> review, runs deterministic `verify` after reviewer acceptance, enforces basic scenario limits, checks source hashes, and stops accepted/blocked/human-required with artifacts. Phase 6A is implemented: source mutation fault injection stops before hidden agent work and raises `human_required`. Phase 6B is implemented: reviewer repair blocks once, sends work back through the worker/reviewer path, clears the resolved review blocker, and verifies. Phase 6C is implemented: stale-run recovery marks a stale worker, restarts a fresh worker, clears only after review acceptance, and verifies. Phase 6D is implemented: context handoff refreshes checkpoints, writes resume packets, and continues through review and verification. Phase 6E is implemented: low-signal/proof-churn warning stays visible while review and verification still gate acceptance. Phase 7A is implemented: live summaries include outcome classification and generated artifact indexes. Phase 7B-1 is implemented: live runs archive reset-resistant summaries/indexes and can be compared across resets. Phase 7B-2 is implemented: the web viewer exposes archived runs, latest comparison, and artifact index detail. Next implement Phase 8 full-product foundation. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.

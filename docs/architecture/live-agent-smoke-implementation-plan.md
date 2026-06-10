@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 6C implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, and stale-run recovery fault are in place.
+Status: Phase 7B-2 implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, stale-run recovery fault, context-handoff fault, low-signal/proof-churn fault, live-run artifact index, outcome classifier, run history, run comparison, and web viewer history/artifact detail are in place.
 
 ## Why This Matters
 
@@ -808,8 +808,8 @@ Deliver one at a time:
 
 - stale run visibility/recovery: implemented as Phase 6C
 - reviewer repair loop: implemented as Phase 6B
-- context resume packet handoff
-- low-signal/proof-churn warning
+- context resume packet handoff: implemented as Phase 6D
+- low-signal/proof-churn warning: implemented as Phase 6E
 - source mutation detection: implemented as Phase 6A
 
 Each fault should have:
@@ -884,6 +884,50 @@ Tests:
 - E2E confirms `recovery.marked_stale_run`, `recovery.restart_started`, `recovery.restart_completed`, `escalation.cleared`, and passing `verification.completed` events are visible
 - E2E confirms no active stale-run blocker remains after acceptance
 
+#### Phase 6D: Context Handoff Fault
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs --fault context-handoff`
+- live loop waits until the overseer has created a real slice and a worker has produced worker evidence
+- runner simulates a compaction/handoff point by refreshing worker, reviewer, verifier, and overseer checkpoints
+- runner generates worker, reviewer, verifier, overseer, and recovery resume packets from durable harness state
+- packet artifacts are written under `live-agent-run-artifacts`
+- checkpoint refreshes are visible through `checkpoint.refreshed` events and `observe` checkpoints
+- the loop continues after the packet generation and must still reach independent review plus deterministic verification
+- final summary records checkpoint ids, packet paths, handoff turn, bounded outcome, and accepted verification
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` proves the context handoff generates all packets and continues to acceptance
+- E2E confirms packets contain role-specific focus sections, FR/AC scope, guardrails, and recovery context
+- E2E confirms worker/reviewer/verifier slice checkpoints and overseer lane checkpoint are visible
+- E2E confirms review and passing deterministic verification happen after the handoff turn
+
+#### Phase 6E: Low-Signal / Proof-Churn Fault
+
+Status: implemented.
+
+Deliver:
+
+- `scripts/run-live-agent-demo.mjs --fault low-signal`
+- live loop waits until the overseer has created a real slice and a worker has produced worker evidence
+- runner injects a lane-scoped `warning` escalation for low-signal/proof-churn risk
+- runner records a `planner.low_signal_work` event with the warning reason, affected slice, and suggested action
+- runner refreshes a planner checkpoint for the affected lane
+- warning artifact is written under `live-agent-run-artifacts`
+- warning does not bypass independent review or deterministic verification
+- final summary records warning id, checkpoint id, artifact path, warning turn, bounded outcome, and accepted verification
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` proves the low-signal warning is visible and does not bypass gates
+- E2E confirms the active lane warning remains visible in `observe`
+- E2E confirms `planner.low_signal_work`, planner checkpoint, review completion, and passing deterministic verification are visible
+- E2E confirms verification accepts only after the warning turn
+
 ### Phase 7: Hardening
 
 Goal: make this safe enough to run often.
@@ -891,11 +935,84 @@ Goal: make this safe enough to run often.
 Deliver:
 
 - budget/runtime guards
-- better artifact index
-- run summary comparison across resets
-- failure classifier
-- improved UI evidence/detail
+- better artifact index: implemented as Phase 7A
+- run summary comparison across resets: implemented as Phase 7B-1
+- failure classifier: implemented as Phase 7A outcome classification
+- improved UI evidence/detail: implemented as Phase 7B-2
 - optional screenshot/browser test
+
+#### Phase 7A: Artifact Index And Outcome Classification
+
+Status: implemented.
+
+Deliver:
+
+- `live-agent-run-summary.json` includes `outcomeClassification`
+- accepted runs classify as `accepted`
+- source mutation stops classify as `source_mutation`
+- blocked/human-required paths classify into bounded categories such as `limit_exceeded`, `verification_failed`, `human_required`, `orchestration_no_progress`, `recovery_blocked`, `blocked_escalation`, or `blocked_unknown`
+- `live-agent-run-artifacts/artifact-index.json`
+- `live-agent-run-artifacts/artifact-index.md`
+- artifact index links core run artifacts, latest worker/reviewer/verification artifacts where present, recovery artifacts, context handoff packets, low-signal warnings, and turn outputs
+- summary assertions confirm artifact index generation and classification alignment
+- manifest records the latest `outcomeClassification` and artifact index path
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` asserts classification and artifact index output for the baseline run and all Phase 6 fault modes
+- E2E confirms accepted runs index worker, reviewer, and deterministic verification artifacts
+- E2E confirms source mutation still stops before hidden work while recording an indexed source-integrity outcome
+- E2E confirms stale recovery, context handoff, and low-signal artifacts are discoverable through the index
+
+#### Phase 7B-1: Run History And Comparison
+
+Status: implemented.
+
+Deliver:
+
+- every live run has a durable `runId`
+- `scripts/run-live-agent-demo.mjs` archives each run outside the reset workspace under `.swarm-demo/live-agent-run-history/` by default
+- archived run directory includes `summary.json`, `artifact-index.json`, and `artifact-index.md`
+- history root safety refuses paths outside `.swarm-demo` and refuses paths inside the reset workspace
+- history index is stored in `runs.json`
+- `summary.history` records archive paths and original workspace artifact paths
+- manifest `liveRun` records `runId` and history pointers
+- `scripts/compare-live-agent-runs.mjs`
+- `npm run demo:live-agent:compare`
+- comparison supports explicit `--left/--right` run ids or defaults to the latest two archived runs
+- comparison outputs JSON or Markdown with outcome, classifier, fault mode, lifecycle count deltas, artifact paths, and interpretation
+
+Tests:
+
+- `tests/live-agent-runner.e2e.test.js` archives an accepted run and a source-mutation stop into an isolated history root
+- E2E confirms archived summaries and artifact indexes exist
+- E2E confirms explicit and latest-two comparison report outcome/classification/fault changes and key lifecycle deltas
+
+#### Phase 7B-2: Web History And Artifact Detail
+
+Status: implemented.
+
+Deliver:
+
+- `swarm serve --history-root <path>`
+- default viewer history root resolves to `.swarm-demo/live-agent-run-history/` when serving a `.swarm-demo/*` workspace, otherwise `.swarm/run-history/`
+- read-only history APIs:
+  - `GET /api/history/runs`
+  - `GET /api/history/run/:runId`
+  - `GET /api/history/compare`
+- top-level History tab in the web viewer
+- Overview metric for archived run count
+- run history table with fault mode, outcome, classifier, lifecycle counts, and selectable archived runs
+- latest-run comparison panel showing outcome/classifier/fault changes, lifecycle deltas, and interpretation
+- artifact index detail panel showing selected run summary, classifier explanation, and indexed artifacts
+
+Tests:
+
+- `tests/web-viewer.e2e.test.js` creates an isolated history fixture beside the viewer workspace
+- E2E confirms the served HTML exposes History, Latest Comparison, and Artifact Index panels
+- E2E confirms `/api/history/runs` returns the archive list in generation order
+- E2E confirms `/api/history/run/:runId` returns summary and artifact index detail
+- E2E confirms `/api/history/compare` reports latest-two outcome/classification changes
 
 ### Phase 8: Ultimate Product Smoke Mode
 
@@ -1013,18 +1130,21 @@ Mitigation:
 
 ## Next Implementation Slice
 
-Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, and Phase 6C are implemented. Continue with Phase 6D or Phase 7:
+Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, Phase 6C, Phase 6D, Phase 6E, Phase 7A, Phase 7B-1, and Phase 7B-2 are implemented. Continue with Phase 8:
 
 ```text
-Context Resume Fault Or Hardening
+Ultimate product smoke mode foundation
 ```
 
 Acceptance criteria:
 
-- add the next explicit fault mode, preferably context resume packet handoff, or start Phase 7 hardening
-- the fault is visible in `observe`, `watch`, and the web UI
-- the run stops or recovers according to protocol
-- final summary records the fault, evidence, and exact blocker/recovery result
+- keep all live fault modes green
+- preserve the artifact index and outcome classification added in Phase 7A
+- preserve run history and comparison added in Phase 7B-1
+- preserve the web History tab and artifact detail added in Phase 7B-2
+- register and enforce the full-product invoice dashboard spec
+- reset an intentionally incomplete product target
+- record product run commands, final URL/check status, and exact blockers if the product cannot run
 - `npm test` remains green
 
-Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Continue breaking one thing at a time so recovery, context handoff, and anti-drift behavior become tested rather than assumed.
+Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Move next into the full-product foundation so the measuring instrument starts producing a real invoice dashboard outcome.

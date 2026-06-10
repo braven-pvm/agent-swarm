@@ -55,6 +55,8 @@ Implemented as of 2026-06-10:
 - source-mutation fault injection through `--fault source-mutation`
 - reviewer-repair fault injection through `--fault reviewer-repair`
 - stale-run recovery fault injection through `--fault stale-run`
+- context-handoff fault injection through `--fault context-handoff`
+- low-signal/proof-churn fault injection through `--fault low-signal`
 - reports, timeline, graph, observe, and watch
 - stale-run recovery, revive, and restart
 - checkpoints and role-specific resume packets
@@ -63,10 +65,10 @@ Implemented as of 2026-06-10:
 
 Not yet implemented:
 
-- additional live context handoff and anti-drift fault scenarios against the autonomous loop
+- Phase 7 richer UI evidence ergonomics
 - full-product run mode beyond the baseline accepted backend slice
 
-Latest known full verification: `npm test` passes 35/35 and `git diff --check` is clean.
+Latest known full verification: `npm test` passes 60/60 and `git diff --check` is clean.
 
 ## Functional Requirements
 
@@ -302,7 +304,7 @@ Acceptance criteria:
 
 The harness shall provide an optional resettable live smoke test where a real Codex overseer/planner coordinates real Codex workers and verifier/reviewer agents through the harness while the UI shows progress.
 
-Status: Phase 1 reset/run-mode foundation, Phase 2 independent reviewer runner, and Phase 3 scripted worker+reviewer rehearsal implemented; real overseer, live run, and full-product mode still planned.
+Status: Phase 1 reset/run-mode foundation, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5 autonomous acceptance loop, Phase 6A-6E fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented; full-product mode is still planned.
 
 Acceptance criteria:
 
@@ -322,6 +324,9 @@ Acceptance criteria:
 - AC-014.14: The smoke can be rerun from a clean reset and produce a bounded accepted, blocked, or human-required outcome.
 - AC-014.15: A future full-product mode uses an approved small product spec and succeeds only when the product can run locally, or when exact blockers explain why not.
 - AC-014.16: The first full-product target is the Invoice Operations Dashboard product spec at `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`.
+- AC-014.17: Every live runner summary includes an explicit outcome classification and writes JSON/Markdown artifact indexes that link core run state, worker/reviewer evidence, verification output, and relevant fault artifacts.
+- AC-014.18: Every live runner can archive summary/index artifacts outside the reset workspace and compare archived runs by outcome, classifier, fault mode, lifecycle counts, and artifact paths.
+- AC-014.19: The local web viewer exposes archived live runs, latest-run comparison, classifier explanation, and artifact index details through read-only UI panels and APIs.
 
 ## Prototype Milestones
 
@@ -441,7 +446,7 @@ Exit criteria:
 
 ### Milestone 9: Live Real-Agent Smoke
 
-Status: in progress. Phase 1, Phase 2, and Phase 3 are implemented.
+Status: in progress. Phase 1 through Phase 7B-2 are implemented; full-product mode is still planned.
 
 Deliver:
 
@@ -450,6 +455,9 @@ Deliver:
 - real Codex verifier/reviewer runner
 - scripted Codex worker+reviewer rehearsal
 - real Codex overseer/planner runner with visible heartbeats, decisions, checkpoints, and dispatches
+- live-run outcome classification and artifact index
+- reset-resistant live-run history and comparison
+- web viewer history, comparison, and artifact-index detail
 - package scripts for reset, serve, and run
 - optional smoke assertions that do not run in default CI
 - later full-product mode that builds a small real invoice dashboard from the approved product spec

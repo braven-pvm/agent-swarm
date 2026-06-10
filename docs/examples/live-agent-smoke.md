@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, and Phase 6C stale-run recovery fault injection are implemented. Additional faults and full-product mode are still planned.
+Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented. Full-product mode is still planned.
 
 This demo is the resettable real-world smoke test for the harness. Unlike fixture demos, it must use a real Codex overseer/planner to coordinate real Codex workers and real Codex verifier/reviewer agents.
 
@@ -26,6 +26,14 @@ Start the read-only UI:
 npm run demo:live-agent:serve
 ```
 
+The live smoke viewer includes a History tab. By default, serving `.swarm-demo/live-agent-smoke` reads archived runs from:
+
+```text
+.swarm-demo/live-agent-run-history/
+```
+
+Use `--history-root <path>` with `swarm serve` to inspect a different archive root.
+
 Launch the real overseer/planner:
 
 ```powershell
@@ -38,6 +46,41 @@ This runs the baseline autonomous acceptance loop. It repeatedly calls the visib
 .swarm-demo/live-agent-smoke/live-agent-run-summary.json
 .swarm-demo/live-agent-smoke/live-agent-run-artifacts/
 ```
+
+The summary includes `outcomeClassification`, and the artifact directory includes:
+
+```text
+artifact-index.json
+artifact-index.md
+```
+
+Use the artifact index after a run to jump to the final snapshot, graph, slice report, timeline, latest worker/reviewer artifacts, verification output, recovery artifacts, context packets, low-signal warning, and per-turn outputs.
+
+Each run is also archived outside the reset workspace by default:
+
+```text
+.swarm-demo/live-agent-run-history/
+```
+
+Compare the latest two archived runs:
+
+```powershell
+npm run demo:live-agent:compare
+```
+
+Or compare explicit run ids:
+
+```powershell
+node scripts\compare-live-agent-runs.mjs --left <run-id-a> --right <run-id-b> --format markdown
+```
+
+The comparison shows outcome, classifier, fault mode, lifecycle count deltas, artifact paths, and a short interpretation.
+
+The same archived runs are available in the web viewer:
+
+- History tab: run list with fault mode, outcome, classifier, and lifecycle counts
+- Latest Comparison panel: latest-two outcome/classifier/fault deltas and interpretation
+- Artifact Index panel: selected run summary, classifier explanation, and indexed artifacts
 
 Useful bounded options:
 
@@ -68,6 +111,22 @@ node scripts\run-live-agent-demo.mjs --reset --fault stale-run
 ```
 
 This lets the overseer create the slice, injects a stale worker run on that slice, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale-run blocker only after independent review accepts the restarted work, and then runs deterministic verification.
+
+Run the Phase 6D context-handoff fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault context-handoff
+```
+
+This waits until a worker has produced evidence, simulates a context compaction/handoff point by refreshing checkpoints, writes worker/reviewer/verifier/overseer/recovery resume packets, and then requires the loop to continue through independent review and deterministic verification.
+
+Run the Phase 6E low-signal/proof-churn fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault low-signal
+```
+
+This waits until a worker has produced evidence, injects a lane-scoped low-signal warning and `planner.low_signal_work` event, writes a warning artifact, refreshes the planner checkpoint, and then requires independent review plus deterministic verification before acceptance.
 
 Run the Phase 4 visible overseer manually:
 
@@ -134,7 +193,9 @@ For CI-style coverage, `tests/review-runner.e2e.test.js` uses a fake Codex comma
 
 For Phase 4, Phase 5A, and Phase 5B CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer, worker, and reviewer runner paths, including `--execute`, child dispatch, and command blocking.
 
-For Phase 5C, Phase 6A, Phase 6B, and Phase 6C CI-style coverage, `tests/live-agent-runner.e2e.test.js` uses fake Codex while exercising the real live runner and real `--driver codex` overseer/worker/reviewer/recovery paths. It proves the loop reaches deterministic acceptance after review, source mutation stops before hidden agent work, reviewer repair blocks once before recovering to acceptance, and stale-run recovery marks, restarts, clears, reviews, and verifies.
+For Phase 5C, Phase 6A, Phase 6B, Phase 6C, Phase 6D, Phase 6E, Phase 7A, and Phase 7B-1 CI-style coverage, `tests/live-agent-runner.e2e.test.js` uses fake Codex while exercising the real live runner and real `--driver codex` overseer/worker/reviewer/recovery paths. It proves the loop reaches deterministic acceptance after review, source mutation stops before hidden agent work, reviewer repair blocks once before recovering to acceptance, stale-run recovery marks, restarts, clears, reviews, and verifies, context handoff regenerates role packets before continuing to acceptance, low-signal warnings stay visible without bypassing gates, every run writes a classified artifact index, and archived runs can be compared across resets.
+
+For Phase 7B-2 CI-style coverage, `tests/web-viewer.e2e.test.js` starts `swarm serve` with an isolated run-history fixture and confirms the History tab, history APIs, latest-run comparison, and artifact index details are browser/API-visible.
 
 Future full-product mode:
 

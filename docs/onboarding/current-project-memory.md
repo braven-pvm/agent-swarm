@@ -57,10 +57,15 @@ Implemented and covered by tests:
 - overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
 - overseer-dispatched worker/reviewer child agents with explicit actor, `--driver codex`, evidence gating, and visible command metadata
 - autonomous live acceptance loop through `npm run demo:live-agent:run`
-- live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, and report
+- live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, report, artifact index, outcome classification, run history, and run comparison
 - source-mutation fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
 - reviewer-repair fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
 - stale-run recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
+- context-handoff fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`
+- low-signal/proof-churn fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`
+- live-run artifact index and outcome classification through `live-agent-run-artifacts/artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`
+- reset-resistant live-run history and comparison through `.swarm-demo/live-agent-run-history/` and `npm run demo:live-agent:compare`
+- web viewer History tab, read-only history APIs, latest-run comparison, and artifact-index detail for archived live runs
 - stale-run recovery, revive, restart
 - low-signal work warning
 - latest-only role/entity checkpoints
@@ -71,7 +76,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 57/57 passing
+npm test -> 60/60 passing
 git diff --check -> clean
 ```
 
@@ -84,10 +89,15 @@ The local web viewer was upgraded from a simple panel layout into a tabbed obser
 - Work tab with lanes, slices, and rendered slice report
 - Agents tab with agent run and heartbeat tables
 - Events tab with recent event table
+- History tab with archived live runs, latest-run comparison, and selected-run artifact index details
 - spec detail views: Summary, Sections, Markdown
 - slice reports render Markdown
 - read-only `GET /api/source/:selector` endpoint returns source metadata and markdown
 - search supports selected-source filtering through the existing source search API
+- read-only history APIs:
+  - `GET /api/history/runs`
+  - `GET /api/history/run/:runId`
+  - `GET /api/history/compare`
 
 The viewer remains read-only.
 
@@ -258,6 +268,71 @@ Phase 6C implementation completed:
 - summary records stale recovery state, scan/mark/restart artifacts, clearance records, bounded outcome, and accepted verification
 - E2E confirms `recovery.marked_stale_run`, `recovery.restart_started`, `recovery.restart_completed`, `escalation.cleared`, and passing `verification.completed`
 
+Phase 6D implementation completed:
+
+- `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`
+- loop waits for a real slice with completed worker evidence
+- runner refreshes worker, reviewer, verifier, and overseer checkpoints with actor `live-context-handoff`
+- runner generates worker, reviewer, verifier, overseer, and recovery resume packets from durable harness state
+- packet artifacts are written under `live-agent-run-artifacts`
+- checkpoint refreshes are visible in `observe` through `checkpoint.refreshed` events and checkpoint rows
+- loop continues after handoff and must still pass independent review plus deterministic verification
+- summary records checkpoint ids, packet paths, handoff turn, bounded outcome, and accepted verification
+- E2E confirms role-specific packet sections, visible checkpoints, review after handoff, and passing verification
+
+Phase 6E implementation completed:
+
+- `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`
+- loop waits for a real slice with completed worker evidence
+- runner raises a lane-scoped `warning` escalation with low-signal/proof-churn rationale
+- runner records `planner.low_signal_work` with affected slice, reason, and suggested action
+- runner refreshes a planner checkpoint for the affected lane
+- warning artifact is written under `live-agent-run-artifacts`
+- warning does not bypass independent review or deterministic verification
+- summary records warning id, checkpoint id, warning artifact, warning turn, bounded outcome, and accepted verification
+- E2E confirms active warning visibility, planner event, planner checkpoint, review completion, and passing verification after the warning turn
+
+Phase 7A implementation completed:
+
+- every `scripts/run-live-agent-demo.mjs` run writes `live-agent-run-artifacts/artifact-index.json`
+- every run also writes a human-readable `live-agent-run-artifacts/artifact-index.md`
+- `live-agent-run-summary.json` includes `outcomeClassification`
+- manifest `liveRun` records the latest outcome classification and artifact index path
+- accepted runs classify as `accepted`
+- source mutation stops classify as `source_mutation`
+- blocked/human-required paths have bounded classifier codes such as `limit_exceeded`, `verification_failed`, `human_required`, `orchestration_no_progress`, `recovery_blocked`, `blocked_escalation`, or `blocked_unknown`
+- artifact index links core run artifacts, latest worker/reviewer artifacts, deterministic verification output, recovery artifacts, context handoff packets, low-signal warning artifacts, and turn outputs
+- E2E confirms baseline and all Phase 6 fault modes produce classification-aligned artifact indexes
+
+Phase 7B-1 implementation completed:
+
+- every `scripts/run-live-agent-demo.mjs` run gets a durable `runId`
+- default history root is `.swarm-demo/live-agent-run-history/`
+- history root can be overridden with `--history-root`
+- history can be disabled with `--history false`
+- history root safety refuses paths outside `.swarm-demo` and refuses paths inside the reset workspace
+- each archived run stores `summary.json`, `artifact-index.json`, and `artifact-index.md`
+- history index is stored at `runs.json`
+- summary records `history` pointers to archived and original artifacts
+- manifest `liveRun` records `runId` and history pointers
+- `scripts/compare-live-agent-runs.mjs`
+- `npm run demo:live-agent:compare`
+- comparison supports explicit `--left/--right` run ids or defaults to the latest two runs
+- comparison can output JSON or Markdown with outcome, classifier, fault mode, lifecycle count deltas, artifact paths, and interpretation
+- E2E archives an accepted run and a source-mutation run, then verifies explicit and latest-two comparison
+
+Phase 7B-2 implementation completed:
+
+- `swarm serve` accepts `--history-root <path>`
+- viewer default history root is `.swarm-demo/live-agent-run-history/` when serving a `.swarm-demo/*` workspace, otherwise `.swarm/run-history/`
+- Overview metrics include archived run count
+- web viewer has a History tab
+- History tab lists archived live runs with generated time, fault mode, outcome, classifier, turns, agent runs, verification runs, and active escalations
+- latest comparison panel shows latest-two outcome/classifier/fault deltas, lifecycle count deltas, and interpretation
+- artifact index panel shows selected run summary, classifier explanation, and indexed artifacts
+- read-only APIs expose history list, run detail, and comparison
+- `tests/web-viewer.e2e.test.js` creates an isolated history fixture and verifies the UI/API surface
+
 Current manual viewer path:
 
 ```powershell
@@ -267,24 +342,7 @@ node dist\cli.js serve --workspace .swarm-demo\source-index --host 127.0.0.1 --p
 
 ## Current Dirty Worktree Expectation
 
-The repo currently contains a large implementation batch touching docs, CLI, planner, storage, source indexing, checkpoints, tests, and scripts. Do not revert unrelated changes.
-
-Important untracked additions currently expected:
-
-- `docs/architecture/context-checkpoints.md`
-- `docs/architecture/domain-source-management.md`
-- `docs/architecture/fr-ac-verification-contract.md`
-- `docs/architecture/planning-agent-decision-contract.md`
-- `docs/examples/resume-context-demo.md`
-- `docs/examples/source-index-demo.md`
-- `scripts/run-resume-context-demo.mjs`
-- `scripts/run-source-index-demo.mjs`
-- `src/checkpoints.ts`
-- `src/domains.ts`
-- `src/source-index.ts`
-- `tests/domain-source.e2e.test.js`
-- `tests/resume-context-demo.e2e.test.js`
-- `tests/source-index-demo.e2e.test.js`
+Use `git status --short` as source of truth. Do not assume older untracked-file lists are still current, and do not revert unrelated user changes. The current live-smoke hardening work includes prior Phase 7B-1 live runner/history/comparison changes plus Phase 7B-2 web viewer history/detail changes in `src/cli.ts`, `tests/web-viewer.e2e.test.js`, and status/onboarding docs.
 
 `docs/dieselbrook-overseer/` is a parked local copy of a project-specific skill. Do not modify it unless the user explicitly asks.
 
@@ -321,20 +379,19 @@ node ..\..\dist\cli.js report <slice-id>
 
 ## Next Slice To Implement
 
-Name: Next Fault Injection
+Name: Phase 8 Full-Product Foundation
 
-Goal: add the next context/anti-drift fault against the now-working live acceptance loop, or start Phase 7 hardening.
+Goal: start turning the smoke from a lifecycle instrument into a run that can build a small real invoice dashboard product from approved specs.
 
 Next practical slices:
 
-- add one explicit context/anti-drift fault mode to the live runner or a companion smoke script
-- prefer context resume packet handoff next
-- assert the UI/observe/event stream shows the fault
-- assert recovery or blocked/human-required state is exact and artifact-backed
-- preserve the baseline happy-path live runner
-- keep full-product mode as the later destination
+- register/enforce the approved invoice dashboard product spec for full mode
+- reset an intentionally incomplete backend/frontend product target
+- add full-product runner mode and bounded limits
+- record product commands, inspection URL, final product check, and exact blockers
+- preserve all Phase 5C and Phase 6A-6E live scenarios plus Phase 7A/7B diagnostics
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, and Phase 6C are complete. Do context resume handoff or Phase 7 hardening next. Keep the Phase 5C happy path strict and auditable while adding controlled breakage.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, Phase 3, Phase 4, Phase 5A, Phase 5B, Phase 5C, Phase 6A, Phase 6B, Phase 6C, Phase 6D, Phase 6E, Phase 7A, Phase 7B-1, and Phase 7B-2 are complete. Do Phase 8 next. Keep the Phase 5C happy path strict and auditable while extending the target toward a real runnable product.
 
 Do not lose the full-product target while implementing fault injection. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 
