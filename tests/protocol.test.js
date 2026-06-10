@@ -36,3 +36,35 @@ test("merges target protocol override without dropping defaults", () => {
   assert.equal(protocol.protocol.recovery.highlightFinalAttempt, true);
   assert.equal(protocol.protocol.verification?.behaviorFirst, true);
 });
+
+test("default protocol exposes worker driver configuration", () => {
+  const protocol = defaultProtocol();
+
+  assert.equal(protocol.protocol.workers.defaultDriver, "codex");
+  assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
+  assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
+  assert.equal(protocol.protocol.workers.drivers.claude.settingSources, "");
+});
+
+test("merges workers override without dropping driver defaults", () => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-protocol-workers-"));
+  fs.mkdirSync(path.join(target, ".swarm"), { recursive: true });
+  fs.writeFileSync(
+    path.join(target, ".swarm", "protocol.yaml"),
+    `protocol:
+  workers:
+    defaultDriver: claude
+    drivers:
+      claude:
+        maxBudgetUsd: 5
+`,
+    "utf8",
+  );
+
+  const protocol = loadProtocol(target);
+
+  assert.equal(protocol.protocol.workers.defaultDriver, "claude");
+  assert.equal(protocol.protocol.workers.drivers.claude.maxBudgetUsd, 5);
+  assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
+  assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
+});

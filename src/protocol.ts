@@ -22,6 +22,11 @@ export interface ProtocolConfig {
       releaseAfterRetries: boolean;
       [key: string]: unknown;
     };
+    workers: {
+      defaultDriver: string;
+      drivers: Record<string, Record<string, unknown>>;
+      [key: string]: unknown;
+    };
     [key: string]: unknown;
   };
 }
@@ -72,6 +77,13 @@ export function defaultProtocol(): ProtocolConfig {
         highlightFinalAttempt: true,
         releaseAfterRetries: false,
       },
+      workers: {
+        defaultDriver: "codex",
+        drivers: {
+          codex: { sandbox: "workspace-write" },
+          claude: { permissionMode: "acceptEdits", settingSources: "" },
+        },
+      },
     },
   };
 }
@@ -83,6 +95,17 @@ export function loadProtocol(targetPath?: string): ProtocolConfig {
   if (!fs.existsSync(protocolPath)) return base;
   const parsed = YAML.parse(fs.readFileSync(protocolPath, "utf8")) as Partial<ProtocolConfig> | undefined;
   return mergeProtocol(base, parsed ?? {});
+}
+
+function mergeDriverConfigs(
+  base: Record<string, Record<string, unknown>>,
+  override?: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> {
+  const merged: Record<string, Record<string, unknown>> = { ...base };
+  for (const [driver, config] of Object.entries(override ?? {})) {
+    merged[driver] = { ...(merged[driver] ?? {}), ...(config ?? {}) };
+  }
+  return merged;
 }
 
 function mergeProtocol(base: ProtocolConfig, override: Partial<ProtocolConfig>): ProtocolConfig {
@@ -108,6 +131,12 @@ function mergeProtocol(base: ProtocolConfig, override: Partial<ProtocolConfig>):
         highlightFinalAttempt:
           override.protocol?.recovery?.highlightFinalAttempt ?? base.protocol.recovery.highlightFinalAttempt,
         releaseAfterRetries: override.protocol?.recovery?.releaseAfterRetries ?? base.protocol.recovery.releaseAfterRetries,
+      },
+      workers: {
+        ...base.protocol.workers,
+        ...override.protocol?.workers,
+        defaultDriver: override.protocol?.workers?.defaultDriver ?? base.protocol.workers.defaultDriver,
+        drivers: mergeDriverConfigs(base.protocol.workers.drivers, override.protocol?.workers?.drivers),
       },
     },
   };
