@@ -2485,7 +2485,7 @@ recovery
         id: `heartbeat:${previousRun.actor}`,
         actor: previousRun.actor,
         state: finalization.ok ? "idle" : "blocked",
-        detail: finalization.ok ? "Worker revive completed" : "Worker revive failed",
+        detail: finalization.ok ? `${previousRun.driver} revive completed` : `${previousRun.driver} revive failed`,
         entityType: "slice",
         entityId: slice.id,
       });
@@ -2504,6 +2504,9 @@ recovery
             costUsd: finalization.costUsd,
             exitCode: result.status,
             workerEvents,
+            structuredResultWritten: finalization.structuredResultWritten,
+            eventsPath: jsonlPath,
+            resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
           },
         }),
       );
