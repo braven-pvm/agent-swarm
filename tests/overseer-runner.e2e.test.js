@@ -51,11 +51,11 @@ test("codex overseer records a visible scenario planning decision", () => {
   assert.ok(
     snapshot.recentEvents.some(
       (event) =>
-        event.type === "overseer.codex_event" &&
+        event.type === "overseer.agent_event" &&
         event.actor === "live-overseer" &&
         event.entityType === "harness" &&
         event.entityId === "scenario:live-agent-smoke" &&
-        event.payload.codexEventType === "overseer.analysis",
+        event.payload.agentEventType === "overseer.analysis",
     ),
   );
   assert.ok(snapshot.recentEvents.some((event) => event.type === "overseer.decision_recorded"));
@@ -76,7 +76,7 @@ test("codex overseer records a visible scenario planning decision", () => {
 
   const graph = JSON.parse(runSwarm(workspace, ["graph", "--format", "json"]));
   assert.ok(graph.nodes.some((node) => node.type === "actor" && node.label === "live-overseer"));
-  assert.ok(graph.edges.some((edge) => edge.label === "overseer.codex_event"));
+  assert.ok(graph.edges.some((edge) => edge.label === "overseer.agent_event"));
 });
 
 test("codex overseer execute mode runs allowlisted harness commands and records the trail", () => {

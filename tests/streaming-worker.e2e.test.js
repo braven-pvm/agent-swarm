@@ -51,7 +51,7 @@ test("codex worker JSONL is ingested while the process is still running", async 
     try {
       const run = store.listAgentRuns("running").find((item) => item.actor === "streaming-worker");
       const heartbeat = store.listHeartbeats().find((item) => item.actor === "streaming-worker");
-      const event = store.listEvents().find((item) => item.type === "worker.codex_event" && item.actor === "streaming-worker");
+      const event = store.listEvents().find((item) => item.type === "worker.agent_event" && item.actor === "streaming-worker");
       if (run && heartbeat?.detail?.includes("thread.started") && event) return { run, heartbeat, event };
       return undefined;
     } finally {
@@ -61,14 +61,14 @@ test("codex worker JSONL is ingested while the process is still running", async 
 
   assert.equal(liveState.run.status, "running");
   assert.equal(liveState.heartbeat.state, "thinking");
-  assert.equal(liveState.event.payload.codexEventType, "thread.started");
+  assert.equal(liveState.event.payload.agentEventType, "thread.started");
 
   const exitCode = await waitForExit(child);
   assert.equal(exitCode, 0);
   const store = new SwarmStore(workspace);
   try {
     const completedRun = store.listAgentRuns().find((item) => item.actor === "streaming-worker");
-    const events = store.listEvents().filter((item) => item.type === "worker.codex_event" && item.actor === "streaming-worker");
+    const events = store.listEvents().filter((item) => item.type === "worker.agent_event" && item.actor === "streaming-worker");
     assert.equal(completedRun?.status, "completed");
     assert.equal(completedRun?.sessionId, "fake-thread");
     assert.ok(events.length >= 3);

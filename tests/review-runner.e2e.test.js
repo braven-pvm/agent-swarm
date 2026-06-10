@@ -42,9 +42,9 @@ test("codex reviewer records structured review evidence and gates final verifica
   assert.ok(
     reviewed.recentEvents.some(
       (event) =>
-        event.type === "reviewer.codex_event" &&
+        event.type === "reviewer.agent_event" &&
         event.actor === "independent-reviewer" &&
-        event.payload.codexEventType === "review.analysis",
+        event.payload.agentEventType === "review.analysis",
     ),
   );
 

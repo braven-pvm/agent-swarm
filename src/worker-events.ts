@@ -9,40 +9,38 @@ export interface WorkerEventIngestResult {
   sessionId?: string;
 }
 
+export interface WorkerJsonlIngestContext {
+  store: SwarmStore;
+  actor: string;
+  sliceId: string;
+  driver?: string;
+  entityType?: EntityType;
+  entityId?: string;
+  eventPrefix?: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
+}
+
 interface WorkerJsonlIngestState extends WorkerEventIngestResult {
   lineNumber: number;
   buffer: string;
 }
 
-export function ingestWorkerJsonl(input: {
-  store: SwarmStore;
-  actor: string;
-  sliceId: string;
-  entityType?: EntityType;
-  entityId?: string;
-  jsonl: string;
-  eventPrefix?: string;
-}): WorkerEventIngestResult {
+export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: string }): WorkerEventIngestResult {
   const ingestor = createWorkerJsonlIngestor({
     store: input.store,
     actor: input.actor,
     sliceId: input.sliceId,
+    driver: input.driver,
     entityType: input.entityType,
     entityId: input.entityId,
     eventPrefix: input.eventPrefix,
+    classify: input.classify,
   });
   ingestor.ingest(input.jsonl);
   return ingestor.flush();
 }
 
-export function createWorkerJsonlIngestor(input: {
-  store: SwarmStore;
-  actor: string;
-  sliceId: string;
-  entityType?: EntityType;
-  entityId?: string;
-  eventPrefix?: string;
-}): {
+export function createWorkerJsonlIngestor(input: WorkerJsonlIngestContext): {
   ingest: (chunk: string) => WorkerEventIngestResult;
   flush: () => WorkerEventIngestResult;
   result: () => WorkerEventIngestResult;
@@ -73,14 +71,7 @@ export function createWorkerJsonlIngestor(input: {
 }
 
 function ingestLines(
-  input: {
-    store: SwarmStore;
-    actor: string;
-    sliceId: string;
-    entityType?: EntityType;
-    entityId?: string;
-    eventPrefix?: string;
-  },
+  input: WorkerJsonlIngestContext,
   state: WorkerJsonlIngestState,
   rawLines: string[],
 ): void {
@@ -92,14 +83,7 @@ function ingestLines(
 }
 
 function ingestLine(
-  input: {
-    store: SwarmStore;
-    actor: string;
-    sliceId: string;
-    entityType?: EntityType;
-    entityId?: string;
-    eventPrefix?: string;
-  },
+  input: WorkerJsonlIngestContext,
   state: WorkerJsonlIngestState,
   line: string,
 ): void {
@@ -112,11 +96,12 @@ function ingestLine(
     input.store.addEvent(
       createEvent({
         actor: input.actor,
-        type: `${eventPrefix}.codex_event.parse_failed`,
+        type: `${eventPrefix}.agent_event.parse_failed`,
         entityType,
         entityId,
         payload: {
           lineNumber: state.lineNumber,
+          driver: input.driver,
           error: parsed.error,
           raw: line.slice(0, 2000),
         },
@@ -130,18 +115,19 @@ function ingestLine(
   const entityType = input.entityType ?? "slice";
   const entityId = input.entityId ?? input.sliceId;
   state.sessionId ??= findSessionId(payload);
-  const heartbeatState = inferHeartbeatState(payload);
+  const heartbeatState = input.classify?.(payload) ?? inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
   state.eventCount += 1;
   input.store.addEvent(
     createEvent({
       actor: input.actor,
-      type: `${eventPrefix}.codex_event`,
+      type: `${eventPrefix}.agent_event`,
       entityType,
       entityId,
       payload: {
         lineNumber: state.lineNumber,
-        codexEventType: typeof payload.type === "string" ? payload.type : undefined,
+        driver: input.driver,
+        agentEventType: typeof payload.type === "string" ? payload.type : undefined,
         event: payload,
       },
     }),
@@ -150,7 +136,7 @@ function ingestLine(
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
     state: heartbeatState,
-    detail: `Observed Codex JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
+    detail: `Observed worker JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
     entityType,
     entityId,
   });

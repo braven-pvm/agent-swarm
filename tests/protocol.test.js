@@ -54,6 +54,7 @@ test("merges workers override without dropping driver defaults", () => {
     `protocol:
   workers:
     defaultDriver: claude
+    verboseLogging: true
     drivers:
       claude:
         maxBudgetUsd: 5
@@ -64,6 +65,7 @@ test("merges workers override without dropping driver defaults", () => {
   const protocol = loadProtocol(target);
 
   assert.equal(protocol.protocol.workers.defaultDriver, "claude");
+  assert.equal(protocol.protocol.workers.verboseLogging, true);
   assert.equal(protocol.protocol.workers.drivers.claude.maxBudgetUsd, 5);
   assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
   assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
