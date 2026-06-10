@@ -100,7 +100,8 @@ test("claude driver revives a run by captured session id", () => {
     const store = new SwarmStore(workspace);
     try {
       const run = store.listAgentRuns().find((item) => item.actor === "claude-worker");
-      assert.equal(run?.sessionId, "fake-claude-session");
+      assert.ok(run);
+      assert.equal(run.sessionId, "fake-claude-session");
       firstRunId = run.id;
     } finally {
       store.close();
@@ -117,6 +118,7 @@ test("claude driver revives a run by captured session id", () => {
     const revived = runs.find((item) => item.id !== firstRunId);
     assert.equal(revived?.status, "completed");
     assert.equal(revived?.driver, "claude");
+    assert.ok(revived?.resultPath);
     const revivedResult = JSON.parse(fs.readFileSync(revived.resultPath, "utf8"));
     assert.equal(revivedResult.summary, "fake claude revive completed");
   } finally {
