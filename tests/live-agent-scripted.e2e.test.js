@@ -45,8 +45,8 @@ test("scripted live smoke runs a codex worker, reviewer, and final verifier", ()
   assert.ok(slice.evidence.some((item) => item.kind === "worker_result"));
   assert.ok(slice.evidence.some((item) => item.kind === "review_result"));
   assert.ok(slice.evidence.some((item) => item.kind === "command" && item.payload.passed === true));
-  assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.codex_event"));
-  assert.ok(snapshot.recentEvents.some((event) => event.type === "reviewer.codex_event"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.agent_event"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "reviewer.agent_event"));
 
   const manifest = JSON.parse(fs.readFileSync(path.join(workspace, "live-agent-smoke.json"), "utf8"));
   assert.equal(manifest.runMode, "scripted-codex");

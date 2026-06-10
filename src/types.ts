@@ -156,7 +156,7 @@ export interface AgentRunRecord {
   entityType?: EntityType;
   entityId?: string;
   actor: string;
-  driver: "codex" | "fixture";
+  driver: string;
   status: "running" | "completed" | "failed" | "stale" | "released";
   sessionId?: string;
   attempt: number;

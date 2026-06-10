@@ -45,11 +45,11 @@ Implemented and covered by tests:
 - dynamic slice pulling with source/domain/tag filtering
 - lane creation/reuse, FR/AC leases, dependency gating
 - planning decision events and checkpoints
-- worker dispatch through fixture or Codex
+- model-agnostic worker driver registry (codex, claude, fixture) with per-driver protocol config
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
-- independent reviewer runner through `swarm review`
+- independent reviewer runner through `swarm review`; reviewer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
 - visible overseer runner through `swarm orchestrate`
 - overseer JSONL events, heartbeat, structured decision artifact, prompt artifact, and role/entity checkpoint
@@ -71,7 +71,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 35/35 passing
+npm test -> 57/57 passing
 git diff --check -> clean
 ```
 

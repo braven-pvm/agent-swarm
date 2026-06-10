@@ -5,4 +5,5 @@ node_modules/
 dist/
 .swarm/
 .swarm-demo/
+.claude/worktrees/
 *.log

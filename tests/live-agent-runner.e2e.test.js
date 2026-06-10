@@ -78,8 +78,8 @@ test("live agent runner loops overseer child dispatch through deterministic acce
   assert.ok(slice.evidence.some((item) => item.kind === "review_result"));
   assert.ok(slice.evidence.some((item) => item.kind === "command" && item.payload.passed === true));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "overseer.commands_completed"));
-  assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.codex_event"));
-  assert.ok(snapshot.recentEvents.some((event) => event.type === "reviewer.codex_event"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.agent_event"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "reviewer.agent_event"));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "verification.completed" && event.payload.passed === true));
 
   const manifest = JSON.parse(fs.readFileSync(path.join(workspace, "live-agent-smoke.json"), "utf8"));
