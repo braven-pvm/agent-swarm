@@ -1,6 +1,6 @@
 import { createEvent } from "./events.js";
 import type { SwarmStore } from "./storage.js";
-import type { HeartbeatState } from "./types.js";
+import type { EntityType, HeartbeatState } from "./types.js";
 
 export interface WorkerEventIngestResult {
   eventCount: number;
@@ -18,6 +18,8 @@ export function ingestWorkerJsonl(input: {
   store: SwarmStore;
   actor: string;
   sliceId: string;
+  entityType?: EntityType;
+  entityId?: string;
   jsonl: string;
   eventPrefix?: string;
 }): WorkerEventIngestResult {
@@ -25,6 +27,8 @@ export function ingestWorkerJsonl(input: {
     store: input.store,
     actor: input.actor,
     sliceId: input.sliceId,
+    entityType: input.entityType,
+    entityId: input.entityId,
     eventPrefix: input.eventPrefix,
   });
   ingestor.ingest(input.jsonl);
@@ -35,6 +39,8 @@ export function createWorkerJsonlIngestor(input: {
   store: SwarmStore;
   actor: string;
   sliceId: string;
+  entityType?: EntityType;
+  entityId?: string;
   eventPrefix?: string;
 }): {
   ingest: (chunk: string) => WorkerEventIngestResult;
@@ -71,6 +77,8 @@ function ingestLines(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    entityType?: EntityType;
+    entityId?: string;
     eventPrefix?: string;
   },
   state: WorkerJsonlIngestState,
@@ -88,6 +96,8 @@ function ingestLine(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    entityType?: EntityType;
+    entityId?: string;
     eventPrefix?: string;
   },
   state: WorkerJsonlIngestState,
@@ -97,12 +107,14 @@ function ingestLine(
   if (!parsed.ok) {
     state.parseErrorCount += 1;
     const eventPrefix = input.eventPrefix ?? "worker";
+    const entityType = input.entityType ?? "slice";
+    const entityId = input.entityId ?? input.sliceId;
     input.store.addEvent(
       createEvent({
         actor: input.actor,
         type: `${eventPrefix}.codex_event.parse_failed`,
-        entityType: "slice",
-        entityId: input.sliceId,
+        entityType,
+        entityId,
         payload: {
           lineNumber: state.lineNumber,
           error: parsed.error,
@@ -115,6 +127,8 @@ function ingestLine(
 
   const payload = asPayload(parsed.value);
   const eventPrefix = input.eventPrefix ?? "worker";
+  const entityType = input.entityType ?? "slice";
+  const entityId = input.entityId ?? input.sliceId;
   state.sessionId ??= findSessionId(payload);
   const heartbeatState = inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
@@ -123,8 +137,8 @@ function ingestLine(
     createEvent({
       actor: input.actor,
       type: `${eventPrefix}.codex_event`,
-      entityType: "slice",
-      entityId: input.sliceId,
+      entityType,
+      entityId,
       payload: {
         lineNumber: state.lineNumber,
         codexEventType: typeof payload.type === "string" ? payload.type : undefined,
@@ -137,8 +151,8 @@ function ingestLine(
     actor: input.actor,
     state: heartbeatState,
     detail: `Observed Codex JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
-    entityType: "slice",
-    entityId: input.sliceId,
+    entityType,
+    entityId,
   });
 }
 

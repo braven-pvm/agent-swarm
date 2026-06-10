@@ -51,6 +51,10 @@ Implemented and covered by tests:
 - verifier acceptance gate with per-FR/AC evidence coverage
 - independent reviewer runner through `swarm review`
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
+- visible overseer runner through `swarm orchestrate`
+- overseer JSONL events, heartbeat, structured decision artifact, prompt artifact, and role/entity checkpoint
+- bounded overseer command execution through `swarm orchestrate --execute`
+- overseer command events/artifacts and Phase 5A command allowlist/blocking
 - stale-run recovery, revive, restart
 - low-signal work warning
 - latest-only role/entity checkpoints
@@ -61,7 +65,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 27/27 passing
+npm test -> 30/30 passing
 git diff --check -> clean
 ```
 
@@ -149,6 +153,40 @@ Phase 3 implementation completed:
 - summary includes worker/reviewer runs, review result, bounded outcome, source mutation assertion, graph/report/timeline artifacts, and command evidence
 - `tests/live-agent-scripted.e2e.test.js` uses fake Codex while exercising the real `--driver codex` path and real target verification
 
+Phase 4 implementation completed:
+
+- `swarm orchestrate --actor live-overseer --driver codex|fixture --scenario live-agent-smoke`
+- `npm run demo:live-agent:overseer`
+- `npm run demo:live-agent:overseer:fixture`
+- `overseerDecisionSchema` and generated `schemas/overseer-decision.schema.json`
+- overseer agent runs use role `overseer` and entity `harness:scenario:<scenario>`
+- Codex JSONL events stream as `overseer.codex_event` against the scenario entity
+- heartbeats use `harness:scenario:<scenario>` instead of fake slice IDs
+- full overseer prompt is written to `.swarm/artifacts/scenario-<scenario>/overseer-prompt-<run-id>.md`
+- Codex receives a short launch prompt pointing at the prompt artifact, avoiding Windows command-line length failures
+- structured decision is written to `.swarm/artifacts/scenario-<scenario>/overseer-decision-<run-id>.json`
+- decisions create `overseer.decision_recorded` and `overseer.completed` events
+- decision blockers can raise harness-scoped escalations
+- overseer and recovery checkpoints are refreshed
+- web Agents tab and terminal `watch --view agents` show role and entity
+- graph artifacts include overseer actor events
+- `tests/overseer-runner.e2e.test.js` uses fake Codex while exercising the real `--driver codex` path
+
+Phase 5A implementation completed:
+
+- `swarm orchestrate --execute`
+- `--execute-limit` bounds recommended command execution
+- `npm run demo:live-agent:overseer:execute`
+- `npm run demo:live-agent:overseer:execute:fixture`
+- recommended commands are parsed into argv and executed shell-free
+- allowlisted Phase 5A commands: `observe`, `sources list`, `domains list`, `domains inspect`, and `slices pull`
+- Phase 5A explicitly blocks `run`, `review`, and `verify` child-agent dispatch commands
+- command events are visible: `overseer.command_started`, `overseer.command_completed`, `overseer.command_failed`, `overseer.command_blocked`, and `overseer.commands_completed`
+- command stdout/stderr artifacts are written under `.swarm/artifacts/scenario-<scenario>/`
+- CLI output reports executed/blocked/failed command counts
+- fake Codex E2E proves `--execute` can run an allowlisted `slices pull`, creating a backend lane, slice, and active leases
+- fake Codex E2E proves worker dispatch is blocked in Phase 5A
+
 Current manual viewer path:
 
 ```powershell
@@ -212,23 +250,22 @@ node ..\..\dist\cli.js report <slice-id>
 
 ## Next Slice To Implement
 
-Name: Visible Overseer Agent
+Name: Worker/Reviewer Dispatch
 
-Goal: make the overseer/planner itself a first-class observable agent before allowing autonomous dispatch.
+Goal: let the now-visible overseer dispatch child worker/reviewer agents through the harness after Phase 5A has created planning state.
 
 Next practical slices:
 
-- add `swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke`
-- add overseer output schema
-- add overseer prompt builder using manifest, observe snapshot, source refs/hashes, targets, blockers, command contract, and bounds
-- record overseer agent run or equivalent first-class observable role
-- stream overseer JSONL events into harness state
-- update overseer heartbeat while it thinks/inspects
-- store overseer planning decision as event/checkpoint
-- first pass may recommend next commands rather than executing child dispatches
-- add later package scripts for live run and full-product run
+- add a stricter child-agent dispatch mode to the overseer executor
+- allow `swarm run --driver codex` for selected backend slices
+- allow `swarm review --driver codex` after worker completion
+- keep `verify` deterministic and gated after reviewer acceptance
+- observe state between transitions and record each decision/command result
+- enforce max slices, max agent runs, max runtime, no source-spec mutation, and no hidden state mutation
+- stop with accepted, blocked, or human-required scenario status and artifacts
+- add package scripts for live run and later full-product run
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, and Phase 3 are complete. Do Phase 4 next: visible overseer agent. Do not jump directly into autonomous child dispatch before the overseer role is visible and produces structured decisions from harness state.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5A are complete. Do Phase 5B next: child worker/reviewer dispatch. Keep Phase 5A's bounded command execution path intact and auditable while adding agent dispatch.
 
 Do not lose the full-product target while implementing overseer visibility. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 
@@ -237,6 +274,7 @@ Acceptance criteria for the next slice should stay lifecycle-grounded:
 - use `.swarm-demo/live-agent-smoke` as the resettable workspace
 - prove the UI distinguishes simulated/scripted/live modes
 - make overseer/planner a first-class visible agent
+- keep overseer/planner command execution bounded and visible
 - preserve fixture demos for CI
 - keep `npm test` green
 

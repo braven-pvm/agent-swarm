@@ -2,7 +2,7 @@
 
 Date: 2026-06-10
 
-Status: Phase 3 implemented. Run-mode/reset, independent reviewer runner, and scripted worker+reviewer rehearsal are in place; visible overseer runner is next.
+Status: Phase 5A implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, and bounded overseer command execution are in place; child-agent dispatch is next.
 
 ## Why This Matters
 
@@ -666,16 +666,19 @@ Implemented artifacts:
 
 ### Phase 4: Visible Overseer Agent
 
+Status: implemented.
+
 Goal: launch a real overseer as a first-class observable agent.
 
 Deliver:
 
-- `swarm orchestrate`
-- overseer output schema
-- overseer prompt builder
-- overseer agent run and heartbeat
-- overseer can inspect state and produce a planning decision
-- overseer decision is stored as event/checkpoint
+- `swarm orchestrate`: implemented
+- overseer output schema: implemented as `schemas/overseer-decision.schema.json`
+- overseer prompt builder: implemented with manifest, snapshot, sources, targets, command contract, and stop rules
+- overseer prompt artifact: implemented under `.swarm/artifacts/scenario-<scenario>/overseer-prompt-<run-id>.md`
+- overseer agent run and heartbeat: implemented with role `overseer` and entity `harness:scenario:<id>`
+- overseer can inspect state and produce a planning decision: implemented
+- overseer decision is stored as event/checkpoint: implemented through `overseer.decision_recorded`, `overseer.completed`, latest overseer checkpoint, and recovery checkpoint
 
 Initial constraint:
 
@@ -683,17 +686,54 @@ Initial constraint:
 
 Tests:
 
-- fake Codex overseer test proves event ingestion and output schema
-- resume-context for overseer contains enough state
-- UI shows overseer run
+- fake Codex overseer test proves event ingestion and output schema: `tests/overseer-runner.e2e.test.js`
+- UI/terminal observability shows overseer role/entity in agent tables and watch output
+- graph artifacts include overseer actor events
+
+Implementation note:
+
+- The full overseer prompt is written to a prompt artifact and Codex receives a short instruction to read that file. This avoids Windows command-line length failures when the snapshot/spec context grows.
 
 ### Phase 5: Autonomous Overseer Dispatch
 
 Goal: overseer actually coordinates a bounded smoke run.
 
+#### Phase 5A: Bounded Command Execution
+
+Status: implemented.
+
+Goal: give the visible overseer a small, auditable execution path before child-agent dispatch.
+
 Deliver:
 
-- overseer prompt allows CLI command execution
+- `swarm orchestrate --execute`
+- `--execute-limit` guard for recommended commands
+- shell-free parsing of recommended commands
+- allowlisted execution for `observe`, `sources list`, `domains list`, `domains inspect`, and `slices pull`
+- Phase 5A blocks `run`, `review`, and `verify` dispatch commands with visible `overseer.command_blocked` events
+- every executed command records `overseer.command_started` and `overseer.command_completed` or `overseer.command_failed`
+- command stdout/stderr are stored as artifacts under the scenario artifact directory
+- `overseer.commands_completed` summarizes executed/blocked/failed counts
+- terminal output reports command execution counts
+
+Tests:
+
+- fake Codex overseer E2E proves `--execute` can run an allowlisted `slices pull`
+- E2E confirms a backend lane, slice, and active leases appear after execution
+- E2E confirms worker dispatch commands are blocked in Phase 5A
+
+Convenience scripts:
+
+- `npm run demo:live-agent:overseer:execute`
+- `npm run demo:live-agent:overseer:execute:fixture`
+
+#### Phase 5B: Worker/Reviewer Dispatch
+
+Status: next.
+
+Deliver:
+
+- overseer prompt allows child-agent dispatch after Phase 5A state execution
 - overseer creates/reuses lanes
 - overseer pulls backend slices
 - overseer dispatches workers and reviewers
@@ -862,21 +902,21 @@ Mitigation:
 
 ## Next Implementation Slice
 
-Phase 1, Phase 2, and Phase 3 are implemented. Continue with Phase 4:
+Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5A are implemented. Continue with Phase 5B:
 
 ```text
-Visible Overseer Agent
+Worker/Reviewer Dispatch
 ```
 
 Acceptance criteria:
 
-- `swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke` exists
-- overseer is recorded as a first-class observable run or equivalent harness entity
-- overseer prompt includes scenario manifest, snapshot, source refs/hashes, target paths, current lanes/slices, command contract, and bounds
-- overseer JSONL events and heartbeat are visible
-- overseer output schema records current assessment, recommended commands, stop condition, blockers, and next action
-- overseer decision is stored as event/checkpoint
-- first pass may recommend commands instead of executing child dispatches
+- the overseer may execute `swarm run` and `swarm review` through a stricter child-agent dispatch layer
+- autonomous dispatch starts with backend slices created through Phase 5A
+- the overseer observes state between worker/reviewer transitions and records decisions as events/checkpoints
+- worker and reviewer runs are visible as separate agent runs with heartbeats and artifacts
+- deterministic verification remains the acceptance gate after reviewer acceptance
+- max slices, max runs, max runtime, no source-spec mutation, and no direct DB edits are enforced
+- the run ends accepted, blocked, or human-required with exact reasons/artifacts
 - `npm test` remains green
 
-This is still not full autonomous dispatch. It proves the overseer role is visible and can reason from harness state before letting it execute child commands.
+Phase 5A gave the overseer planning-state hands. Phase 5B is where it starts dispatching child agents, still bounded and fully visible.

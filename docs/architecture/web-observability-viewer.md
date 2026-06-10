@@ -25,14 +25,15 @@ Implemented as of 2026-06-10:
 - rendered spec detail tabs: Summary, Sections, Markdown
 - lanes and slices table
 - rendered Markdown slice reports
-- agents and heartbeat tables
+- agents and heartbeat tables with role/entity display, including overseer runs
 - blocker and event visibility
 - run-mode display in snapshot/header/metrics
+- visible Phase 5A overseer command execution events/artifacts in the event stream
 - web-observability E2E demo/test with browser-facing smoke assertions and review artifacts
 
 Still pending:
 
-- live-agent smoke state with a real overseer/planner, real workers, and real verifier/reviewer agents
+- autonomous live-agent smoke state where the visible overseer dispatches real workers and real verifier/reviewer agents
 - graph/dependency visualization
 - history/run picker
 - lower-latency server-sent events or WebSockets

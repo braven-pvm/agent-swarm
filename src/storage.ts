@@ -144,6 +144,9 @@ export class SwarmStore {
       create table if not exists agent_runs (
         id text primary key,
         slice_id text not null,
+        role text,
+        entity_type text,
+        entity_id text,
         actor text not null,
         driver text not null,
         status text not null,
@@ -201,6 +204,9 @@ export class SwarmStore {
     this.ensureColumn("slices", "ac_sized_exception_reason", "text");
     this.ensureColumn("slices", "expected_evidence_json", "text");
     this.ensureColumn("slices", "unblock_targets_json", "text");
+    this.ensureColumn("agent_runs", "role", "text");
+    this.ensureColumn("agent_runs", "entity_type", "text");
+    this.ensureColumn("agent_runs", "entity_id", "text");
   }
 
   setMeta(key: string, value: string): void {
@@ -436,11 +442,14 @@ export class SwarmStore {
   insertAgentRun(run: AgentRunRecord): void {
     this.db
       .prepare(
-        `insert into agent_runs (id, slice_id, actor, driver, status, session_id, attempt, events_path, result_path, stderr_path, started_at, updated_at)
-         values (@id, @sliceId, @actor, @driver, @status, @sessionId, @attempt, @eventsPath, @resultPath, @stderrPath, @startedAt, @updatedAt)`,
+        `insert into agent_runs (id, slice_id, role, entity_type, entity_id, actor, driver, status, session_id, attempt, events_path, result_path, stderr_path, started_at, updated_at)
+         values (@id, @sliceId, @role, @entityType, @entityId, @actor, @driver, @status, @sessionId, @attempt, @eventsPath, @resultPath, @stderrPath, @startedAt, @updatedAt)`,
       )
       .run({
         ...run,
+        role: run.role ?? null,
+        entityType: run.entityType ?? null,
+        entityId: run.entityId ?? null,
         sessionId: run.sessionId ?? null,
         eventsPath: run.eventsPath ?? null,
         resultPath: run.resultPath ?? null,
@@ -750,6 +759,10 @@ function mapAgentRun(row: Row): AgentRunRecord {
   return {
     id: String(row.id),
     sliceId: String(row.slice_id),
+    role: row.role === null || row.role === undefined ? undefined : (String(row.role) as AgentRunRecord["role"]),
+    entityType:
+      row.entity_type === null || row.entity_type === undefined ? undefined : (String(row.entity_type) as AgentRunRecord["entityType"]),
+    entityId: row.entity_id === null || row.entity_id === undefined ? undefined : String(row.entity_id),
     actor: String(row.actor),
     driver: row.driver as AgentRunRecord["driver"],
     status: row.status as AgentRunRecord["status"],

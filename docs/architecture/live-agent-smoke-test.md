@@ -123,7 +123,7 @@ npm run demo:live-agent:serve
 npm run demo:live-agent:run
 ```
 
-Current implementation status: reset, serve, and independent reviewer runs are implemented; live overseer run is planned.
+Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, and bounded overseer execution for planning-safe harness commands are implemented. Child-agent dispatch is next.
 
 The serve command should keep the read-only UI open. The run command should populate state over time so the user can watch:
 
@@ -321,13 +321,44 @@ It creates agent-run records, streams Codex JSONL events as `reviewer.codex_even
 
 ### Slice 4: Add live overseer runner
 
+Status: implemented.
+
 Add a command that launches a Codex overseer as a visible run:
 
 ```powershell
 swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke
 ```
 
-The overseer prompt must include the harness command contract and require decisions to be reflected in harness state.
+The overseer prompt includes the harness command contract and requires decisions to be reflected in harness state.
+
+Implemented behavior:
+
+- records role `overseer` on `harness:scenario:<scenario>`
+- streams `overseer.codex_event` events and heartbeat state
+- writes an overseer prompt artifact and structured decision artifact
+- stores `overseer.decision_recorded` and `overseer.completed` events
+- refreshes overseer and recovery checkpoints
+- updates web and terminal agent views with role/entity display
+- recommends commands only; it does not yet dispatch child agents
+
+### Slice 4A: Add bounded overseer command execution
+
+Status: implemented.
+
+Add execution mode for planning-safe harness commands:
+
+```powershell
+swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke --execute
+```
+
+Implemented behavior:
+
+- executes only allowlisted shell-free harness commands
+- allows read/planning commands and `slices pull`
+- blocks worker/reviewer/verifier dispatch commands until the next slice
+- records `overseer.command_started`, `overseer.command_completed`, `overseer.command_failed`, `overseer.command_blocked`, and `overseer.commands_completed`
+- writes command stdout/stderr artifacts
+- proves a backend lane/slice can be created from an overseer recommendation
 
 ### Slice 5: Add live smoke script
 
@@ -341,7 +372,7 @@ Add package scripts:
 }
 ```
 
-The run script should launch the overseer, let it dispatch workers/verifiers, and write a summary artifact.
+The run script should launch the overseer, let it dispatch workers/verifiers once child-agent execution exists, and write a summary artifact.
 
 ### Slice 6: Add live smoke assertions
 

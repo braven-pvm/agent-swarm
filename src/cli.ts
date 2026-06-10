@@ -12,7 +12,7 @@ import { runFixtureWorker } from "./fixture-worker.js";
 import { makeId } from "./ids.js";
 import { artifactsDir, resolveWorkspace, swarmDir } from "./paths.js";
 import { pullNextSlice } from "./planner.js";
-import { reviewResultSchema, workerResultSchema, type ReviewResult } from "./schemas.js";
+import { overseerDecisionSchema, reviewResultSchema, workerResultSchema, type OverseerDecision, type ReviewResult } from "./schemas.js";
 import { readSourceText, registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
@@ -49,11 +49,40 @@ type ReviewRunResult = {
   stderr?: string;
 };
 
+type OverseerRunResult = {
+  scenario: string;
+  runId: string;
+  exitCode: number | null;
+  eventsPath: string;
+  resultPath: string;
+  overseerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  commandResults?: OverseerCommandExecution[];
+  decision?: OverseerDecision;
+  stderr?: string;
+};
+
+type OverseerCommandExecution = {
+  command: string;
+  purpose: string;
+  expectedStateChange: string;
+  status: "executed" | "blocked" | "failed";
+  exitCode?: number | null;
+  stdoutPath?: string;
+  stderrPath?: string;
+  reason?: string;
+};
+
 type CodexStreamingResult = {
   status: number | null;
   stdout: string;
   stderr: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+};
+
+type ScenarioManifestLoad = {
+  path: string;
+  exists: boolean;
+  data: Record<string, unknown>;
 };
 
 const WEB_VIEWER_HTML = String.raw`<!doctype html>
@@ -1147,12 +1176,14 @@ function renderSlices() {
 function renderAgents() {
   els.agentCount.textContent = snapshot.agentRuns.length + " runs";
   const heartbeats = new Map(snapshot.heartbeats.map((heartbeat) => [heartbeat.actor + ":" + heartbeat.entityId, heartbeat]));
-  els.agents.innerHTML = tableHtml(["Agent", "Status", "Slice", "Driver", "Attempt", "Heartbeat", "Session"], snapshot.agentRuns.slice().reverse().slice(0, 30).map((run) => {
-    const heartbeat = heartbeats.get(run.actor + ":" + run.sliceId);
+  els.agents.innerHTML = tableHtml(["Agent", "Role", "Status", "Entity", "Driver", "Attempt", "Heartbeat", "Session"], snapshot.agentRuns.slice().reverse().slice(0, 30).map((run) => {
+    const entityId = run.entityId || run.sliceId;
+    const heartbeat = heartbeats.get(run.actor + ":" + entityId);
     return [
       '<strong>' + escapeHtml(run.actor) + '</strong><div class="sub">' + escapeHtml(run.id) + '</div>',
+      escapeHtml(run.role || "agent"),
       pill(run.status),
-      escapeHtml(run.sliceId),
+      escapeHtml((run.entityType || "slice") + ":" + entityId),
       escapeHtml(run.driver),
       escapeHtml(run.attempt),
       heartbeat ? pill(heartbeat.state) + '<div class="sub">' + escapeHtml(heartbeat.detail || "") + '</div>' : '<span class="muted">none</span>',
@@ -1849,6 +1880,36 @@ program
   });
 
 program
+  .command("orchestrate")
+  .description("Run a visible overseer/planner agent for a live smoke scenario")
+  .option("--actor <actor>", "overseer actor id shown in observability", "live-overseer")
+  .option("--driver <driver>", "overseer driver: codex or fixture", "codex")
+  .option("--scenario <scenario>", "scenario id from the live smoke manifest", "live-agent-smoke")
+  .option("--model <model>", "Codex model override")
+  .option("--execute", "execute bounded, allowlisted overseer recommended commands")
+  .option("--execute-limit <count>", "maximum recommended commands to execute", parseInteger, 3)
+  .action(async (options: { actor: string; driver: string; scenario: string; model?: string; execute?: boolean; executeLimit: number }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const result = await executeOverseerRun({
+        workspace,
+        store,
+        actor: options.actor,
+        driver: parseWorkerDriver(options.driver),
+        scenario: options.scenario,
+        model: options.model,
+        execute: Boolean(options.execute),
+        executeLimit: options.executeLimit,
+      });
+      printOverseerRunResult(result);
+    } finally {
+      store.close();
+    }
+  });
+
+program
   .command("review")
   .description("Run an independent Codex reviewer for a slice")
   .argument("<slice-id>", "slice identifier")
@@ -2347,7 +2408,9 @@ recovery
       console.log(`Stale agent runs: ${staleRuns.length}`);
       console.log(`  stale after: ${staleAfter}s`);
       for (const item of staleRuns) {
-        console.log(`  - ${item.run.id} ${item.run.actor} slice:${item.run.sliceId} age:${formatDuration(item.ageMs)}`);
+        const entityType = item.run.entityType ?? "slice";
+        const entityId = item.run.entityId ?? item.run.sliceId;
+        console.log(`  - ${item.run.id} ${item.run.actor} ${entityType}:${entityId} age:${formatDuration(item.ageMs)}`);
         if (item.heartbeat?.detail) console.log(`    heartbeat: ${item.heartbeat.state} - ${item.heartbeat.detail}`);
         if (!options.markStale && !options.release) continue;
 
@@ -2357,25 +2420,25 @@ recovery
           actor: item.run.actor,
           state: "blocked",
           detail: options.release ? "Stale run released by recovery scan" : "Stale run marked for recovery",
-          entityType: "slice",
-          entityId: item.run.sliceId,
+          entityType,
+          entityId,
         });
-        const slice = store.listSlices().find((candidate) => candidate.id === item.run.sliceId);
+        const slice = entityType === "slice" ? store.listSlices().find((candidate) => candidate.id === entityId) : undefined;
         if (slice && !["accepted", "closed"].includes(slice.status)) {
           store.updateSliceStatus(slice.id, options.release ? "closed" : "blocked");
           if (options.release) store.releaseLeasesForSlice(slice.id);
         }
         const existingEscalation = store
           .listEscalations("active")
-          .some((escalation) => escalation.entityId === item.run.sliceId && escalation.message.includes(item.run.id));
+          .some((escalation) => escalation.entityType === entityType && escalation.entityId === entityId && escalation.message.includes(item.run.id));
         if (!existingEscalation) {
           const now = new Date().toISOString();
           store.insertEscalation({
             id: makeId("escalation"),
             level: "blocker",
             status: "active",
-            entityType: "slice",
-            entityId: item.run.sliceId,
+            entityType,
+            entityId,
             message: `Agent run ${item.run.id} is stale after ${formatDuration(item.ageMs)}.`,
             createdBy: options.actor,
             createdAt: now,
@@ -2390,6 +2453,8 @@ recovery
             entityId: item.run.id,
             payload: {
               sliceId: item.run.sliceId,
+              entityType,
+              entityId,
               ageMs: item.ageMs,
               staleAfterSeconds: staleAfter,
             },
@@ -2443,6 +2508,9 @@ recovery
       store.insertAgentRun({
         id: revivedRunId,
         sliceId: slice.id,
+        role: previousRun.role ?? "worker",
+        entityType: "slice",
+        entityId: slice.id,
         actor: previousRun.actor,
         driver: "codex",
         status: "running",
@@ -2695,6 +2763,237 @@ function ensureInitialized(workspace: string): void {
   }
 }
 
+async function executeOverseerRun(input: {
+  workspace: string;
+  store: SwarmStore;
+  actor: string;
+  driver: "codex" | "fixture";
+  scenario: string;
+  model?: string;
+  execute?: boolean;
+  executeLimit?: number;
+}): Promise<OverseerRunResult> {
+  const entityId = scenarioEntityId(input.scenario);
+  const artifactPath = path.join(artifactsDir(input.workspace), sanitizeArtifactSegment(entityId));
+  fs.mkdirSync(artifactPath, { recursive: true });
+  const runId = makeId("agentRun");
+  const resultPath = path.join(artifactPath, `overseer-decision-${runId}.json`);
+  const jsonlPath = path.join(artifactPath, `overseer-events-${runId}.jsonl`);
+  const stderrPath = path.join(artifactPath, `overseer-stderr-${runId}.log`);
+  const promptPath = path.join(artifactPath, `overseer-prompt-${runId}.md`);
+  const schemaPath = path.join(input.workspace, "schemas", "overseer-decision.schema.json");
+  writeOverseerDecisionSchema(schemaPath);
+
+  const manifest = loadScenarioManifest(input.workspace, input.scenario);
+  const snapshot = buildObservabilitySnapshot(input.store, input.workspace, 120);
+  const prompt = buildOverseerPrompt({
+    workspace: input.workspace,
+    scenario: input.scenario,
+    manifest,
+    snapshot,
+    execute: Boolean(input.execute),
+  });
+  fs.writeFileSync(promptPath, prompt, "utf8");
+  const now = new Date().toISOString();
+  const attempt =
+    input.store
+      .listAgentRuns()
+      .filter((run) => run.role === "overseer" && run.entityId === entityId && run.actor === input.actor).length + 1;
+
+  input.store.insertAgentRun({
+    id: runId,
+    sliceId: entityId,
+    role: "overseer",
+    entityType: "harness",
+    entityId,
+    actor: input.actor,
+    driver: input.driver,
+    status: "running",
+    attempt,
+    startedAt: now,
+    updatedAt: now,
+  });
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: "thinking",
+    detail: `Overseer assessing scenario ${input.scenario}`,
+    entityType: "harness",
+    entityId,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "overseer.started",
+      entityType: "harness",
+      entityId,
+      payload: {
+        runId,
+        scenario: input.scenario,
+        driver: input.driver,
+        model: input.model,
+        execute: Boolean(input.execute),
+        executeLimit: input.executeLimit,
+        attempt,
+        manifestPath: manifest.path,
+        promptPath,
+      },
+    }),
+  );
+
+  let result: {
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+    workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+  };
+  if (input.driver === "fixture") {
+    const decision = runFixtureOverseerDecision({ scenario: input.scenario, snapshot });
+    fs.writeFileSync(resultPath, `${JSON.stringify(decision)}\n`, "utf8");
+    result = {
+      status: 0,
+      stdout: `${JSON.stringify({ type: "fixture.overseer.completed", scenario: input.scenario, actor: input.actor })}\n`,
+    };
+  } else {
+    const args = [
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+      "-C",
+      input.workspace,
+      "--output-schema",
+      schemaPath,
+      "--output-last-message",
+      resultPath,
+    ];
+    if (input.model) args.push("--model", input.model);
+    args.push(buildOverseerLaunchPrompt(promptPath, input.scenario));
+    const codex = codexSpawnSpec();
+    result = await spawnCodexStreaming({
+      command: codex.command,
+      args: [...codex.args, ...args],
+      cwd: input.workspace,
+      jsonlPath,
+      actor: input.actor,
+      sliceId: entityId,
+      entityType: "harness",
+      entityId,
+      store: input.store,
+      eventPrefix: "overseer",
+    });
+  }
+
+  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+  const overseerEvents =
+    result.workerEvents ??
+    ingestWorkerJsonl({
+      store: input.store,
+      actor: input.actor,
+      sliceId: entityId,
+      entityType: "harness",
+      entityId,
+      jsonl: result.stdout ?? "",
+      eventPrefix: "overseer",
+    });
+  const parsedDecision = readOverseerDecisionFile(resultPath);
+  const runCompleted = result.status === 0 && parsedDecision.ok;
+  input.store.updateAgentRun(runId, {
+    status: runCompleted ? "completed" : "failed",
+    sessionId: overseerEvents.sessionId,
+    eventsPath: jsonlPath,
+    resultPath: fs.existsSync(resultPath) ? resultPath : undefined,
+    stderrPath: result.stderr ? stderrPath : undefined,
+  });
+
+  let commandResults: OverseerCommandExecution[] = [];
+  if (parsedDecision.ok) {
+    commandResults = applyOverseerDecision({
+      store: input.store,
+      workspace: input.workspace,
+      actor: input.actor,
+      scenario: input.scenario,
+      entityId,
+      runId,
+      decision: parsedDecision.decision,
+      resultPath,
+      eventsPath: jsonlPath,
+      overseerEvents,
+      artifactPath,
+      execute: Boolean(input.execute),
+      executeLimit: input.executeLimit ?? 3,
+    });
+    refreshCheckpoint({
+      store: input.store,
+      role: "overseer",
+      entityType: "harness",
+      entityId,
+      actor: input.actor,
+      reason: commandResults.length > 0 ? "Overseer decision and bounded command execution recorded." : "Overseer decision recorded.",
+    });
+  } else {
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "blocked",
+      detail: parsedDecision.reason,
+      entityType: "harness",
+      entityId,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "overseer.failed",
+        entityType: "harness",
+        entityId,
+        payload: {
+          runId,
+          scenario: input.scenario,
+          exitCode: result.status,
+          reason: parsedDecision.reason,
+          eventsPath: jsonlPath,
+          resultPath,
+          stderrPath: result.stderr ? stderrPath : undefined,
+          overseerEvents,
+        },
+      }),
+    );
+  }
+
+  if (!parsedDecision.ok) {
+    refreshCheckpoint({
+      store: input.store,
+      role: "overseer",
+      entityType: "harness",
+      entityId,
+      actor: input.actor,
+      reason: "Overseer run failed.",
+    });
+  }
+  refreshCheckpoint({
+    store: input.store,
+    role: "recovery",
+    entityType: "agent_run",
+    entityId: runId,
+    actor: input.actor,
+    reason: "Overseer run available for recovery context.",
+  });
+
+  return {
+    scenario: input.scenario,
+    runId,
+    exitCode: result.status,
+    eventsPath: jsonlPath,
+    resultPath,
+    overseerEvents,
+    commandResults: commandResults.length > 0 ? commandResults : undefined,
+    decision: parsedDecision.ok ? parsedDecision.decision : undefined,
+    stderr: result.stderr,
+  };
+}
+
 async function executeWorkerRun(input: {
   workspace: string;
   store: SwarmStore;
@@ -2727,6 +3026,9 @@ async function executeWorkerRun(input: {
   input.store.insertAgentRun({
     id: runId,
     sliceId: slice.id,
+    role: "worker",
+    entityType: "slice",
+    entityId: slice.id,
     actor: input.actor,
     driver: input.driver,
     status: "running",
@@ -2922,6 +3224,9 @@ async function executeReviewRun(input: {
   input.store.insertAgentRun({
     id: runId,
     sliceId: slice.id,
+    role: "reviewer",
+    entityType: "slice",
+    entityId: slice.id,
     actor: input.actor,
     driver: input.driver,
     status: "running",
@@ -3138,6 +3443,8 @@ function spawnCodexStreaming(input: {
   jsonlPath: string;
   actor: string;
   sliceId: string;
+  entityType?: EntityType;
+  entityId?: string;
   store: SwarmStore;
   eventPrefix?: string;
 }): Promise<CodexStreamingResult> {
@@ -3150,6 +3457,8 @@ function spawnCodexStreaming(input: {
       store: input.store,
       actor: input.actor,
       sliceId: input.sliceId,
+      entityType: input.entityType,
+      entityId: input.entityId,
       eventPrefix: input.eventPrefix,
     });
     const child = spawn(input.command, input.args, {
@@ -3215,6 +3524,30 @@ function printReviewRunResult(result: ReviewRunResult): void {
   if (result.reviewerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.reviewerEvents.parseErrorCount}`);
   console.log(`  result: ${result.resultPath}`);
   if (result.reviewResult) console.log(`  recommendation: ${result.reviewResult.recommendation}`);
+  if (result.stderr?.trim()) console.error(result.stderr.trim());
+}
+
+function printOverseerRunResult(result: OverseerRunResult): void {
+  const status = result.decision?.status ?? "invalid";
+  console.log(`Overseer ${result.exitCode === 0 && result.decision ? status : "failed"} for ${result.scenario}`);
+  console.log(`  run: ${result.runId}`);
+  console.log(`  events: ${result.eventsPath}`);
+  console.log(`  ingested events: ${result.overseerEvents.eventCount}`);
+  if (result.overseerEvents.sessionId) console.log(`  session: ${result.overseerEvents.sessionId}`);
+  if (result.overseerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.overseerEvents.parseErrorCount}`);
+  console.log(`  result: ${result.resultPath}`);
+  if (result.decision) {
+    console.log(`  next: ${result.decision.nextAction}`);
+    if (result.decision.recommendedCommands.length > 0) {
+      console.log(`  recommended commands: ${result.decision.recommendedCommands.length}`);
+    }
+  }
+  if (result.commandResults) {
+    const executed = result.commandResults.filter((item) => item.status === "executed").length;
+    const blocked = result.commandResults.filter((item) => item.status === "blocked").length;
+    const failed = result.commandResults.filter((item) => item.status === "failed").length;
+    console.log(`  command execution: executed ${executed}, blocked ${blocked}, failed ${failed}`);
+  }
   if (result.stderr?.trim()) console.error(result.stderr.trim());
 }
 
@@ -3611,7 +3944,9 @@ function renderAgentSection(
   lines.push("", "Agent Runs");
   if (snapshot.agentRuns.length === 0) lines.push("  none");
   for (const run of snapshot.agentRuns.slice(-8).reverse()) {
-    lines.push(`  ${run.id} ${run.actor} ${run.driver} [${run.status}] slice:${run.sliceId} attempt:${run.attempt}`);
+    const entityType = run.entityType ?? "slice";
+    const entityId = run.entityId ?? run.sliceId;
+    lines.push(`  ${run.id} ${run.actor} ${run.role ?? "agent"} ${run.driver} [${run.status}] ${entityType}:${entityId} attempt:${run.attempt}`);
     if (run.sessionId) lines.push(`    session: ${run.sessionId}`);
     if (run.eventsPath) lines.push(`    events: ${run.eventsPath}`);
   }
@@ -3632,7 +3967,7 @@ function renderBlockerSection(
     lines.push(`  dependency ${dependency.target} -> ${dependency.fromType}:${dependency.fromId} - ${dependency.reason}`);
   }
   for (const run of staleAgentRuns.slice(0, 8)) {
-    lines.push(`  stale run ${run.id} actor:${run.actor} slice:${run.sliceId}`);
+    lines.push(`  stale run ${run.id} actor:${run.actor} ${(run.entityType ?? "slice")}:${run.entityId ?? run.sliceId}`);
   }
 }
 
@@ -3690,7 +4025,8 @@ function staleRunningAgentRuns(
   const staleAfterMs = staleAfterSeconds * 1000;
   return snapshot.agentRuns.filter((run) => {
     if (run.status !== "running") return false;
-    const heartbeat = snapshot.heartbeats.find((item) => item.actor === run.actor && item.entityId === run.sliceId);
+    const entityId = run.entityId ?? run.sliceId;
+    const heartbeat = snapshot.heartbeats.find((item) => item.actor === run.actor && item.entityId === entityId);
     return now - Date.parse(heartbeat?.timestamp ?? run.updatedAt) >= staleAfterMs;
   });
 }
@@ -3706,7 +4042,8 @@ function findStaleAgentRuns(store: SwarmStore, staleAfterSeconds: number): Array
   return store
     .listAgentRuns("running")
     .map((run) => {
-      const heartbeat = heartbeats.find((item) => item.actor === run.actor && item.entityId === run.sliceId);
+      const entityId = run.entityId ?? run.sliceId;
+      const heartbeat = heartbeats.find((item) => item.actor === run.actor && item.entityId === entityId);
       const timestamp = heartbeat?.timestamp ?? run.updatedAt;
       return {
         run,
@@ -4827,9 +5164,10 @@ function buildGraph(store: SwarmStore): {
     nodes.set(heartbeat.id, { id: heartbeat.id, type: "heartbeat", label: `${heartbeat.actor}: ${heartbeat.state}`, status: heartbeat.state });
     if (heartbeat.entityId) edges.push({ from: heartbeat.id, to: heartbeat.entityId, type: "heartbeat_for", label: heartbeat.actor });
   }
-  for (const event of events.filter((item) => item.type.includes("worker") || item.type.includes("verification") || item.type.includes("review"))) {
+  for (const event of events.filter((item) => item.type.includes("worker") || item.type.includes("verification") || item.type.includes("review") || item.type.includes("overseer"))) {
     const actorNode = `actor:${event.actor}`;
     nodes.set(actorNode, { id: actorNode, type: "actor", label: event.actor });
+    if (!nodes.has(event.entityId)) nodes.set(event.entityId, { id: event.entityId, type: event.entityType, label: event.entityId });
     edges.push({ from: actorNode, to: event.entityId, type: "actor_event", label: event.type });
   }
 
@@ -4878,6 +5216,609 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function scenarioEntityId(scenario: string): string {
+  return `scenario:${scenario}`;
+}
+
+function sanitizeArtifactSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
+}
+
+function loadScenarioManifest(workspace: string, scenario: string): ScenarioManifestLoad {
+  const manifestPath = path.join(workspace, `${scenario}.json`);
+  if (!fs.existsSync(manifestPath)) {
+    return {
+      path: manifestPath,
+      exists: false,
+      data: {
+        scenarioId: scenario,
+        missing: true,
+        note: "Scenario manifest was not found; overseer should report this as a blocker or recommend reset.",
+      },
+    };
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      path: manifestPath,
+      exists: true,
+      data: {
+        scenarioId: scenario,
+        invalid: true,
+        rawType: typeof parsed,
+      },
+    };
+  }
+  return { path: manifestPath, exists: true, data: parsed as Record<string, unknown> };
+}
+
+function buildOverseerPrompt(input: {
+  workspace: string;
+  scenario: string;
+  manifest: ScenarioManifestLoad;
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>;
+  execute: boolean;
+}): string {
+  return `You are the visible overseer agent for the Agent Swarm live smoke harness.
+
+Scenario:
+${input.scenario}
+
+Workspace:
+${input.workspace}
+
+Your current execution mode:
+${input.execute ? "- Phase 5A bounded execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
+- Do not dispatch worker, reviewer, or verifier agents yet.
+- Do not edit target code.
+- Do not mutate source specs.
+- Recommend exact harness commands that move harness state forward.
+${input.execute ? "- The harness may execute only allowlisted commands: observe, sources list, domains list/inspect, and slices pull. Worker/reviewer/verifier dispatch commands are intentionally blocked in Phase 5A." : "- A human or later runner may execute recommended commands next."}
+
+Planning priorities:
+- Use immutable source specs and FR/AC refs as the source of truth.
+- Backend capabilities must be accepted before real frontend/dashboard slices are served against them.
+- Prefer meaningful component/capability slices over proof-only or AC-churn slices.
+- If a required manifest, source, target, or state boundary is missing, report a blocker with scope and next action.
+- Keep commands inside the harness contract; never recommend direct SQLite edits or hidden state mutation.
+
+Allowed command contract:
+- node "${process.argv[1]}" observe --events 120
+- node "${process.argv[1]}" sources list
+- node "${process.argv[1]}" domains list
+- node "${process.argv[1]}" domains inspect <domain>
+- node "${process.argv[1]}" slices pull --target <target> --source <source> --batch-size <n> [lane options]
+- node "${process.argv[1]}" run <slice-id> --actor <actor> --driver codex (recommend only; blocked from execution in Phase 5A)
+- node "${process.argv[1]}" review <slice-id> --actor <actor> --driver codex (recommend only; blocked from execution in Phase 5A)
+- node "${process.argv[1]}" verify <slice-id> --actor <actor> --force (recommend only; blocked from execution in Phase 5A)
+- node "${process.argv[1]}" report <slice-id>
+- node "${process.argv[1]}" checkpoint create --role <role> --entity <type:id> --summary <summary>
+- node "${process.argv[1]}" escalations create --level <level> --entity <type:id> --message <message>
+
+Scenario manifest:
+${jsonForPrompt(input.manifest)}
+
+Current harness snapshot:
+${jsonForPrompt(input.snapshot)}
+
+Return only the required JSON object. Your decision must include:
+- currentPriority
+- recommendedCommands with purpose and expectedStateChange
+- lanePlan
+- blockers, if any
+- stopCondition
+- nextAction
+`;
+}
+
+function buildOverseerLaunchPrompt(promptPath: string, scenario: string): string {
+  return `You are the visible overseer agent for scenario ${scenario}. Read the full harness prompt from this file, follow it exactly, and return only the required JSON object: ${promptPath}`;
+}
+
+function runFixtureOverseerDecision(input: {
+  scenario: string;
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>;
+}): OverseerDecision {
+  const activeSlices = input.snapshot.slices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+  const pendingBackend = activeSlices.find((slice) => slice.targetId === input.snapshot.targets.find((target) => target.name === "invoice-api")?.id);
+  const cli = `node "${process.argv[1]}"`;
+  const blockers = input.snapshot.activeEscalations.map((escalation) => ({
+    level: escalation.level === "info" ? "warning" as const : escalation.level as OverseerDecision["blockers"][number]["level"],
+    message: escalation.message,
+    scope: `${escalation.entityType}:${escalation.entityId}`,
+  }));
+
+  const hasInvoiceBackendSource = input.snapshot.sources.some(
+    (source) => sourceDomain(source).toLowerCase() === "invoice backend" || source.uri.toLowerCase().includes("invoice-api.md"),
+  );
+  if (!hasInvoiceBackendSource) {
+    return {
+      status: "blocked",
+      summary: "Fixture overseer cannot plan because the invoice backend source is not registered.",
+      scenario: input.scenario,
+      currentPriority: "Reset or register the live smoke sources before dispatching agents.",
+      recommendedCommands: [
+        {
+          command: "npm run demo:live-agent:reset",
+          purpose: "Recreate the disposable live smoke workspace and register immutable specs.",
+          expectedStateChange: "Harness state contains invoice-api, invoice-dashboard, and product sources.",
+          requiresHuman: false,
+        },
+      ],
+      lanePlan: [],
+      blockers: [
+        {
+          level: "blocker",
+          message: "Invoice backend source is missing from the source registry.",
+          scope: `harness:${scenarioEntityId(input.scenario)}`,
+        },
+      ],
+      stopCondition: "Stop until the scenario workspace has been reset or sources have been registered.",
+      nextAction: "Reset the live smoke scenario, then run the overseer again.",
+    };
+  }
+
+  if (pendingBackend) {
+    const command =
+      pendingBackend.status === "implemented" || pendingBackend.status === "ready_for_review"
+        ? `${cli} review ${pendingBackend.id} --actor live-reviewer --driver codex`
+        : `${cli} run ${pendingBackend.id} --actor live-backend-worker --driver codex`;
+    return {
+      status: "recommend_commands",
+      summary: `Fixture overseer recommends continuing backend slice ${pendingBackend.id}.`,
+      scenario: input.scenario,
+      currentPriority: `Move ${pendingBackend.id} toward accepted backend capability before frontend work.`,
+      recommendedCommands: [
+        {
+          command,
+          purpose: pendingBackend.status === "implemented" || pendingBackend.status === "ready_for_review"
+            ? "Run independent reviewer judgement before deterministic acceptance."
+            : "Dispatch the backend worker against the current meaningful invoice slice.",
+          expectedStateChange: "The backend slice gains worker or review evidence visible in observe and the UI.",
+          requiresHuman: false,
+        },
+      ],
+      lanePlan: [
+        {
+          laneName: "Backend Lane: Invoice Query Core",
+          purpose: "Complete accepted backend invoice capabilities before dashboard slices are served.",
+          nextAction: `Continue ${pendingBackend.id}`,
+        },
+      ],
+      blockers,
+      stopCondition: "Stop after recommending the next harness command; Phase 4 does not dispatch child agents.",
+      nextAction: "Run the recommended command through the harness, then observe state again.",
+    };
+  }
+
+  return {
+    status: "recommend_commands",
+    summary: "Fixture overseer recommends pulling the first meaningful backend capability slice.",
+    scenario: input.scenario,
+    currentPriority: "Create a backend invoice capability slice before dashboard work.",
+    recommendedCommands: [
+      {
+        command: `${cli} slices pull --target invoice-api --source invoice-api.md --new-lane --lane-name "Backend Lane: Invoice Query Core" --lane-purpose "Implement accepted invoice backend capabilities before dashboard slices" --lane-labels backend,invoice-api,live-smoke --orchestrator live-overseer --batch-size 3`,
+        purpose: "Serve a real backend work package with immutable FR/AC refs.",
+        expectedStateChange: "A backend lane and slice are created with active FR/AC leases.",
+        requiresHuman: false,
+      },
+      {
+        command: `${cli} observe --events 120`,
+        purpose: "Confirm the created slice, lane, and leases before dispatch.",
+        expectedStateChange: "Snapshot shows the backend slice and no hidden worker run yet.",
+        requiresHuman: false,
+      },
+    ],
+    lanePlan: [
+      {
+        laneName: "Backend Lane: Invoice Query Core",
+        purpose: "Start with accepted backend capability because dashboard work depends on it.",
+        nextAction: "Pull first backend slice, then dispatch a worker in Phase 5.",
+      },
+    ],
+    blockers,
+    stopCondition: "Stop after recommending commands; Phase 4 does not dispatch child agents.",
+    nextAction: "Execute the pull command or let the Phase 5 autonomous runner do it.",
+  };
+}
+
+function readOverseerDecisionFile(filePath: string): { ok: true; decision: OverseerDecision } | { ok: false; reason: string } {
+  if (!fs.existsSync(filePath)) return { ok: false, reason: `overseer decision file missing: ${filePath}` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `overseer decision JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const result = overseerDecisionSchema.safeParse(parsed);
+  if (!result.success) {
+    return {
+      ok: false,
+      reason: `overseer decision schema failed: ${result.error.message}`,
+    };
+  }
+  return { ok: true, decision: result.data };
+}
+
+function applyOverseerDecision(input: {
+  store: SwarmStore;
+  workspace: string;
+  actor: string;
+  scenario: string;
+  entityId: string;
+  runId: string;
+  decision: OverseerDecision;
+  resultPath: string;
+  eventsPath: string;
+  overseerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  artifactPath: string;
+  execute: boolean;
+  executeLimit: number;
+}): OverseerCommandExecution[] {
+  input.store.setMeta(`overseer:last:${input.scenario}`, input.resultPath);
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: input.decision.status === "blocked" || input.decision.status === "human_required" ? "blocked" : "idle",
+    detail: input.decision.nextAction,
+    entityType: "harness",
+    entityId: input.entityId,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "overseer.decision_recorded",
+      entityType: "harness",
+      entityId: input.entityId,
+      payload: {
+        runId: input.runId,
+        scenario: input.scenario,
+        status: input.decision.status,
+        summary: input.decision.summary,
+        currentPriority: input.decision.currentPriority,
+        recommendedCommands: input.decision.recommendedCommands,
+        lanePlan: input.decision.lanePlan,
+        blockers: input.decision.blockers,
+        stopCondition: input.decision.stopCondition,
+        nextAction: input.decision.nextAction,
+        resultPath: input.resultPath,
+        eventsPath: input.eventsPath,
+        overseerEvents: input.overseerEvents,
+      },
+    }),
+  );
+
+  const blockers = [...input.decision.blockers];
+  if ((input.decision.status === "blocked" || input.decision.status === "human_required") && blockers.length === 0) {
+    blockers.push({
+      level: input.decision.status === "human_required" ? "human_required" : "blocker",
+      message: input.decision.summary,
+      scope: `harness:${input.entityId}`,
+    });
+  }
+
+  for (const blocker of blockers) {
+    const now = new Date().toISOString();
+    const escalation = {
+      id: makeId("escalation"),
+      level: blocker.level,
+      status: "active" as const,
+      entityType: "harness" as const,
+      entityId: input.entityId,
+      message: blocker.message,
+      reason: blocker.scope,
+      createdBy: input.actor,
+      createdAt: now,
+      updatedAt: now,
+    };
+    input.store.insertEscalation(escalation);
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "overseer.escalation_raised",
+        entityType: "harness",
+        entityId: input.entityId,
+        payload: {
+          escalationId: escalation.id,
+          level: blocker.level,
+          message: blocker.message,
+          scope: blocker.scope,
+        },
+      }),
+    );
+  }
+
+  const commandResults = input.execute
+    ? executeOverseerRecommendedCommands({
+        store: input.store,
+        workspace: input.workspace,
+        actor: input.actor,
+        entityId: input.entityId,
+        runId: input.runId,
+        decision: input.decision,
+        artifactPath: input.artifactPath,
+        limit: input.executeLimit,
+      })
+    : [];
+
+  if (input.execute) {
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "overseer.commands_completed",
+        entityType: "harness",
+        entityId: input.entityId,
+        payload: {
+          runId: input.runId,
+          scenario: input.scenario,
+          executed: commandResults.filter((item) => item.status === "executed").length,
+          blocked: commandResults.filter((item) => item.status === "blocked").length,
+          failed: commandResults.filter((item) => item.status === "failed").length,
+          results: commandResults,
+        },
+      }),
+    );
+  }
+
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "overseer.completed",
+      entityType: "harness",
+      entityId: input.entityId,
+      payload: {
+        runId: input.runId,
+        scenario: input.scenario,
+        status: input.decision.status,
+        nextAction: input.decision.nextAction,
+        commandResults,
+      },
+    }),
+  );
+  return commandResults;
+}
+
+function executeOverseerRecommendedCommands(input: {
+  store: SwarmStore;
+  workspace: string;
+  actor: string;
+  entityId: string;
+  runId: string;
+  decision: OverseerDecision;
+  artifactPath: string;
+  limit: number;
+}): OverseerCommandExecution[] {
+  if (input.decision.status !== "recommend_commands") return [];
+  const commands = input.decision.recommendedCommands.slice(0, Math.max(input.limit, 0));
+  const results: OverseerCommandExecution[] = [];
+  for (let index = 0; index < commands.length; index += 1) {
+    const command = commands[index];
+    const commandIndex = index + 1;
+    const baseResult = {
+      command: command.command,
+      purpose: command.purpose,
+      expectedStateChange: command.expectedStateChange,
+    };
+    if (command.requiresHuman) {
+      const blocked = {
+        ...baseResult,
+        status: "blocked" as const,
+        reason: "Command requires human approval.",
+      };
+      recordOverseerCommandBlocked(input, blocked, commandIndex);
+      results.push(blocked);
+      continue;
+    }
+
+    const validation = validateOverseerCommand(command.command, input.workspace);
+    if (!validation.ok) {
+      const blocked = {
+        ...baseResult,
+        status: "blocked" as const,
+        reason: validation.reason,
+      };
+      recordOverseerCommandBlocked(input, blocked, commandIndex);
+      results.push(blocked);
+      continue;
+    }
+
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "testing",
+      detail: `Executing overseer command ${commandIndex}: ${validation.commandKey}`,
+      entityType: "harness",
+      entityId: input.entityId,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "overseer.command_started",
+        entityType: "harness",
+        entityId: input.entityId,
+        payload: {
+          runId: input.runId,
+          index: commandIndex,
+          command: command.command,
+          commandKey: validation.commandKey,
+          purpose: command.purpose,
+          expectedStateChange: command.expectedStateChange,
+        },
+      }),
+    );
+
+    const stdoutPath = path.join(input.artifactPath, `overseer-command-${input.runId}-${commandIndex}.stdout.log`);
+    const stderrPath = path.join(input.artifactPath, `overseer-command-${input.runId}-${commandIndex}.stderr.log`);
+    const result = spawnSync(process.execPath, [process.argv[1], ...validation.cliArgs], {
+      cwd: input.workspace,
+      shell: false,
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    fs.writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
+    fs.writeFileSync(stderrPath, result.stderr ?? "", "utf8");
+
+    const execution: OverseerCommandExecution = {
+      ...baseResult,
+      status: result.status === 0 ? "executed" : "failed",
+      exitCode: result.status,
+      stdoutPath,
+      stderrPath,
+      reason: result.status === 0 ? undefined : result.error?.message ?? `Command exited with status ${result.status}`,
+    };
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: result.status === 0 ? "overseer.command_completed" : "overseer.command_failed",
+        entityType: "harness",
+        entityId: input.entityId,
+        payload: {
+          runId: input.runId,
+          index: commandIndex,
+          command: command.command,
+          commandKey: validation.commandKey,
+          exitCode: result.status,
+          stdoutPath,
+          stderrPath,
+          reason: execution.reason,
+          purpose: command.purpose,
+          expectedStateChange: command.expectedStateChange,
+        },
+      }),
+    );
+    results.push(execution);
+  }
+
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: results.some((item) => item.status === "failed") ? "blocked" : "idle",
+    detail: summarizeOverseerCommandResults(results),
+    entityType: "harness",
+    entityId: input.entityId,
+  });
+  return results;
+}
+
+function recordOverseerCommandBlocked(
+  input: {
+    store: SwarmStore;
+    actor: string;
+    entityId: string;
+    runId: string;
+  },
+  blocked: OverseerCommandExecution,
+  commandIndex: number,
+): void {
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "overseer.command_blocked",
+      entityType: "harness",
+      entityId: input.entityId,
+      payload: {
+        runId: input.runId,
+        index: commandIndex,
+        command: blocked.command,
+        reason: blocked.reason,
+        purpose: blocked.purpose,
+        expectedStateChange: blocked.expectedStateChange,
+      },
+    }),
+  );
+}
+
+function summarizeOverseerCommandResults(results: OverseerCommandExecution[]): string {
+  if (results.length === 0) return "Overseer decision recorded; no commands executed.";
+  const executed = results.filter((item) => item.status === "executed").length;
+  const blocked = results.filter((item) => item.status === "blocked").length;
+  const failed = results.filter((item) => item.status === "failed").length;
+  return `Overseer commands complete: executed ${executed}, blocked ${blocked}, failed ${failed}.`;
+}
+
+function validateOverseerCommand(
+  command: string,
+  workspace: string,
+): { ok: true; cliArgs: string[]; commandKey: string } | { ok: false; reason: string } {
+  const tokens = tokenizeCommand(command);
+  if (!tokens.ok) return tokens;
+  if (tokens.args.some((token) => [";", "&&", "||", "|", ">", "<", "`"].includes(token))) {
+    return { ok: false, reason: "Shell operators are not allowed in overseer commands." };
+  }
+  if (tokens.args.length < 3) return { ok: false, reason: "Expected command shape: node <cli.js> <command> ..." };
+  const [runtime, cliPath, ...cliArgs] = tokens.args;
+  const runtimeName = path.basename(runtime).toLowerCase();
+  if (runtimeName !== "node" && runtimeName !== "node.exe") {
+    return { ok: false, reason: "Only node-based harness commands may be executed." };
+  }
+  if (path.basename(cliPath).toLowerCase() !== "cli.js") {
+    return { ok: false, reason: "Only the harness CLI entrypoint may be executed." };
+  }
+  const resolvedCli = path.resolve(workspace, cliPath);
+  const currentCli = path.resolve(process.argv[1]);
+  const normalizedCli = resolvedCli.toLowerCase();
+  const normalizedCurrent = currentCli.toLowerCase();
+  if (normalizedCli !== normalizedCurrent && path.resolve(cliPath).toLowerCase() !== normalizedCurrent && !cliPath.replace(/\\/g, "/").endsWith("/dist/cli.js")) {
+    return { ok: false, reason: "The command does not target this harness CLI." };
+  }
+  if (cliArgs.length === 0) return { ok: false, reason: "Missing harness subcommand." };
+  const [commandName, subcommand] = cliArgs;
+  if (commandName === "observe") return { ok: true, cliArgs, commandKey: "observe" };
+  if (commandName === "sources" && subcommand === "list") return { ok: true, cliArgs, commandKey: "sources list" };
+  if (commandName === "domains" && (subcommand === "list" || subcommand === "inspect")) {
+    return { ok: true, cliArgs, commandKey: `domains ${subcommand}` };
+  }
+  if (commandName === "slices" && subcommand === "pull") return { ok: true, cliArgs, commandKey: "slices pull" };
+  if (["run", "review", "verify"].includes(commandName)) {
+    return { ok: false, reason: "Phase 5A does not execute worker, reviewer, or verifier dispatch commands." };
+  }
+  if (["checkpoint", "escalations"].includes(commandName)) {
+    return { ok: false, reason: "Phase 5A records overseer decisions directly and does not execute checkpoint/escalation commands." };
+  }
+  return { ok: false, reason: `Command is not allowlisted for Phase 5A: ${commandName}${subcommand ? ` ${subcommand}` : ""}` };
+}
+
+function tokenizeCommand(command: string): { ok: true; args: string[] } | { ok: false; reason: string } {
+  const args: string[] = [];
+  let current = "";
+  let quote: "\"" | "'" | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if ((char === "\"" || char === "'") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (quote && char === quote) {
+      quote = undefined;
+      continue;
+    }
+    if (!quote && /\s/.test(char)) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (quote) return { ok: false, reason: "Command has an unclosed quote." };
+  if (current) args.push(current);
+  return { ok: true, args };
+}
+
+function jsonForPrompt(value: unknown): string {
+  const json = JSON.stringify(value, null, 2);
+  const maxLength = 30000;
+  if (json.length <= maxLength) return json;
+  return `${json.slice(0, maxLength)}\n... truncated ${json.length - maxLength} chars ...`;
 }
 
 function buildWorkerPrompt(input: {
@@ -5036,6 +5977,81 @@ function writeReviewResultSchema(schemaPath: string): void {
             },
           },
           recommendation: { type: "string" },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function writeOverseerDecisionSchema(schemaPath: string): void {
+  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
+  fs.writeFileSync(
+    schemaPath,
+    `${JSON.stringify(
+      {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "status",
+          "summary",
+          "scenario",
+          "currentPriority",
+          "recommendedCommands",
+          "lanePlan",
+          "blockers",
+          "stopCondition",
+          "nextAction",
+        ],
+        properties: {
+          status: { type: "string", enum: ["recommend_commands", "blocked", "human_required", "complete"] },
+          summary: { type: "string" },
+          scenario: { type: "string" },
+          currentPriority: { type: "string" },
+          recommendedCommands: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["command", "purpose", "expectedStateChange", "requiresHuman"],
+              properties: {
+                command: { type: "string" },
+                purpose: { type: "string" },
+                expectedStateChange: { type: "string" },
+                requiresHuman: { type: "boolean" },
+              },
+            },
+          },
+          lanePlan: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["laneName", "purpose", "nextAction"],
+              properties: {
+                laneName: { type: "string" },
+                purpose: { type: "string" },
+                nextAction: { type: "string" },
+              },
+            },
+          },
+          blockers: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["level", "message", "scope"],
+              properties: {
+                level: { type: "string", enum: ["warning", "blocker", "human_required", "critical"] },
+                message: { type: "string" },
+                scope: { type: "string" },
+              },
+            },
+          },
+          stopCondition: { type: "string" },
+          nextAction: { type: "string" },
         },
       },
       null,
