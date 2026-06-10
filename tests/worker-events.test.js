@@ -17,6 +17,7 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
       store,
       actor: "worker-events-test",
       sliceId: "SLICE-test",
+      driver: "codex",
       jsonl: [
         JSON.stringify({ type: "session.started", session_id: "session-123" }),
         JSON.stringify({ type: "apply_patch", detail: "editing files" }),
@@ -30,8 +31,11 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
     assert.deepEqual(result.inferredStates, ["thinking", "editing"]);
 
     const events = store.listEvents();
-    assert.equal(events.filter((event) => event.type === "worker.codex_event").length, 2);
-    assert.equal(events.filter((event) => event.type === "worker.codex_event.parse_failed").length, 1);
+    const agentEvents = events.filter((event) => event.type === "worker.agent_event");
+    assert.equal(agentEvents.length, 2);
+    assert.equal(agentEvents[0].payload.driver, "codex");
+    assert.ok(agentEvents.some((event) => event.payload.agentEventType === "session.started"));
+    assert.equal(events.filter((event) => event.type === "worker.agent_event.parse_failed").length, 1);
     const heartbeat = store.listHeartbeats().find((item) => item.actor === "worker-events-test");
     assert.equal(heartbeat?.state, "editing");
     assert.equal(heartbeat?.entityId, "SLICE-test");

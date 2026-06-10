@@ -19,11 +19,15 @@ export function ingestWorkerJsonl(input: {
   actor: string;
   sliceId: string;
   jsonl: string;
+  driver?: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
 }): WorkerEventIngestResult {
   const ingestor = createWorkerJsonlIngestor({
     store: input.store,
     actor: input.actor,
     sliceId: input.sliceId,
+    driver: input.driver,
+    classify: input.classify,
   });
   ingestor.ingest(input.jsonl);
   return ingestor.flush();
@@ -33,6 +37,8 @@ export function createWorkerJsonlIngestor(input: {
   store: SwarmStore;
   actor: string;
   sliceId: string;
+  driver?: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
 }): {
   ingest: (chunk: string) => WorkerEventIngestResult;
   flush: () => WorkerEventIngestResult;
@@ -68,6 +74,8 @@ function ingestLines(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    driver?: string;
+    classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
   },
   state: WorkerJsonlIngestState,
   rawLines: string[],
@@ -84,6 +92,8 @@ function ingestLine(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    driver?: string;
+    classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
   },
   state: WorkerJsonlIngestState,
   line: string,
@@ -94,11 +104,12 @@ function ingestLine(
     input.store.addEvent(
       createEvent({
         actor: input.actor,
-        type: "worker.codex_event.parse_failed",
+        type: "worker.agent_event.parse_failed",
         entityType: "slice",
         entityId: input.sliceId,
         payload: {
           lineNumber: state.lineNumber,
+          driver: input.driver,
           error: parsed.error,
           raw: line.slice(0, 2000),
         },
@@ -109,18 +120,19 @@ function ingestLine(
 
   const payload = asPayload(parsed.value);
   state.sessionId ??= findSessionId(payload);
-  const heartbeatState = inferHeartbeatState(payload);
+  const heartbeatState = input.classify?.(payload) ?? inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
   state.eventCount += 1;
   input.store.addEvent(
     createEvent({
       actor: input.actor,
-      type: "worker.codex_event",
+      type: "worker.agent_event",
       entityType: "slice",
       entityId: input.sliceId,
       payload: {
         lineNumber: state.lineNumber,
-        codexEventType: typeof payload.type === "string" ? payload.type : undefined,
+        driver: input.driver,
+        agentEventType: typeof payload.type === "string" ? payload.type : undefined,
         event: payload,
       },
     }),
@@ -129,7 +141,7 @@ function ingestLine(
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
     state: heartbeatState,
-    detail: `Observed Codex JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
+    detail: `Observed worker JSONL event${typeof payload.type === "string" ? `: ${payload.type}` : ""}`,
     entityType: "slice",
     entityId: input.sliceId,
   });

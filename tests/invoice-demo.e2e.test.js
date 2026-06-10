@@ -45,9 +45,9 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   assert.ok(
     snapshot.recentEvents.some(
       (event) =>
-        event.type === "worker.codex_event" &&
+        event.type === "worker.agent_event" &&
         event.actor === "frontend-worker-dashboard" &&
-        event.payload.codexEventType === "fixture.worker.completed",
+        event.payload.agentEventType === "fixture.worker.completed",
     ),
     "worker JSONL output should be ingested as first-class harness events",
   );
@@ -71,7 +71,7 @@ test("invoice demo runs end-to-end with deterministic fixture workers", () => {
   const dashboardTimeline = JSON.parse(runSwarm(workspace, ["timeline", dashboardSlices[0].id, "--json"]));
   assert.equal(dashboardTimeline.entityType, "slice");
   assert.ok(dashboardTimeline.items.some((item) => item.kind === "event" && item.label.includes("worker.started")));
-  assert.ok(dashboardTimeline.items.some((item) => item.kind === "event" && item.label.includes("worker.codex_event")));
+  assert.ok(dashboardTimeline.items.some((item) => item.kind === "event" && item.label.includes("worker.agent_event")));
   assert.ok(dashboardTimeline.items.some((item) => item.kind === "evidence" && item.label.includes("worker_result")));
   assert.ok(dashboardTimeline.items.some((item) => item.kind === "lease" && item.detail.includes("completed")));
 

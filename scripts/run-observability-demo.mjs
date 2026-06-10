@@ -90,7 +90,7 @@ const summary = {
     timelineItems: timeline.items.length,
   },
   observabilityAssertions: {
-    hasWorkerEvents: finalSnapshot.recentEvents.some((event) => event.type === "worker.codex_event"),
+    hasWorkerEvents: finalSnapshot.recentEvents.some((event) => event.type === "worker.agent_event"),
     hasRecoveryEvents: finalSnapshot.recentEvents.some((event) => event.type.startsWith("recovery.")),
     hasRestartRun: finalSnapshot.agentRuns.some((run) => run.id !== staleRunId && run.sliceId === staleSliceId && run.status === "completed"),
     watchAgentsMentionsRuns: watchAgents.includes("Agent Runs") && watchAgents.includes("RUN-"),
