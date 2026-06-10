@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getWorkerDriver, workerDriverIds } from "../dist/worker-driver.js";
+import { reviewResultSchema } from "../dist/schemas.js";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "swarm-worker-driver-"));
@@ -264,4 +265,70 @@ test("claude heartbeat classifier maps tool use to states", () => {
   assert.equal(claude.classifyHeartbeat({ type: "result", is_error: false }), "idle");
   assert.equal(claude.classifyHeartbeat({ type: "result", is_error: true }), "blocked");
   assert.equal(claude.classifyHeartbeat({ type: "user" }), undefined);
+});
+
+test("codex readOnly spec forces the read-only sandbox", () => {
+  const dir = tempDir();
+  const writable = getWorkerDriver("codex").buildInvocation(baseSpec(dir));
+  assert.equal(writable.args[writable.args.indexOf("--sandbox") + 1], "workspace-write");
+
+  const readOnly = getWorkerDriver("codex").buildInvocation({ ...baseSpec(dir), readOnly: true });
+  assert.equal(readOnly.args[readOnly.args.indexOf("--sandbox") + 1], "read-only");
+});
+
+test("codex readOnly overrides a writable driver config sandbox", () => {
+  const dir = tempDir();
+  const spec = { ...baseSpec(dir), readOnly: true, driverConfig: { sandbox: "workspace-write" } };
+  const args = getWorkerDriver("codex").buildInvocation(spec).args;
+  assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+});
+
+test("claude readOnly spec uses plan mode and omits the edit-tool allowlist", () => {
+  const dir = tempDir();
+  const spec = {
+    ...baseSpec(dir),
+    readOnly: true,
+    driverConfig: { allowedTools: "Edit Write Read", permissionMode: "acceptEdits" },
+  };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+  assert.equal(args.includes("--allowedTools"), false);
+});
+
+test("claude finalize validates structured output against a supplied resultSchema", () => {
+  const dir = tempDir();
+  const reviewResult = {
+    status: "accepted",
+    summary: "looks good",
+    frAcFindings: [{ ref: "AC-1", status: "passed", evidence: ["test output"], finding: "covered" }],
+    testAssessment: "tests present and passing",
+    sourceMutationDetected: false,
+    stubOrHardcodeRisk: "none",
+    requiredFixes: [],
+    escalations: [],
+    recommendation: "accept",
+  };
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    total_cost_usd: 0.02,
+    structured_output: reviewResult,
+  });
+
+  const spec = { ...baseSpec(dir), resultSchema: reviewResultSchema };
+  const finalization = getWorkerDriver("claude").finalize({ exitCode: 0, stdout, spec });
+  assert.equal(finalization.ok, true);
+  assert.equal(finalization.structuredResultWritten, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), reviewResult);
+});
+
+test("claude finalize rejects a worker-shaped object under the review schema", () => {
+  const dir = tempDir();
+  const workerShaped = { status: "passed", summary: "done", changedFiles: [], commandsRun: [], testsRun: [], frAcCoverage: [], risks: [], nextRecommendation: "continue" };
+  const stdout = JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: workerShaped });
+  const spec = { ...baseSpec(dir), resultSchema: reviewResultSchema };
+  const finalization = getWorkerDriver("claude").finalize({ exitCode: 0, stdout, spec });
+  assert.equal(finalization.ok, false);
+  assert.equal(fs.existsSync(spec.resultPath), false);
 });

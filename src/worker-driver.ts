@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { workerResultSchema } from "./schemas.js";
 import type { HeartbeatState } from "./types.js";
+import type { ZodTypeAny } from "zod";
 
 export interface WorkerRunSpec {
   prompt: string;
@@ -9,6 +10,8 @@ export interface WorkerRunSpec {
   resultPath: string;
   model?: string;
   resumeSessionId?: string;
+  readOnly?: boolean;
+  resultSchema?: ZodTypeAny;
   driverConfig: Record<string, unknown>;
 }
 
@@ -71,7 +74,11 @@ const codexDriver: WorkerDriverAdapter = {
       args.push(spec.resumeSessionId, spec.prompt);
       return { command, args };
     }
-    const sandbox = typeof spec.driverConfig.sandbox === "string" ? spec.driverConfig.sandbox : "workspace-write";
+    const sandbox = spec.readOnly
+      ? "read-only"
+      : typeof spec.driverConfig.sandbox === "string"
+        ? spec.driverConfig.sandbox
+        : "workspace-write";
     args.push(
       "--json",
       "--skip-git-repo-check",
@@ -130,11 +137,15 @@ const claudeDriver: WorkerDriverAdapter = {
     }
     const config = spec.driverConfig;
     const args = [...prefixArgs, "-p", "--output-format", "stream-json", "--verbose", "--json-schema", schemaJson];
-    args.push("--permission-mode", typeof config.permissionMode === "string" ? config.permissionMode : "acceptEdits");
+    if (spec.readOnly) {
+      args.push("--permission-mode", "plan");
+    } else {
+      args.push("--permission-mode", typeof config.permissionMode === "string" ? config.permissionMode : "acceptEdits");
+    }
     if (config.settingSources !== false) {
       args.push("--setting-sources", typeof config.settingSources === "string" ? config.settingSources : "");
     }
-    if (typeof config.allowedTools === "string" && config.allowedTools.trim()) {
+    if (!spec.readOnly && typeof config.allowedTools === "string" && config.allowedTools.trim()) {
       args.push("--allowedTools", config.allowedTools);
     }
     if (typeof config.maxBudgetUsd === "number") args.push("--max-budget-usd", String(config.maxBudgetUsd));
@@ -166,7 +177,8 @@ const claudeDriver: WorkerDriverAdapter = {
     let structuredResultWritten = false;
     let failureReason: string | undefined;
     if (resultEvent && resultEvent.structured_output !== undefined && resultEvent.structured_output !== null) {
-      const parsed = workerResultSchema.safeParse(resultEvent.structured_output);
+      const schema = spec.resultSchema ?? workerResultSchema;
+      const parsed = schema.safeParse(resultEvent.structured_output);
       if (parsed.success) {
         fs.writeFileSync(spec.resultPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
         structuredResultWritten = true;
