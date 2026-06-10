@@ -19,6 +19,7 @@
     "demo:web-observability:codex": "npm run build && node scripts/run-web-observability-demo.mjs --driver codex",
     "demo:live-agent:reset": "npm run build && node scripts/reset-live-agent-smoke.mjs",
     "demo:live-agent:serve": "npm run build && node dist/cli.js serve --workspace .swarm-demo/live-agent-smoke --host 127.0.0.1 --port 4318",
+    "demo:live-agent:scripted": "npm run build && node scripts/run-live-agent-scripted-demo.mjs --driver codex",
     "dev": "tsx src/cli.ts",
     "swarm": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",

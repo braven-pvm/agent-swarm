@@ -49,6 +49,8 @@ Implemented and covered by tests:
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
+- independent reviewer runner through `swarm review`
+- reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
 - stale-run recovery, revive, restart
 - low-signal work warning
 - latest-only role/entity checkpoints
@@ -59,7 +61,8 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 20/20 passing
+npm test -> 27/27 passing
+git diff --check -> clean
 ```
 
 ## Recent UI Work Completed
@@ -125,6 +128,27 @@ Phase 1 implementation completed:
 - live smoke scenario manifest at `.swarm-demo/live-agent-smoke/live-agent-smoke.json`
 - `tests/live-agent-smoke-reset.e2e.test.js`
 
+Phase 2 implementation completed:
+
+- `swarm review <slice-id> --actor <actor> --driver codex|fixture`
+- `reviewResultSchema` and generated `schemas/review-result.schema.json`
+- reviewer agent runs, heartbeats, JSONL artifact capture, and `reviewer.codex_event` events
+- `review_result` evidence with reviewer findings and source hash checks
+- verifier gate now considers the latest reviewer result when one exists
+- material reviewer failures create blockers/escalations and prevent acceptance
+- slice reports and observe snapshots expose latest review status
+- `tests/review-runner.e2e.test.js`
+
+Phase 3 implementation completed:
+
+- `scripts/run-live-agent-scripted-demo.mjs`
+- `npm run demo:live-agent:scripted`
+- runner resets or uses the live smoke workspace, then labels run mode `scripted-codex`
+- runner pulls one backend slice, runs `swarm run --driver codex`, runs `swarm review --driver codex`, and runs `swarm verify --force` as the final gate
+- runner writes `live-agent-scripted-summary.json` and `live-agent-scripted-artifacts/`
+- summary includes worker/reviewer runs, review result, bounded outcome, source mutation assertion, graph/report/timeline artifacts, and command evidence
+- `tests/live-agent-scripted.e2e.test.js` uses fake Codex while exercising the real `--driver codex` path and real target verification
+
 Current manual viewer path:
 
 ```powershell
@@ -188,23 +212,25 @@ node ..\..\dist\cli.js report <slice-id>
 
 ## Next Slice To Implement
 
-Name: Real Codex Verifier/Reviewer Runner
+Name: Visible Overseer Agent
 
-Goal: add the independent semantic verification role needed before a real overseer can safely coordinate full live work.
+Goal: make the overseer/planner itself a first-class observable agent before allowing autonomous dispatch.
 
 Next practical slices:
 
-- add review result schema
-- add `swarm review <slice-id> --actor <actor> --driver codex`
-- record reviewer agent runs, heartbeats, JSONL events, and findings artifacts
-- expose reviewer result in report/observe where useful
-- add fake-Codex reviewer tests before optional live Codex smoke
-- add visible real Codex overseer/planner runner
+- add `swarm orchestrate --actor live-overseer --driver codex --scenario live-agent-smoke`
+- add overseer output schema
+- add overseer prompt builder using manifest, observe snapshot, source refs/hashes, targets, blockers, command contract, and bounds
+- record overseer agent run or equivalent first-class observable role
+- stream overseer JSONL events into harness state
+- update overseer heartbeat while it thinks/inspects
+- store overseer planning decision as event/checkpoint
+- first pass may recommend next commands rather than executing child dispatches
 - add later package scripts for live run and full-product run
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 is complete. Do Phase 2 next: real verifier/reviewer runner. Do not jump directly into autonomous overseer execution before independent review exists.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1, Phase 2, and Phase 3 are complete. Do Phase 4 next: visible overseer agent. Do not jump directly into autonomous child dispatch before the overseer role is visible and produces structured decisions from harness state.
 
-Do not lose the full-product target while implementing Phase 1. Phase 1 builds the measuring instrument. Later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
+Do not lose the full-product target while implementing overseer visibility. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 
 Acceptance criteria for the next slice should stay lifecycle-grounded:
 

@@ -46,6 +46,8 @@ Implemented as of 2026-06-10:
 - fixture and Codex worker execution
 - streaming worker event ingestion and heartbeats
 - verification gates with per-FR/AC evidence coverage
+- independent reviewer runner with structured review evidence and review-gated verification
+- scripted live worker+reviewer rehearsal for the live smoke workspace
 - reports, timeline, graph, observe, and watch
 - stale-run recovery, revive, and restart
 - checkpoints and role-specific resume packets
@@ -54,11 +56,10 @@ Implemented as of 2026-06-10:
 
 Not yet implemented:
 
-- real Codex verifier/reviewer runner
 - real Codex overseer/planner coordinating real workers and verifiers
-- live/full-product run modes beyond Phase 1 reset/run-mode setup
+- live/full-product run modes beyond Phase 3 scripted worker+reviewer rehearsal
 
-Latest known full verification: `npm test` passes 20/20.
+Latest known full verification: `npm test` passes 27/27 and `git diff --check` is clean.
 
 ## Functional Requirements
 
@@ -294,7 +295,7 @@ Acceptance criteria:
 
 The harness shall provide an optional resettable live smoke test where a real Codex overseer/planner coordinates real Codex workers and verifier/reviewer agents through the harness while the UI shows progress.
 
-Status: Phase 1 reset/run-mode foundation implemented; real verifier/reviewer, real overseer, live run, and full-product mode still planned.
+Status: Phase 1 reset/run-mode foundation, Phase 2 independent reviewer runner, and Phase 3 scripted worker+reviewer rehearsal implemented; real overseer, live run, and full-product mode still planned.
 
 Acceptance criteria:
 
@@ -433,13 +434,14 @@ Exit criteria:
 
 ### Milestone 9: Live Real-Agent Smoke
 
-Status: planned.
+Status: in progress. Phase 1, Phase 2, and Phase 3 are implemented.
 
 Deliver:
 
 - explicit run-mode labeling for fixture, scripted Codex, and live-agent smoke runs
 - reset/setup command for `.swarm-demo/live-agent-smoke`
 - real Codex verifier/reviewer runner
+- scripted Codex worker+reviewer rehearsal
 - real Codex overseer/planner runner with visible heartbeats, decisions, checkpoints, and dispatches
 - package scripts for reset, serve, and run
 - optional smoke assertions that do not run in default CI

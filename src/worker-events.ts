@@ -19,11 +19,13 @@ export function ingestWorkerJsonl(input: {
   actor: string;
   sliceId: string;
   jsonl: string;
+  eventPrefix?: string;
 }): WorkerEventIngestResult {
   const ingestor = createWorkerJsonlIngestor({
     store: input.store,
     actor: input.actor,
     sliceId: input.sliceId,
+    eventPrefix: input.eventPrefix,
   });
   ingestor.ingest(input.jsonl);
   return ingestor.flush();
@@ -33,6 +35,7 @@ export function createWorkerJsonlIngestor(input: {
   store: SwarmStore;
   actor: string;
   sliceId: string;
+  eventPrefix?: string;
 }): {
   ingest: (chunk: string) => WorkerEventIngestResult;
   flush: () => WorkerEventIngestResult;
@@ -68,6 +71,7 @@ function ingestLines(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    eventPrefix?: string;
   },
   state: WorkerJsonlIngestState,
   rawLines: string[],
@@ -84,6 +88,7 @@ function ingestLine(
     store: SwarmStore;
     actor: string;
     sliceId: string;
+    eventPrefix?: string;
   },
   state: WorkerJsonlIngestState,
   line: string,
@@ -91,10 +96,11 @@ function ingestLine(
   const parsed = parseJsonLine(line);
   if (!parsed.ok) {
     state.parseErrorCount += 1;
+    const eventPrefix = input.eventPrefix ?? "worker";
     input.store.addEvent(
       createEvent({
         actor: input.actor,
-        type: "worker.codex_event.parse_failed",
+        type: `${eventPrefix}.codex_event.parse_failed`,
         entityType: "slice",
         entityId: input.sliceId,
         payload: {
@@ -108,6 +114,7 @@ function ingestLine(
   }
 
   const payload = asPayload(parsed.value);
+  const eventPrefix = input.eventPrefix ?? "worker";
   state.sessionId ??= findSessionId(payload);
   const heartbeatState = inferHeartbeatState(payload);
   state.inferredStates.push(heartbeatState);
@@ -115,7 +122,7 @@ function ingestLine(
   input.store.addEvent(
     createEvent({
       actor: input.actor,
-      type: "worker.codex_event",
+      type: `${eventPrefix}.codex_event`,
       entityType: "slice",
       entityId: input.sliceId,
       payload: {

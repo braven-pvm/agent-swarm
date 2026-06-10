@@ -36,10 +36,11 @@ Current implementation snapshot:
 - file-based source adapter and lightweight source/domain/ref index are implemented
 - dynamic slice pulling, lane state, FR/AC leases, dependency gating, and low-signal warnings are implemented
 - fixture and Codex worker dispatch, streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented
+- independent reviewer dispatch, structured review evidence, reviewer JSONL events, and review-gated verification are implemented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, and Events
 - web-observability E2E harness is implemented and writes browser/API artifacts
-- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup is implemented
-- latest known verification: `npm test` passes 20/20
+- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, and Phase 3 scripted worker+reviewer rehearsal are implemented
+- latest known verification: `npm test` passes 27/27 and `git diff --check` is clean
 
 Current thesis:
 

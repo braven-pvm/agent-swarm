@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dieselbrook Overseer"
+  short_description: "Manage Dieselbrook domain delivery"
+  default_prompt: "Use $dieselbrook-overseer to assess Dieselbrook implementation state, next tasks, review readiness, and branch strategy."
