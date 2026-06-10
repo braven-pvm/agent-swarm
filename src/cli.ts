@@ -18,7 +18,7 @@ import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
-import { getWorkerDriver, workerDriverIds, resolveDriverCommand, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
+import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
@@ -2060,9 +2060,9 @@ program
   .command("orchestrate")
   .description("Run a visible overseer/planner agent for a live smoke scenario")
   .option("--actor <actor>", "overseer actor id shown in observability", "live-overseer")
-  .option("--driver <driver>", "overseer driver: codex or fixture", "codex")
+  .option("--driver <driver>", "overseer driver (fixture or a registered driver)", "codex")
   .option("--scenario <scenario>", "scenario id from the live smoke manifest", "live-agent-smoke")
-  .option("--model <model>", "Codex model override")
+  .option("--model <model>", "model override passed to the overseer driver")
   .option("--execute", "execute bounded, allowlisted overseer recommended commands")
   .option("--execute-limit <count>", "maximum recommended commands to execute", parseInteger, 3)
   .action(async (options: { actor: string; driver: string; scenario: string; model?: string; execute?: boolean; executeLimit: number }) => {
@@ -2965,6 +2965,9 @@ async function executeOverseerRun(input: {
   executeLimit?: number;
 }): Promise<OverseerRunResult> {
   const entityId = scenarioEntityId(input.scenario);
+  if (input.driver !== "fixture" && !getWorkerDriver(input.driver)) {
+    throw new Error(`Invalid overseer driver: ${input.driver}. Expected one of: ${["fixture", ...workerDriverIds()].sort().join(", ")}.`);
+  }
   const artifactPath = path.join(artifactsDir(input.workspace), sanitizeArtifactSegment(entityId));
   fs.mkdirSync(artifactPath, { recursive: true });
   const runId = makeId("agentRun");
@@ -3032,6 +3035,7 @@ async function executeOverseerRun(input: {
     }),
   );
 
+  let overseerFinalization: WorkerFinalization;
   let result: {
     status: number | null;
     stdout?: string;
@@ -3045,26 +3049,24 @@ async function executeOverseerRun(input: {
       status: 0,
       stdout: `${JSON.stringify({ type: "fixture.overseer.completed", scenario: input.scenario, actor: input.actor })}\n`,
     };
+    overseerFinalization = { ok: true, structuredResultWritten: true };
   } else {
-    const args = [
-      "exec",
-      "--json",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
-      "-C",
-      input.workspace,
-      "--output-schema",
+    const adapter = getWorkerDriver(input.driver)!;
+    const protocol = loadProtocol(input.workspace);
+    const spec: WorkerRunSpec = {
+      prompt: buildOverseerLaunchPrompt(promptPath, input.scenario),
+      targetPath: input.workspace,
       schemaPath,
-      "--output-last-message",
       resultPath,
-    ];
-    if (input.model) args.push("--model", input.model);
-    args.push(buildOverseerLaunchPrompt(promptPath, input.scenario));
-    const codex = resolveDriverCommand("codex", "codex");
+      model: input.model,
+      readOnly: true,
+      resultSchema: overseerDecisionSchema,
+      driverConfig: protocol.protocol.workers.drivers[input.driver] ?? {},
+    };
+    const invocation = adapter.buildInvocation(spec);
     result = await spawnWorkerStreaming({
-      command: codex.command,
-      args: [...codex.prefixArgs, ...args],
+      command: invocation.command,
+      args: invocation.args,
       cwd: input.workspace,
       jsonlPath,
       actor: input.actor,
@@ -3074,7 +3076,9 @@ async function executeOverseerRun(input: {
       store: input.store,
       driver: input.driver,
       eventPrefix: "overseer",
+      classify: adapter.classifyHeartbeat?.bind(adapter),
     });
+    overseerFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
 
   if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
@@ -3091,7 +3095,7 @@ async function executeOverseerRun(input: {
       eventPrefix: "overseer",
     });
   const parsedDecision = readOverseerDecisionFile(resultPath);
-  const runCompleted = result.status === 0 && parsedDecision.ok;
+  const runCompleted = overseerFinalization.ok && parsedDecision.ok;
   input.store.updateAgentRun(runId, {
     status: runCompleted ? "completed" : "failed",
     sessionId: overseerEvents.sessionId,
@@ -3116,6 +3120,8 @@ async function executeOverseerRun(input: {
       artifactPath,
       execute: Boolean(input.execute),
       executeLimit: input.executeLimit ?? 3,
+      driver: input.driver,
+      costUsd: overseerFinalization.costUsd,
     });
     refreshCheckpoint({
       store: input.store,
@@ -3145,6 +3151,9 @@ async function executeOverseerRun(input: {
           scenario: input.scenario,
           exitCode: result.status,
           reason: parsedDecision.reason,
+          driver: input.driver,
+          ok: overseerFinalization.ok,
+          failureReason: overseerFinalization.failureReason,
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
@@ -5885,6 +5894,8 @@ function applyOverseerDecision(input: {
   artifactPath: string;
   execute: boolean;
   executeLimit: number;
+  driver: string;
+  costUsd?: number;
 }): OverseerCommandExecution[] {
   input.store.setMeta(`overseer:last:${input.scenario}`, input.resultPath);
   input.store.upsertHeartbeat({
@@ -6002,6 +6013,8 @@ function applyOverseerDecision(input: {
         scenario: input.scenario,
         status: input.decision.status,
         nextAction: input.decision.nextAction,
+        driver: input.driver,
+        costUsd: input.costUsd,
         commandResults,
       },
     }),
