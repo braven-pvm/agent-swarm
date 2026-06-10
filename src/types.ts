@@ -152,7 +152,7 @@ export interface AgentRunRecord {
   id: string;
   sliceId: string;
   actor: string;
-  driver: "codex" | "fixture";
+  driver: string;
   status: "running" | "completed" | "failed" | "stale" | "released";
   sessionId?: string;
   attempt: number;

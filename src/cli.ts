@@ -17,10 +17,11 @@ import { SwarmStore } from "./storage.js";
 import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
+import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
-import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, RunMode, SliceRecord } from "./types.js";
+import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, HeartbeatState, RunMode, SliceRecord } from "./types.js";
 
 const program = new Command();
 
@@ -37,7 +38,7 @@ type WorkerRunResult = {
   stderr?: string;
 };
 
-type CodexStreamingResult = {
+type WorkerStreamingResult = {
   status: number | null;
   stdout: string;
   stderr: string;
@@ -1811,12 +1812,12 @@ slices
 
 program
   .command("run")
-  .description("Run a real Codex implementation worker for a slice")
+  .description("Run a real implementation worker for a slice")
   .argument("<slice-id>", "slice identifier")
   .option("--actor <actor>", "worker actor id shown in observability", "worker")
-  .option("--driver <driver>", "worker driver: codex or fixture", "codex")
-  .option("--model <model>", "Codex model override")
-  .action(async (sliceId: string, options: { actor: string; driver: string; model?: string }) => {
+  .option("--driver <driver>", "worker driver (fixture or a registered driver); defaults to protocol workers.defaultDriver")
+  .option("--model <model>", "model override passed to the worker driver")
+  .action(async (sliceId: string, options: { actor: string; driver?: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
@@ -1826,7 +1827,7 @@ program
         store,
         sliceId,
         actor: options.actor,
-        driver: parseWorkerDriver(options.driver),
+        driver: options.driver ? parseWorkerDriver(options.driver) : undefined,
         model: options.model,
         reason: "direct_run",
       });
@@ -2444,8 +2445,11 @@ recovery
       ];
       if (options.model) args.push("--model", options.model);
       args.push(previousRun.sessionId, prompt);
-      const codex = codexSpawnSpec();
-      const result = await spawnCodexStreaming({
+      const codex = {
+        command: process.env.SWARM_CODEX_COMMAND?.trim() || "codex",
+        args: process.env.SWARM_CODEX_ARGS?.trim() ? (JSON.parse(process.env.SWARM_CODEX_ARGS) as string[]) : [],
+      };
+      const result = await spawnWorkerStreaming({
         command: codex.command,
         args: [...codex.args, ...args],
         cwd: target.path,
@@ -2453,6 +2457,7 @@ recovery
         actor: previousRun.actor,
         sliceId: slice.id,
         store,
+        driver: previousRun.driver,
       });
       const stderrPath = result.stderr ? path.join(artifactPath, `codex-revive-${revivedRunId}-stderr.log`) : undefined;
       if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
@@ -2522,8 +2527,8 @@ recovery
   .description("Start a fresh worker run for the same slice, using prior run history")
   .argument("<run-id>", "agent run identifier")
   .option("--actor <actor>", "replacement worker actor; defaults to the previous actor")
-  .option("--driver <driver>", "worker driver: codex or fixture; defaults to previous run driver")
-  .option("--model <model>", "Codex model override")
+  .option("--driver <driver>", "worker driver (fixture or a registered driver); defaults to previous run driver")
+  .option("--model <model>", "model override passed to the worker driver")
   .action(async (runId: string, options: { actor?: string; driver?: string; model?: string }) => {
     const workspace = resolveWorkspace();
     ensureInitialized(workspace);
@@ -2649,7 +2654,7 @@ async function executeWorkerRun(input: {
   store: SwarmStore;
   sliceId: string;
   actor: string;
-  driver: "codex" | "fixture";
+  driver?: string;
   model?: string;
   reason: "direct_run" | "restart";
   previousRunId?: string;
@@ -2659,13 +2664,18 @@ async function executeWorkerRun(input: {
   validateSliceDispatchContract(slice);
   const target = input.store.targetById(slice.targetId);
   if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+  const protocol = loadProtocol(target.path);
+  const driverId = input.driver ?? protocol.protocol.workers.defaultDriver;
+  if (driverId !== "fixture" && !getWorkerDriver(driverId)) {
+    throw new Error(`Invalid worker driver: ${driverId}. Expected one of: ${["fixture", ...workerDriverIds()].sort().join(", ")}.`);
+  }
   const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
   const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
   fs.mkdirSync(artifactPath, { recursive: true });
   const runId = makeId("agentRun");
   const lastMessagePath = path.join(artifactPath, input.reason === "restart" ? `worker-result-${runId}.json` : "worker-result.json");
-  const jsonlPath = path.join(artifactPath, input.reason === "restart" ? `codex-events-${runId}.jsonl` : "codex-events.jsonl");
-  const stderrPath = path.join(artifactPath, input.reason === "restart" ? `codex-stderr-${runId}.log` : "codex-stderr.log");
+  const jsonlPath = path.join(artifactPath, input.reason === "restart" ? `worker-events-${runId}.jsonl` : "worker-events.jsonl");
+  const stderrPath = path.join(artifactPath, input.reason === "restart" ? `worker-stderr-${runId}.log` : "worker-stderr.log");
   const schemaPath = path.join(input.workspace, "schemas", "worker-result.schema.json");
   writeWorkerResultSchema(schemaPath);
   const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
@@ -2677,7 +2687,7 @@ async function executeWorkerRun(input: {
     id: runId,
     sliceId: slice.id,
     actor: input.actor,
-    driver: input.driver,
+    driver: driverId,
     status: "running",
     attempt,
     startedAt: now,
@@ -2701,7 +2711,7 @@ async function executeWorkerRun(input: {
         targetPath: target.path,
         laneId: slice.laneId,
         workerActor: input.actor,
-        driver: input.driver,
+        driver: driverId,
         model: input.model,
         runId,
         attempt,
@@ -2716,42 +2726,41 @@ async function executeWorkerRun(input: {
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
   };
-  if (input.driver === "fixture") {
+  let finalization: WorkerFinalization;
+  if (driverId === "fixture") {
     const workerResult = runFixtureWorker({ slice, targetPath: target.path });
     fs.writeFileSync(lastMessagePath, `${JSON.stringify(workerResult)}\n`, "utf8");
     result = {
       status: 0,
       stdout: `${JSON.stringify({ type: "fixture.worker.completed", sliceId: slice.id, actor: input.actor })}\n`,
     };
+    finalization = { ok: true, structuredResultWritten: true };
   } else {
-    const args = [
-      "exec",
-      "--json",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "workspace-write",
-      "-C",
-      target.path,
-      "--output-schema",
+    const adapter = getWorkerDriver(driverId)!;
+    const spec: WorkerRunSpec = {
+      prompt,
+      targetPath: target.path,
       schemaPath,
-      "--output-last-message",
-      lastMessagePath,
-    ];
-    if (input.model) args.push("--model", input.model);
-    args.push(prompt);
-    const codex = codexSpawnSpec();
-    result = await spawnCodexStreaming({
-      command: codex.command,
-      args: [...codex.args, ...args],
+      resultPath: lastMessagePath,
+      model: input.model,
+      driverConfig: protocol.protocol.workers.drivers[driverId] ?? {},
+    };
+    const invocation = adapter.buildInvocation(spec);
+    result = await spawnWorkerStreaming({
+      command: invocation.command,
+      args: invocation.args,
       cwd: target.path,
       jsonlPath,
       actor: input.actor,
       sliceId: slice.id,
       store: input.store,
+      driver: driverId,
+      classify: adapter.classifyHeartbeat?.bind(adapter),
     });
+    finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
 
-  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (driverId === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
   if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
   const workerEvents =
     result.workerEvents ??
@@ -2759,10 +2768,11 @@ async function executeWorkerRun(input: {
       store: input.store,
       actor: input.actor,
       sliceId: slice.id,
+      driver: driverId,
       jsonl: result.stdout ?? "",
     });
   input.store.updateAgentRun(runId, {
-    status: result.status === 0 ? "completed" : "failed",
+    status: finalization.ok ? "completed" : "failed",
     sessionId: workerEvents.sessionId,
     eventsPath: jsonlPath,
     resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
@@ -2788,6 +2798,11 @@ async function executeWorkerRun(input: {
       entityId: slice.id,
       payload: {
         exitCode: result.status,
+        driver: driverId,
+        ok: finalization.ok,
+        structuredResultWritten: finalization.structuredResultWritten,
+        failureReason: finalization.failureReason,
+        costUsd: finalization.costUsd,
         runId,
         previousRunId: input.previousRunId,
         eventsPath: jsonlPath,
@@ -2797,12 +2812,12 @@ async function executeWorkerRun(input: {
       },
     }),
   );
-  input.store.updateSliceStatus(slice.id, result.status === 0 ? "implemented" : "blocked");
+  input.store.updateSliceStatus(slice.id, finalization.ok ? "implemented" : "blocked");
   input.store.upsertHeartbeat({
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
-    state: result.status === 0 ? "idle" : "blocked",
-    detail: result.status === 0 ? `${input.driver} worker completed` : `${input.driver} worker failed`,
+    state: finalization.ok ? "idle" : "blocked",
+    detail: finalization.ok ? `${driverId} worker completed` : `${driverId} worker failed`,
     entityType: "slice",
     entityId: slice.id,
   });
@@ -2833,7 +2848,7 @@ async function executeWorkerRun(input: {
   };
 }
 
-function spawnCodexStreaming(input: {
+function spawnWorkerStreaming(input: {
   command: string;
   args: string[];
   cwd: string;
@@ -2841,7 +2856,9 @@ function spawnCodexStreaming(input: {
   actor: string;
   sliceId: string;
   store: SwarmStore;
-}): Promise<CodexStreamingResult> {
+  driver: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
+}): Promise<WorkerStreamingResult> {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(input.jsonlPath), { recursive: true });
     fs.writeFileSync(input.jsonlPath, "", "utf8");
@@ -2851,6 +2868,8 @@ function spawnCodexStreaming(input: {
       store: input.store,
       actor: input.actor,
       sliceId: input.sliceId,
+      driver: input.driver,
+      classify: input.classify,
     });
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
@@ -2880,18 +2899,6 @@ function spawnCodexStreaming(input: {
       });
     });
   });
-}
-
-function codexSpawnSpec(): { command: string; args: string[] } {
-  return {
-    command: process.env.SWARM_CODEX_COMMAND?.trim() || "codex",
-    args: parseCommandPrefix(process.env.SWARM_CODEX_ARGS),
-  };
-}
-
-function parseCommandPrefix(value?: string): string[] {
-  if (!value?.trim()) return [];
-  return JSON.parse(value) as string[];
 }
 
 function printWorkerRunResult(result: WorkerRunResult): void {
@@ -3645,9 +3652,10 @@ function parseGraphFormat(value: string): "json" | "dot" {
   return value;
 }
 
-function parseWorkerDriver(value: string): "codex" | "fixture" {
-  if (value !== "codex" && value !== "fixture") {
-    throw new Error(`Invalid worker driver: ${value}. Expected codex or fixture.`);
+function parseWorkerDriver(value: string): string {
+  const valid = new Set(["fixture", ...workerDriverIds()]);
+  if (!valid.has(value)) {
+    throw new Error(`Invalid worker driver: ${value}. Expected one of: ${[...valid].sort().join(", ")}.`);
   }
   return value;
 }
