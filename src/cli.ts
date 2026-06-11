@@ -3697,6 +3697,7 @@ function spawnWorkerStreaming(input: {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    // stdio: ["ignore","pipe","pipe"] guarantees stdout/stderr pipes are constructed even on a failing spawn.
     const childStdout = child.stdout!;
     const childStderr = child.stderr!;
     childStdout.setEncoding("utf8");

@@ -24,7 +24,7 @@ test(
     fs.cpSync(template, target, { recursive: true });
     writeFakeCodexNode(innerScript);
     // A real .cmd shim that forwards to node (this is what npm-installed CLIs look like on Windows).
-    fs.writeFileSync(cmdShim, `@echo off\r\nnode "${innerScript}" %*\r\n`, "utf8");
+    fs.writeFileSync(cmdShim, `@echo off\r\n"${process.execPath}" "${innerScript}" %*\r\n`, "utf8");
 
     runSwarm(workspace, ["init"]);
     runSwarm(workspace, ["target", "init", target]);
@@ -32,7 +32,7 @@ test(
     const pullOutput = runSwarm(workspace, [
       "slices", "pull", "--target", "invoice-api", "--source", "invoice-api.md", "--batch-size", "3",
     ]);
-    const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+    const sliceId = /Created slice (SLICE-[a-f0-9]+)/.exec(pullOutput)?.[1];
     assert.ok(sliceId);
 
     // Point the codex command at the .cmd shim by its FULL PATH. The old child_process.spawn
@@ -52,6 +52,7 @@ test(
       assert.equal(result.status, "passed");
     } finally {
       store.close();
+      fs.rmSync(shimDir, { recursive: true, force: true });
     }
   },
 );
