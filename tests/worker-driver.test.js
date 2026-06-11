@@ -325,6 +325,29 @@ test("claude finalize validates structured output against a supplied resultSchem
   assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), reviewResult);
 });
 
+test("claude worker emits the configured allowedTools when not read-only", () => {
+  const dir = tempDir();
+  const spec = {
+    ...baseSpec(dir),
+    driverConfig: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
+  };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes("--allowedTools"), true);
+  assert.equal(args[args.indexOf("--allowedTools") + 1], "Edit Write Read Glob Grep Bash");
+});
+
+test("claude read-only run still omits allowedTools even when configured", () => {
+  const dir = tempDir();
+  const spec = {
+    ...baseSpec(dir),
+    readOnly: true,
+    driverConfig: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
+  };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes("--allowedTools"), false);
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+});
+
 test("claude finalize rejects a worker-shaped object under the review schema", () => {
   const dir = tempDir();
   const workerShaped = { status: "passed", summary: "done", changedFiles: [], commandsRun: [], testsRun: [], frAcCoverage: [], risks: [], nextRecommendation: "continue" };

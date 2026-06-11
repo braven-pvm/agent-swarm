@@ -44,6 +44,7 @@ test("default protocol exposes worker driver configuration", () => {
   assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
   assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
   assert.equal(protocol.protocol.workers.drivers.claude.settingSources, "");
+  assert.equal(protocol.protocol.workers.drivers.claude.allowedTools, "Edit Write Read Glob Grep Bash");
 });
 
 test("merges workers override without dropping driver defaults", () => {
