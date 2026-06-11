@@ -144,7 +144,8 @@ const claudeDriver: WorkerDriverAdapter = {
       args.push("--permission-mode", typeof config.permissionMode === "string" ? config.permissionMode : "acceptEdits");
     }
     if (config.settingSources !== false) {
-      args.push("--setting-sources", typeof config.settingSources === "string" ? config.settingSources : "");
+      const settingSources = typeof config.settingSources === "string" ? config.settingSources : "";
+      args.push(`--setting-sources=${settingSources}`);
     }
     if (!spec.readOnly && typeof config.allowedTools === "string" && config.allowedTools.trim()) {
       args.push("--allowedTools", config.allowedTools);

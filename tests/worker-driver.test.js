@@ -131,8 +131,7 @@ test("claude adapter builds a fresh-run invocation with inlined schema", () => {
     schemaJson,
     "--permission-mode",
     "acceptEdits",
-    "--setting-sources",
-    "",
+    "--setting-sources=",
     "--model",
     "claude-opus-4-8",
     "Implement the slice",
@@ -293,7 +292,7 @@ test("claude readOnly spec uses plan mode and omits the edit-tool allowlist", ()
   const args = getWorkerDriver("claude").buildInvocation(spec).args;
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.equal(args.includes("--allowedTools"), false);
-  assert.equal(args.includes("--setting-sources"), true);
+  assert.ok(args.some((a) => a.startsWith("--setting-sources=")));
   assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5");
 });
 
@@ -346,6 +345,14 @@ test("claude read-only run still omits allowedTools even when configured", () =>
   const args = getWorkerDriver("claude").buildInvocation(spec).args;
   assert.equal(args.includes("--allowedTools"), false);
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+});
+
+test("claude invocation emits no standalone empty-string arg (survives cmd shim %*)", () => {
+  const dir = tempDir();
+  const spec = { ...baseSpec(dir), driverConfig: { settingSources: "" } };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes(""), false, "empty-string args are dropped by cmd.exe %* on Windows shims");
+  assert.ok(args.includes("--setting-sources="), "settingSources is passed as a single joined token");
 });
 
 test("claude finalize rejects a worker-shaped object under the review schema", () => {
