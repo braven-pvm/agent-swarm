@@ -61,8 +61,8 @@ test("codex adapter builds the current fresh-run invocation", () => {
     spec.resultPath,
     "--model",
     "gpt-5.3-codex",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("codex adapter builds the resume invocation", () => {
@@ -80,8 +80,8 @@ test("codex adapter builds the resume invocation", () => {
     "--output-last-message",
     spec.resultPath,
     "session-abc",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("codex finalize reports ok from exit code and result file presence", () => {
@@ -131,12 +131,11 @@ test("claude adapter builds a fresh-run invocation with inlined schema", () => {
     schemaJson,
     "--permission-mode",
     "acceptEdits",
-    "--setting-sources",
-    "",
+    "--setting-sources=",
     "--model",
     "claude-opus-4-8",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude adapter applies driver config and resume session", () => {
@@ -146,14 +145,15 @@ test("claude adapter applies driver config and resume session", () => {
     resumeSessionId: "11111111-2222-3333-4444-555555555555",
     driverConfig: { permissionMode: "bypassPermissions", allowedTools: "Edit Read Bash", maxBudgetUsd: 5 },
   };
-  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  const invocation = getWorkerDriver("claude").buildInvocation(spec);
+  const args = invocation.args;
 
   assert.ok(args.includes("--resume"));
   assert.equal(args[args.indexOf("--resume") + 1], "11111111-2222-3333-4444-555555555555");
   assert.equal(args[args.indexOf("--permission-mode") + 1], "bypassPermissions");
   assert.equal(args[args.indexOf("--allowedTools") + 1], "Edit Read Bash");
   assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5");
-  assert.equal(args[args.length - 1], "Implement the slice");
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude finalize writes validated structured output to the result file", () => {
@@ -224,9 +224,11 @@ test("driver args env rejects non-array JSON with a clear error", () => {
 test("codex resume invocation includes a model override when provided", () => {
   const dir = tempDir();
   const spec = { ...baseSpec(dir), resumeSessionId: "session-abc", model: "gpt-5.3-codex" };
-  const args = getWorkerDriver("codex").buildInvocation(spec).args;
+  const invocation = getWorkerDriver("codex").buildInvocation(spec);
+  const args = invocation.args;
   assert.equal(args[args.indexOf("--model") + 1], "gpt-5.3-codex");
-  assert.deepEqual(args.slice(-2), ["session-abc", "Implement the slice"]);
+  assert.equal(args[args.length - 1], "session-abc");
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude finalize omits costUsd when total_cost_usd is absent", () => {
@@ -293,7 +295,7 @@ test("claude readOnly spec uses plan mode and omits the edit-tool allowlist", ()
   const args = getWorkerDriver("claude").buildInvocation(spec).args;
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.equal(args.includes("--allowedTools"), false);
-  assert.equal(args.includes("--setting-sources"), true);
+  assert.ok(args.some((a) => a.startsWith("--setting-sources=")));
   assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5");
 });
 
@@ -323,6 +325,37 @@ test("claude finalize validates structured output against a supplied resultSchem
   assert.equal(finalization.ok, true);
   assert.equal(finalization.structuredResultWritten, true);
   assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), reviewResult);
+});
+
+test("claude worker emits the configured allowedTools when not read-only", () => {
+  const dir = tempDir();
+  const spec = {
+    ...baseSpec(dir),
+    driverConfig: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
+  };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes("--allowedTools"), true);
+  assert.equal(args[args.indexOf("--allowedTools") + 1], "Edit Write Read Glob Grep Bash");
+});
+
+test("claude read-only run still omits allowedTools even when configured", () => {
+  const dir = tempDir();
+  const spec = {
+    ...baseSpec(dir),
+    readOnly: true,
+    driverConfig: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
+  };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes("--allowedTools"), false);
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+});
+
+test("claude invocation emits no standalone empty-string arg (survives cmd shim %*)", () => {
+  const dir = tempDir();
+  const spec = { ...baseSpec(dir), driverConfig: { settingSources: "" } };
+  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  assert.equal(args.includes(""), false, "empty-string args are dropped by cmd.exe %* on Windows shims");
+  assert.ok(args.includes("--setting-sources="), "settingSources is passed as a single joined token");
 });
 
 test("claude finalize rejects a worker-shaped object under the review schema", () => {

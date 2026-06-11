@@ -81,7 +81,7 @@ export function defaultProtocol(): ProtocolConfig {
         defaultDriver: "codex",
         drivers: {
           codex: { sandbox: "workspace-write" },
-          claude: { permissionMode: "acceptEdits", settingSources: "" },
+          claude: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
         },
       },
     },

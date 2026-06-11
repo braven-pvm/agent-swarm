@@ -731,6 +731,13 @@ function writeFakeLiveCodex() {
 import path from "node:path";
 
 const args = process.argv.slice(2);
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const schemaIndex = args.indexOf("--output-schema");
@@ -752,7 +759,8 @@ console.log(JSON.stringify({
 
 if (schemaPath.includes("overseer-decision")) {
   console.log(JSON.stringify({ type: "overseer.analysis", status: "recommend_commands" }));
-  const promptPath = parsePromptPath(args.at(-1) ?? "");
+  const stdinPrompt = readStdin();
+  const promptPath = parsePromptPath(stdinPrompt);
   const prompt = promptPath && fs.existsSync(promptPath) ? fs.readFileSync(promptPath, "utf8") : "";
   const currentSlice = findCurrentSlice(prompt);
   const command = chooseOverseerCommand(currentSlice);
