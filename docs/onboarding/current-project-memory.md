@@ -45,7 +45,7 @@ Implemented and covered by tests:
 - dynamic slice pulling with source/domain/tag filtering
 - lane creation/reuse, FR/AC leases, dependency gating
 - planning decision events and checkpoints
-- model-agnostic worker driver registry (codex, claude, fixture) with per-driver protocol config
+- model-agnostic worker driver registry (codex, claude, fixture) with per-driver protocol config; provider CLIs spawned via cross-spawn for Windows `.cmd`/`.ps1` shim support; Claude workers carry a default tool allowlist (`Edit Write Read Glob Grep Bash`) for build/test commands
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
@@ -76,7 +76,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 61/61 passing
+npm test -> 64/64 passing (64 on Windows; 63 on POSIX where spawn-shim.e2e.test.js skips)
 git diff --check -> clean
 ```
 

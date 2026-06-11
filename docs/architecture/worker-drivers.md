@@ -51,6 +51,12 @@ protocol:
 
 The visible overseer (`swarm orchestrate`) dispatches through the same registry under the read-only posture, reusing `readOnly` + `resultSchema` (the overseer-decision schema). `swarm orchestrate --driver claude` runs the overseer under `--permission-mode plan`. The overseer agent run is read-only analysis; the separate bounded `--execute` command flow is harness-driven and unaffected.
 
+## Spawning provider CLIs
+
+Worker driver commands are spawned via `cross-spawn`, not `node:child_process.spawn`, so npm-installed CLI shims (`codex.cmd`/`claude.ps1` on Windows) resolve and launch correctly while keeping the safe argv-array contract (no shell, no injection of the prompt/schema args). `SWARM_<DRIVER>_COMMAND` may point at a bare command, a `.cmd`/`.ps1` shim, or a full executable path.
+
+Claude **workers** receive a default `allowedTools` (`Edit Write Read Glob Grep Bash`) so they can implement and run build/test commands, matching Codex workers' `--sandbox workspace-write`. Claude **reviewers and overseer** stay read-only (`--permission-mode plan`, no tools) regardless of config.
+
 ## Manual live smoke (not part of npm test)
 
 ```powershell

@@ -69,7 +69,7 @@ The current prototype supports:
 - FR/AC leases
 - dependency-gated slice serving
 - low-signal work warning escalation
-- model-agnostic worker dispatch (fixture, codex, claude drivers)
+- model-agnostic worker dispatch (fixture, codex, claude drivers) via cross-spawn (Windows `.cmd`/`.ps1` shim support); Claude workers carry a default tool allowlist (`Edit Write Read Glob Grep Bash`) for build/test commands
 - worker JSONL event ingestion
 - heartbeats and agent-run records
 - verifier gates using worker-result evidence and FR/AC coverage
@@ -133,8 +133,10 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 61/61 passing
+npm test -> 64/64 passing
 ```
+
+Note: `tests/spawn-shim.e2e.test.js` is Windows-gated (skips on POSIX), so non-Windows CI reports 63/63.
 
 ## Useful Demo Commands
 
