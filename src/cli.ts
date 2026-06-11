@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import http, { type ServerResponse } from "node:http";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import spawn from "cross-spawn";
 import { createHash } from "node:crypto";
 import { URL } from "node:url";
 import { Command } from "commander";
@@ -3692,19 +3693,20 @@ function spawnWorkerStreaming(input: {
     });
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
-      shell: false,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    const childStdout = child.stdout!;
+    const childStderr = child.stderr!;
+    childStdout.setEncoding("utf8");
+    childStdout.on("data", (chunk: string) => {
       stdoutChunks.push(chunk);
       fs.appendFileSync(input.jsonlPath, chunk, "utf8");
       ingestor.ingest(chunk);
     });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
+    childStderr.setEncoding("utf8");
+    childStderr.on("data", (chunk: string) => {
       stderrChunks.push(chunk);
     });
     child.on("error", reject);
