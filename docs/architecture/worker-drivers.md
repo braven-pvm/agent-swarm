@@ -53,7 +53,13 @@ The visible overseer (`swarm orchestrate`) dispatches through the same registry 
 
 ## Spawning provider CLIs
 
-Worker driver commands are spawned via `cross-spawn`, not `node:child_process.spawn`, so npm-installed CLI shims (`codex.cmd`/`claude.ps1` on Windows) resolve and launch correctly while keeping the safe argv-array contract (no shell, no injection of the prompt/schema args). `SWARM_<DRIVER>_COMMAND` may point at a bare command, a `.cmd`/`.ps1` shim, or a full executable path.
+Worker driver commands are spawned via `cross-spawn` (not `node:child_process.spawn`), so npm-installed CLI shims (`codex.cmd`/`claude.ps1` on Windows) resolve and launch correctly. Three Windows `cmd.exe` shim hazards are handled so real providers work on Windows, not just the `process.execPath` test stubs:
+
+- **Shim resolution** — `cross-spawn` launches `.cmd`/`.ps1` shims that `spawn(..., { shell: false })` cannot.
+- **Empty-string args** — `cmd.exe` `%*` drops standalone empty arguments, so flags like setting-sources are emitted in joined form (`--setting-sources=<value>`, a single token) rather than two args.
+- **Multi-line args** — `cmd.exe` truncates an argument at its first newline, so the (multi-line) worker/reviewer/overseer **prompt is written to the child process's stdin**, never passed as a command-line argument. Both `codex exec` and `claude -p` read the prompt from stdin.
+
+`SWARM_<DRIVER>_COMMAND` may point at a bare command, a `.cmd`/`.ps1` shim, or a full executable path.
 
 Claude **workers** receive a default `allowedTools` (`Edit Write Read Glob Grep Bash`) so they can implement and run build/test commands, matching Codex workers' `--sandbox workspace-write`. Claude **reviewers and overseer** stay read-only (`--permission-mode plan`, no tools) regardless of config.
 

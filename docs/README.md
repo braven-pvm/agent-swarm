@@ -36,14 +36,14 @@ Current implementation snapshot:
 
 - file-based source adapter and lightweight source/domain/ref index are implemented
 - dynamic slice pulling, lane state, FR/AC leases, dependency gating, and low-signal warnings are implemented
-- fixture, Codex, and Claude Code worker dispatch through driver adapters via cross-spawn (Windows `.cmd`/`.ps1` shim support), streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented; Claude workers carry a default tool allowlist (`Edit Write Read Glob Grep Bash`) for build/test commands
+- fixture, Codex, and Claude Code worker dispatch through driver adapters via cross-spawn (Windows `.cmd`/`.ps1` shim support; prompts passed via stdin to survive `.cmd` newline truncation), streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented; Claude workers carry a default tool allowlist (`Edit Write Read Glob Grep Bash`) for build/test commands
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters, structured review evidence, reviewer JSONL events, and review-gated verification are implemented
 - visible overseer dispatch (fixture, codex, claude) through the driver registry, structured overseer decisions, overseer JSONL events, prompt artifacts, role/entity agent runs, and overseer checkpoints are implemented
 - bounded overseer command execution, command artifacts, command events, Phase 5A state-command allowlist, Phase 5B worker/reviewer child dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, Events, and History
 - web-observability E2E harness is implemented and writes browser/API artifacts
 - live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
-- latest known verification: `npm test` passes 64/64 and `git diff --check` is clean (64 on Windows; 63 on POSIX where the `.cmd` shim test skips)
+- latest known verification: `npm test` passes 65/65 and `git diff --check` is clean (64 on POSIX where the Windows-only `.cmd` shim test skips)
 
 Current thesis:
 
