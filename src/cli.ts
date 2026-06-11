@@ -2749,6 +2749,7 @@ recovery
       const result = await spawnWorkerStreaming({
         command: invocation.command,
         args: invocation.args,
+        stdin: invocation.stdin,
         cwd: target.path,
         jsonlPath,
         actor: previousRun.actor,
@@ -3068,6 +3069,7 @@ async function executeOverseerRun(input: {
     result = await spawnWorkerStreaming({
       command: invocation.command,
       args: invocation.args,
+      stdin: invocation.stdin,
       cwd: input.workspace,
       jsonlPath,
       actor: input.actor,
@@ -3299,6 +3301,7 @@ async function executeWorkerRun(input: {
     result = await spawnWorkerStreaming({
       command: invocation.command,
       args: invocation.args,
+      stdin: invocation.stdin,
       cwd: target.path,
       jsonlPath,
       actor: input.actor,
@@ -3513,6 +3516,7 @@ async function executeReviewRun(input: {
     result = await spawnWorkerStreaming({
       command: invocation.command,
       args: invocation.args,
+      stdin: invocation.stdin,
       cwd: target.path,
       jsonlPath,
       actor: input.actor,
@@ -3665,6 +3669,7 @@ async function executeReviewRun(input: {
 function spawnWorkerStreaming(input: {
   command: string;
   args: string[];
+  stdin?: string;
   cwd: string;
   jsonlPath: string;
   actor: string;
@@ -3694,10 +3699,16 @@ function spawnWorkerStreaming(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
 
-    // stdio: ["ignore","pipe","pipe"] guarantees stdout/stderr pipes are constructed even on a failing spawn.
+    if (input.stdin !== undefined && child.stdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.write(input.stdin);
+      child.stdin.end();
+    }
+
+    // stdio guarantees stdout/stderr pipes are constructed even on a failing spawn.
     const childStdout = child.stdout!;
     const childStderr = child.stderr!;
     childStdout.setEncoding("utf8");

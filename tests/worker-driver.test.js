@@ -61,8 +61,8 @@ test("codex adapter builds the current fresh-run invocation", () => {
     spec.resultPath,
     "--model",
     "gpt-5.3-codex",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("codex adapter builds the resume invocation", () => {
@@ -80,8 +80,8 @@ test("codex adapter builds the resume invocation", () => {
     "--output-last-message",
     spec.resultPath,
     "session-abc",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("codex finalize reports ok from exit code and result file presence", () => {
@@ -134,8 +134,8 @@ test("claude adapter builds a fresh-run invocation with inlined schema", () => {
     "--setting-sources=",
     "--model",
     "claude-opus-4-8",
-    "Implement the slice",
   ]);
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude adapter applies driver config and resume session", () => {
@@ -145,14 +145,15 @@ test("claude adapter applies driver config and resume session", () => {
     resumeSessionId: "11111111-2222-3333-4444-555555555555",
     driverConfig: { permissionMode: "bypassPermissions", allowedTools: "Edit Read Bash", maxBudgetUsd: 5 },
   };
-  const args = getWorkerDriver("claude").buildInvocation(spec).args;
+  const invocation = getWorkerDriver("claude").buildInvocation(spec);
+  const args = invocation.args;
 
   assert.ok(args.includes("--resume"));
   assert.equal(args[args.indexOf("--resume") + 1], "11111111-2222-3333-4444-555555555555");
   assert.equal(args[args.indexOf("--permission-mode") + 1], "bypassPermissions");
   assert.equal(args[args.indexOf("--allowedTools") + 1], "Edit Read Bash");
   assert.equal(args[args.indexOf("--max-budget-usd") + 1], "5");
-  assert.equal(args[args.length - 1], "Implement the slice");
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude finalize writes validated structured output to the result file", () => {
@@ -223,9 +224,11 @@ test("driver args env rejects non-array JSON with a clear error", () => {
 test("codex resume invocation includes a model override when provided", () => {
   const dir = tempDir();
   const spec = { ...baseSpec(dir), resumeSessionId: "session-abc", model: "gpt-5.3-codex" };
-  const args = getWorkerDriver("codex").buildInvocation(spec).args;
+  const invocation = getWorkerDriver("codex").buildInvocation(spec);
+  const args = invocation.args;
   assert.equal(args[args.indexOf("--model") + 1], "gpt-5.3-codex");
-  assert.deepEqual(args.slice(-2), ["session-abc", "Implement the slice"]);
+  assert.equal(args[args.length - 1], "session-abc");
+  assert.equal(invocation.stdin, "Implement the slice");
 });
 
 test("claude finalize omits costUsd when total_cost_usd is absent", () => {
