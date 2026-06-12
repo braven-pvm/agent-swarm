@@ -72,11 +72,13 @@ Implemented and covered by tests:
 - role-specific resume packets
 - observe/watch/timeline/graph/report surfaces
 - CLI-hosted read-only web viewer
+- `swarm onboard` one-command in-repo setup: init + target + gitignore split (runtime state ignored, config files committable) + sample spec registered; idempotent; does not run a worker (`src/onboard.ts`)
+- `swarm check <provider>` resolve + spawn `--version` readiness probe via cross-spawn (same launch path as workers); `--live` adds an auth ping (`src/provider-check.ts`)
 
 Latest known verification:
 
 ```text
-npm test -> 65/65 passing (64 on POSIX where the Windows-only spawn-shim.e2e.test.js skips)
+npm test -> 75/75 passing (74 on POSIX where the Windows-only spawn-shim.e2e.test.js skips)
 git diff --check -> clean
 ```
 
