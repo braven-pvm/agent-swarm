@@ -1583,6 +1583,7 @@ program
   .action((options: { source?: string; name?: string }) => {
     const workspace = resolveWorkspace();
     const result = runOnboard({ workspace, source: options.source, name: options.name });
+    const relSource = path.relative(workspace, result.sourceUri) || result.sourceUri;
     console.log(`Onboarded agent-swarm in ${workspace}`);
     if (!result.isGitRepo) console.log("  warning: not a git repo — lanes/worktrees and real runs expect git; setup continued.");
     console.log(`  state: ${swarmDir(workspace)}/state.db`);
@@ -1591,11 +1592,11 @@ program
     console.log(`  source: ${result.sourceTitle} (${result.refsIndexed} refs)${result.scaffoldedSample ? " [sample scaffolded]" : ""}`);
     console.log("");
     console.log("Next steps:");
-    console.log(`  swarm slices pull --target ${result.targetName} --source ${result.sourceUri}   # form your first slice`);
+    console.log(`  swarm slices pull --target ${result.targetName} --source ${relSource}   # form your first slice`);
     console.log("  swarm check claude        # confirm your provider is installed and launchable");
     console.log("  swarm run --driver claude <slice-id>   # your first real worker run");
     console.log("  swarm serve               # open the read-only viewer");
-    if (result.scaffoldedSample) console.log(`  (replace ${result.sourceUri} with your real specs)`);
+    if (result.scaffoldedSample) console.log(`  (replace ${relSource} with your real specs)`);
   });
 
 program

@@ -74,6 +74,11 @@ export function runOnboard(input: { workspace: string; source?: string; name?: s
   const { workspace } = input;
   const isGitRepo = fs.existsSync(path.join(workspace, ".git"));
 
+  if (input.source) {
+    const resolved = path.resolve(input.source);
+    if (!fs.existsSync(resolved)) throw new Error(`--source file does not exist: ${resolved}`);
+  }
+
   const store = new SwarmStore(workspace);
   try {
     store.init();
@@ -88,12 +93,14 @@ export function runOnboard(input: { workspace: string; source?: string; name?: s
       config: target.config,
       now,
     });
+    const persisted = store.listTargets().find((t) => t.path === workspace);
+    const persistedId = persisted?.id ?? target.id;
     store.addEvent(
       createEvent({
         actor: "harness",
         type: "target.initialized",
         entityType: "target",
-        entityId: target.id,
+        entityId: persistedId,
         payload: {
           path: target.repoPath,
           wroteTargetConfig: target.wroteTargetConfig,
@@ -107,7 +114,6 @@ export function runOnboard(input: { workspace: string; source?: string; name?: s
     let sourcePath: string;
     if (input.source) {
       sourcePath = path.resolve(input.source);
-      if (!fs.existsSync(sourcePath)) throw new Error(`--source file does not exist: ${sourcePath}`);
     } else {
       const scaffold = scaffoldSampleSpec(workspace);
       sourcePath = scaffold.path;
