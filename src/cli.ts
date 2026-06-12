@@ -10,6 +10,7 @@ import { Command } from "commander";
 import YAML from "yaml";
 import { createEvent } from "./events.js";
 import { runOnboard } from "./onboard.js";
+import { checkProvider } from "./provider-check.js";
 import { runFixtureWorker } from "./fixture-worker.js";
 import { makeId } from "./ids.js";
 import { artifactsDir, resolveWorkspace, swarmDir } from "./paths.js";
@@ -1597,6 +1598,30 @@ program
     console.log("  swarm run --driver claude <slice-id>   # your first real worker run");
     console.log("  swarm serve               # open the read-only viewer");
     if (result.scaffoldedSample) console.log(`  (replace ${relSource} with your real specs)`);
+  });
+
+program
+  .command("check")
+  .description("Check that a worker driver is installed and launchable")
+  .argument("[provider]", "driver to check (e.g. claude, codex); defaults to the protocol default driver")
+  .option("--live", "additionally do a tiny real call to confirm auth (spends a small amount)")
+  .action(async (provider: string | undefined, options: { live?: boolean }) => {
+    const driver = provider ?? loadProtocol(resolveWorkspace()).protocol.workers.defaultDriver;
+    if (driver === "fixture") {
+      console.log("fixture is an in-process driver — no external command to check.");
+      return;
+    }
+    const result = await checkProvider({ driver, live: options.live });
+    console.log(`driver: ${result.driver}`);
+    console.log(`  command: ${result.command}${result.prefixArgs.length ? ` ${result.prefixArgs.join(" ")}` : ""}`);
+    if (result.launchable) {
+      console.log(`  launchable: yes${result.version ? ` (${result.version})` : ""}`);
+      if (result.live) console.log(`  live auth: ${result.live.ok ? "ok" : "failed"} — ${result.live.detail}`);
+    } else {
+      console.log(`  launchable: no — ${result.error}`);
+      console.log(`  fix: install the ${driver} CLI and ensure it is on PATH, or set SWARM_${driver.toUpperCase()}_COMMAND.`);
+      process.exitCode = 1;
+    }
   });
 
 program
