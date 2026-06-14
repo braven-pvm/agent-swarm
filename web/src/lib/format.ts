@@ -90,6 +90,14 @@ export function groupEscalations(list: EscalationRecord[]): EscalationGroup[] {
   return Array.from(map.values()).sort((a, b) => order[a.level] - order[b.level] || (a.latest < b.latest ? 1 : -1));
 }
 
+const FRAC_RE = /\b(?:FR|AC)-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:\.[0-9]+)?\b/gi;
+
+/** Extract and deduplicate FR/AC reference identifiers from a markdown string. */
+export function extractFrAcRefs(text: string): string[] {
+  const matches = text.match(FRAC_RE) ?? [];
+  return [...new Set(matches.map((m) => m.toUpperCase()))].sort();
+}
+
 export function formatAge(iso: string, now: number = Date.now()): string {
   const ms = Math.max(0, now - Date.parse(iso));
   const s = Math.floor(ms / 1000);

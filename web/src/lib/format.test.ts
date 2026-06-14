@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -82,6 +82,22 @@ describe("formatDuration", () => {
   it("returns empty string for negative or NaN", () => {
     expect(formatDuration(-1)).toBe("");
     expect(formatDuration(NaN)).toBe("");
+  });
+});
+
+describe("extractFrAcRefs", () => {
+  it("extracts and deduplicates FR and AC refs", () => {
+    const md = "See FR-CORE-001 and AC-AUTH-02. Also FR-CORE-001 again. And AC-UI.1";
+    const refs = extractFrAcRefs(md);
+    expect(refs).toEqual(["AC-AUTH-02", "AC-UI.1", "FR-CORE-001"]);
+  });
+  it("returns empty array when no refs present", () => {
+    expect(extractFrAcRefs("No references here.")).toEqual([]);
+  });
+  it("is case-insensitive in matching but uppercases output", () => {
+    const refs = extractFrAcRefs("fr-core-001 and ac-auth-02");
+    expect(refs).toContain("FR-CORE-001");
+    expect(refs).toContain("AC-AUTH-02");
   });
 });
 
