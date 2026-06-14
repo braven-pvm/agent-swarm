@@ -1,0 +1,22 @@
+<script lang="ts">
+  import type { ConsoleStore } from "~/lib/console.svelte";
+  let { store }: { store: ConsoleStore } = $props();
+  const snap = $derived(store.snapshot);
+  const accepted = $derived(snap ? snap.slices.filter((s) => s.status === "accepted").length : 0);
+  const total = $derived(snap ? snap.slices.length : 0);
+  const workspaceName = $derived(snap ? snap.workspace.replace(/\\/g, "/").split("/").pop() : "—");
+</script>
+
+<header class="statusbar">
+  <span class="brand">⛬ Command Bridge</span>
+  <span class="chip">workspace: {workspaceName}</span>
+  <span class="chip">mode: {snap?.runMode ?? "—"}</span>
+  <span class="chip">scenario: {snap?.scenario ?? "—"}</span>
+  <span class="chip">phase: {snap?.phase ?? "—"}</span>
+  <span class="chip">turn {snap?.turnCount ?? "—"}</span>
+  <span class="chip">slices ▮ {accepted}/{total}</span>
+  <span class="spacer"></span>
+  <span class="chip conn" class:on={store.connected} class:off={!store.connected}>
+    {store.connected ? "● live" : "○ offline"}
+  </span>
+</header>
