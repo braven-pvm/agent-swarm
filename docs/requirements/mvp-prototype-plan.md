@@ -1,6 +1,6 @@
 # MVP Prototype Plan
 
-Date: 2026-05-26
+Date: 2026-06-11
 
 ## Purpose
 
@@ -36,7 +36,7 @@ Local read-only web observability is now inside the prototype because visibility
 
 ## Current Prototype Status
 
-Implemented as of 2026-06-10:
+Implemented as of 2026-06-11:
 
 - foundation CLI and SQLite store
 - target initialization and protocol loading
@@ -62,13 +62,15 @@ Implemented as of 2026-06-10:
 - checkpoints and role-specific resume packets
 - local read-only web viewer with tabs for Overview, Specs, Work, Agents, and Events
 - web-observability E2E harness with lifecycle and browser-facing assertions
+- live-run artifact index, outcome classification, run history, comparison, and web History detail
+- full-product mode with product spec enforcement, backend-to-dashboard execution, dashboard verification, product readiness artifacts, dashboard `npm test`, local `npm start` probing, structured HTML/API probe artifacts, and bounded `product_not_ready` blocking
 
 Not yet implemented:
 
-- Phase 7 richer UI evidence ergonomics
-- full-product run mode beyond the baseline accepted backend slice
+- product-readiness blockers feeding back into visible next work
+- richer product evidence ergonomics such as optional browser screenshot or stronger browser-level artifact capture
 
-Latest known full verification: `npm test` passes 60/60 and `git diff --check` is clean.
+Latest known full verification after Phase 8C-11: `npm test` passes 69/69 and `git diff --check` is clean.
 
 ## Functional Requirements
 
@@ -304,7 +306,7 @@ Acceptance criteria:
 
 The harness shall provide an optional resettable live smoke test where a real Codex overseer/planner coordinates real Codex workers and verifier/reviewer agents through the harness while the UI shows progress.
 
-Status: Phase 1 reset/run-mode foundation, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5 autonomous acceptance loop, Phase 6A-6E fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented; full-product mode is still planned.
+Status: Phase 1 reset/run-mode foundation, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5 autonomous acceptance loop, Phase 6A-6E fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B full-product execution, Phase 8C-1 product evidence hardening, Phase 8C-2 reviewer handoff calibration, Phase 8C-3 real-agent rerun, Phase 8C-4 compact overseer state hardening, Phase 8C-5 real-agent calibration, Phase 8C-6 full-product budget/dependency-gate hardening, Phase 8C-7 real-agent rerun, and Phase 8C-8 orchestration dependency-gate hardening are implemented or attempted as documented; the next real-Codex calibration rerun should test whether the overseer finishes remaining backend dependency work before dashboard work.
 
 Acceptance criteria:
 
@@ -322,11 +324,22 @@ Acceptance criteria:
 - AC-014.12: The local web viewer and `observe` snapshot show the overseer, workers, verifiers, heartbeats, lanes, slices, FR/AC refs, blockers, checkpoints, events, reports, and final status during or after the run.
 - AC-014.13: The live smoke writes inspectable artifacts including summary JSON, overseer transcript/events, worker events, verifier findings, reports, and snapshot.
 - AC-014.14: The smoke can be rerun from a clean reset and produce a bounded accepted, blocked, or human-required outcome.
-- AC-014.15: A future full-product mode uses an approved small product spec and succeeds only when the product can run locally, or when exact blockers explain why not.
+- AC-014.15: Full-product mode uses an approved small product spec and succeeds only when the product can run locally, or when exact blockers explain why not.
 - AC-014.16: The first full-product target is the Invoice Operations Dashboard product spec at `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`.
 - AC-014.17: Every live runner summary includes an explicit outcome classification and writes JSON/Markdown artifact indexes that link core run state, worker/reviewer evidence, verification output, and relevant fault artifacts.
 - AC-014.18: Every live runner can archive summary/index artifacts outside the reset workspace and compare archived runs by outcome, classifier, fault mode, lifecycle counts, and artifact paths.
 - AC-014.19: The local web viewer exposes archived live runs, latest-run comparison, classifier explanation, and artifact index details through read-only UI panels and APIs.
+- AC-014.20: Full-product mode refuses to run if the approved invoice dashboard product spec copy is missing or unregistered.
+- AC-014.21: Full-product mode does not treat backend slice acceptance as product acceptance; it must write product readiness artifacts and classify incomplete product output as `product_not_ready`.
+- AC-014.22: Full-product mode continues into dashboard slices after backend acceptance when product readiness remains incomplete and further dashboard work is visible.
+- AC-014.23: Full-product acceptance requires dashboard slice acceptance plus product readiness evidence from dashboard tests, local start, HTML probe, API probe, and at least one real workflow probe.
+- AC-014.24: Full-product readiness writes structured product probe artifacts for the HTML, API, and workflow checks and includes them in the artifact index.
+- AC-014.25: The real overseer receives a compact actionable state packet with active slice ids and next commands so it does not need to read prompt artifacts, inspect `.swarm` files, or query the state database to choose the next bounded command.
+- AC-014.26: The resettable real-agent full-product smoke has a dedicated package command.
+- AC-014.27: Reviewer dispatch uses the target protocol's normal driver tool/command posture, while reviewer instructions keep deterministic command verification as a separate acceptance gate and immutable source specs are still protected by source-hash checks.
+- AC-014.28: Full-product readiness exposes dashboard dependency-gate state, including declared backend refs, accepted refs, and missing refs when dashboard work cannot yet be served.
+- AC-014.29: The overseer actionable state exposes ready source-pull work and blocked downstream source work separately, and bounded execution preflights dependency-blocked `slices pull` recommendations before process execution.
+- AC-014.30: The web viewer surfaces each agent run's latest visible signal/event so quiet long-running agents remain observable without opening JSONL artifacts first.
 
 ## Prototype Milestones
 
@@ -446,7 +459,7 @@ Exit criteria:
 
 ### Milestone 9: Live Real-Agent Smoke
 
-Status: in progress. Phase 1 through Phase 7B-2 are implemented; full-product mode is still planned.
+Status: in progress. Phase 1 through Phase 8C-8 are implemented or attempted as documented; the next real-Codex full-product calibration rerun should validate source pull queues and dependency preflight against real agent cadence.
 
 Deliver:
 
@@ -458,14 +471,22 @@ Deliver:
 - live-run outcome classification and artifact index
 - reset-resistant live-run history and comparison
 - web viewer history, comparison, and artifact-index detail
+- full-product readiness mode with product spec enforcement, product commands, manual URL, readiness artifacts, and `product_not_ready` blocking
+- full-product execution mode that continues into dashboard work and accepts only after dashboard review, deterministic verification, tests, local start, and API/browser probes pass
+- structured product probe artifacts and resettable `smoke:live-agent:full` command
+- reviewer dispatch with normal protocol tool/command access, plus prompt rules separating independent review from deterministic `swarm verify`
+- compact actionable overseer state packet with active slice queue and exact next-command hints
+- calibrated full-product run budget for real-agent one-AC slice cadence
+- product-readiness dashboard dependency-gate evidence showing declared, accepted, and missing backend refs
+- source pull queues and dependency preflight that steer overseers to prerequisite backend work before blocked dashboard sources
 - package scripts for reset, serve, and run
 - optional smoke assertions that do not run in default CI
-- later full-product mode that builds a small real invoice dashboard from the approved product spec
+- next real-Codex calibration for full-product mode against the approved invoice dashboard spec, source pull queues, and dependency preflight
 
 Exit criteria:
 
 - A human can reset the fake project, start the UI, launch the live overseer, watch real agents implement and verify a meaningful slice, and inspect a final accepted/blocked/human-required outcome without relying on chat history.
-- Full-product mode later raises the bar further: after reset and run, a human can open a working local product or inspect exact product blockers.
+- Full-product mode raises the bar further: after reset and run, a human can open a working local product or inspect exact product blockers.
 
 ## MVP Demo Scenario
 

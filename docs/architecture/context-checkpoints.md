@@ -1,6 +1,6 @@
 # Context Checkpoints and Resume Packets
 
-Date: 2026-06-08
+Date: 2026-06-12
 
 ## Purpose
 
@@ -110,7 +110,7 @@ swarm resume-context --run <run-id>
 
 ## Recovery Semantics
 
-Revive resumes the same Codex session when possible. Restart starts a fresh agent.
+Revive resumes the same Codex session when possible. Restart starts a fresh agent. The live runner's supervised recovery path should try revive first for failed/stale worker runs with a captured session id, then restart only when revive is unavailable or fails.
 
 Both should receive a resume packet:
 
@@ -118,6 +118,8 @@ Both should receive a resume packet:
 - `restart`: "Fresh agent; prior session may be incomplete. Use this state, prior artifacts, and next action."
 
 If a compacted chat loses context, the operator or planner should be able to regenerate the packet and continue.
+
+Child idle supervision is a related recovery trigger. When configured by environment or `protocol.recovery.childIdleTimeoutSeconds`, the harness terminates a quiet child process, records the timeout as durable event/heartbeat state, and lets recovery use the captured session id and resume packet instead of relying on chat memory.
 
 ## Role-Specific Focus
 

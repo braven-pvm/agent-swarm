@@ -1,6 +1,6 @@
 # New Agent Start Here
 
-Last updated: 2026-06-10
+Last updated: 2026-06-12
 
 This repository is an agentic development harness prototype. It exists to coordinate autonomous implementation agents against approved immutable requirements at scale, while keeping planning, work, verification, evidence, recovery, and progress visible.
 
@@ -85,13 +85,16 @@ The current prototype supports:
 - source-mutation fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
 - reviewer-repair fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
 - stale-run recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
+- supervised-revive recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault supervised-revive`
 - context-handoff fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`
 - low-signal/proof-churn fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`
 - live-run artifact index and outcome classification through `live-agent-run-artifacts/artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`
 - reset-resistant live-run history and comparison through `.swarm-demo/live-agent-run-history/` and `npm run demo:live-agent:compare`
 - web viewer History tab with archived live runs, latest-run comparison, and selected-run artifact index details
+- full-product mode through `npm run demo:live-agent:full` and resettable `npm run smoke:live-agent:full`, product readiness artifacts, backend-to-dashboard execution, structured dashboard HTML/API probes, product-readiness feedback slices, accepted completion, and bounded `product_not_ready` blocking
+- full-product escalation reconciliation so accepted runs clear stale dependency/planning blockers, cover real-overseer warning wording, and fail assertions if active blocker/human/critical escalations remain
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
-- stale-run recovery scan, revive, and restart
+- stale-run recovery scan, same-session revive, restart fallback, and configurable child idle timeout supervision
 - latest-only role/entity checkpoints
 - role-specific resume packets
 - local read-only web viewer served by `swarm serve`
@@ -133,7 +136,8 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 61/61 passing
+npm test -> 73/73 passing
+git diff --check -> clean
 ```
 
 ## Useful Demo Commands
@@ -163,6 +167,8 @@ npm run demo:live-agent:overseer:fixture
 npm run demo:live-agent:overseer:execute:fixture
 npm run demo:live-agent:serve
 npm run demo:live-agent:compare
+npm run demo:live-agent:full
+npm run smoke:live-agent:full
 ```
 
 Use `--port 0` if a fixed port is busy.
@@ -199,7 +205,7 @@ Run-mode boundary:
 
 - `demo:web-observability`: fixture regression.
 - `demo:web-observability:codex`: scripted planning with real Codex workers.
-- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, Phase 6C stale-run recovery fault, Phase 6D context-handoff fault, Phase 6E low-signal/proof-churn fault, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented; full-product mode is still pending.
+- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, Phase 6C stale-run recovery fault, Phase 6D context-handoff fault, Phase 6E low-signal/proof-churn fault, Phase 6F supervised-revive fault, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B full-product execution, Phase 8C-1 through Phase 8C-18 hardening are implemented or attempted as documented.
 - live smoke Phase 1 reset/run-mode setup: implemented with `npm run demo:live-agent:reset` and `npm run demo:live-agent:serve`.
 - live smoke Phase 2 reviewer runner: implemented with `swarm review <slice-id> --actor <actor> --driver codex`.
 - live smoke Phase 3 scripted worker+reviewer rehearsal: implemented with `npm run demo:live-agent:scripted`.
@@ -217,6 +223,8 @@ Run-mode boundary:
   The fault makes the first reviewer return `repair_required`, dispatches a repair worker, accepts on the second review, clears only resolved review blockers, and then runs deterministic verification.
 - live smoke Phase 6C stale-run recovery fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`.
   The fault lets the overseer create the slice, injects a stale worker, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale blocker only after independent review accepts, and then runs deterministic verification.
+- live smoke Phase 6F supervised-revive fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault supervised-revive`.
+  The fake worker starts a real driver session, emits live JSONL, then goes quiet without a structured result. The harness child idle timeout records `worker.child_idle_timeout`, marks the run failed, the live runner calls `recovery revive <run-id>` using the captured session id, and acceptance still requires independent review plus deterministic verification. Restart is fallback only if revive cannot recover.
 - live smoke Phase 6D context-handoff fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`.
   The fault waits for worker evidence, refreshes worker/reviewer/verifier/overseer checkpoints, writes role-specific resume packets, and then requires the loop to continue through independent review and deterministic verification.
 - live smoke Phase 6E low-signal/proof-churn fault: implemented with `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`.
@@ -227,9 +235,38 @@ Run-mode boundary:
   Every live run can archive summary/index artifacts outside the reset workspace; `npm run demo:live-agent:compare` compares archived runs by outcome, classifier, fault mode, lifecycle counts, and artifact paths.
 - live smoke Phase 7B-2 web history/artifact detail: implemented in `src/cli.ts` and `tests/web-viewer.e2e.test.js`.
   `swarm serve --history-root <path>` exposes archived live runs, latest-run comparison, and selected-run artifact index detail in the History tab.
+- live smoke Phase 8A full-product readiness: implemented in `scripts/run-live-agent-demo.mjs`, `tests/live-agent-runner.e2e.test.js`, and `tests/live-agent-smoke-reset.e2e.test.js`.
+  `npm run demo:live-agent:full` uses `--mode full-product`, enforces the approved product spec copy, records product commands/manual URL/readiness artifacts, and blocks incomplete dashboard output with `outcomeClassification.code = "product_not_ready"`.
+- live smoke Phase 8B full-product execution: implemented in `scripts/run-live-agent-demo.mjs` and `tests/live-agent-runner.e2e.test.js`.
+  Full-product mode continues beyond accepted backend work into the dashboard lane, gates dashboard acceptance through reviewer and deterministic verifier evidence, runs dashboard `npm test`, starts the local dashboard, probes HTML plus `/api/summary`, records `product-dashboard-start-output.txt`, and accepts only when product readiness passes.
+- live smoke Phase 8C-1 product evidence hardening: implemented in `scripts/run-live-agent-demo.mjs`, `scripts/reset-live-agent-smoke.mjs`, `package.json`, `tests/live-agent-runner.e2e.test.js`, and `tests/live-agent-smoke-reset.e2e.test.js`.
+  Full-product readiness now records `product-dashboard-probe.json` and `product-dashboard-probe.md`, indexes those artifacts, asserts required `/api/summary` JSON fields, and exposes `npm run smoke:live-agent:full` as the resettable real-agent calibration command.
+- live smoke Phase 8C-2 calibration attempt: executed with real Codex and blocked honestly with `product_not_ready`.
+  The main blocker was reviewer-loop behavior: reviewers blocked because read-only command policy rejected `npm test` / `node --test`. Phase 8C-16 changed reviewer dispatch to use normal project protocol tool access instead of forced read-only posture; `tests/review-runner.e2e.test.js` now guards both the prompt instruction and the non-read-only codex reviewer invocation.
+- live smoke Phase 8C-3 calibration rerun: executed with real Codex and blocked honestly with `product_not_ready`.
+  The reviewer fix worked: two backend slices reached accepted status and deterministic verification passed. The next blocker was overseer prompt/state drift around the active third backend slice.
+- live smoke Phase 8C-4 compact overseer state: implemented in `src/cli.ts`, `tests/overseer-runner.e2e.test.js`, and `tests/live-agent-runner.e2e.test.js`.
+  The overseer prompt now includes compact top-level `slices`, `actionableState.activeSliceQueue`, and exact `nextCommand` hints; the prompt artifact is audit-only and the prompt tells agents not to inspect files/state directly.
+- live smoke Phase 8C-5 real-agent calibration after compact state: executed with real Codex and blocked honestly with `product_not_ready`.
+  Compact state worked: four backend slices reached accepted status with worker/reviewer/command evidence. The remaining blocker was not prompt drift; it was full-product budget and missing dashboard dependency refs (`AC-INV-002.2`, `AC-INV-003.1`) before dashboard work could legitimately start.
+- live smoke Phase 8C-6 full-product budget/dependency-gate hardening: implemented in `scripts/run-live-agent-demo.mjs`, `scripts/reset-live-agent-smoke.mjs`, `package.json`, `tests/live-agent-runner.e2e.test.js`, and `tests/live-agent-smoke-reset.e2e.test.js`.
+  Full-product defaults are now 40 turns, 2700 seconds, and 60 agent runs; product readiness now records declared/accepted/missing dashboard dependency refs and renders them in `product-readiness.md`.
+- live smoke Phase 8C-7/8C-8 orchestration dependency-gate lesson: real run `LAR-20260611T091057-live-agent-smoke-none-10516` accepted backend through `AC-INV-002.2`, then exposed that the overseer could still attempt a dashboard pull while `AC-INV-003.1` was missing. Phase 8C-8 adds `actionableState.nextSourcePullQueue`, `actionableState.blockedSourceQueue`, dependency preflight for overseer `slices pull`, and recoverable dependency-block handling in full-product mode.
+- live smoke Phase 8C-9/8C-10 prompt/runtime lesson: real run reached accepted backend dependencies, unlocked dashboard work, implemented and accepted dashboard slice `SLICE-cd4193e4`, and then product readiness blocked honestly on missing `npm start` / local URL probe. The hardening moved overseer Codex launches to a short artifact-backed prompt to avoid Windows `spawn ENAMETOOLONG`, compacted prompt state with `sliceSummary` and `agentRunSummary`, and updated fake live overseers to consume the compact prompt contract.
+- live smoke Phase 8C-11 product-readiness feedback: runtime readiness blockers now create a normal visible dashboard-target slice titled `Resolve invoice dashboard product readiness`, tied to immutable `AC-PROD-001.1` through `AC-PROD-001.4`. The slice records leases, planner decision, dependency, checkpoints, and `product_readiness.slice_created`, then goes through worker, reviewer, deterministic verification, and final product probes. The fake full-product E2E can simulate a dashboard model slice that passes tests while omitting `npm start`, then proves the feedback slice repairs runtime startup. Probe cleanup now terminates the Windows `npm start` process tree.
+- live smoke Phase 8C-12/8C-13 real product-readiness calibration: real run `LAR-20260611T172111-live-agent-smoke-none-23668` accepted after backend-before-dashboard sequencing, dashboard review rework, deterministic verification, and a product-readiness worker that fixed a Windows `npm start` entrypoint bug. The run exposed stale active dashboard dependency warning counts after acceptance, so Phase 8C-13 broadened stale-warning cleanup to the real overseer wording and fake full-product E2E now injects those messages.
+- live smoke Phase 8C-14 real escalation-reconciliation confirmation: real run `LAR-20260611T181720-live-agent-smoke-none-42040` accepted with 40 turns, 5 slices, 24 agent runs, 5 verification runs, `productReadiness.passed === true`, failed assertions `[]`, six stale dashboard dependency warnings cleared, and final `counts.activeEscalations: 0`.
+- live smoke Phase 8C-15 reset-first lifecycle/final target snapshots: implemented in `scripts/reset-live-agent-smoke.mjs`, `scripts/run-live-agent-demo.mjs`, `tests/live-agent-smoke-reset.e2e.test.js`, and `tests/live-agent-runner.e2e.test.js`.
+  Accepted runs preserve the terminal workspace and archive final `invoice-api` / `invoice-dashboard` targets before the next reset.
+  Reset now happens as the first action of a new run only; completion leaves the active workspace in its terminal state. Reset tests use isolated approved `.swarm-demo/test-live-agent-*` workspaces, and history archives final `invoice-api` plus `invoice-dashboard` snapshots under each run's `final-targets/` directory.
+- live smoke Phase 8C-16 reviewer-tooling/product-probe observability hardening: implemented in `src/cli.ts`, `scripts/run-live-agent-demo.mjs`, `tests/review-runner.e2e.test.js`, `tests/claude-reviewer.e2e.test.js`, `tests/live-agent-runner.e2e.test.js`, and `tests/web-viewer.e2e.test.js`.
+  Reviewers now run with normal configured driver tool access, final product readiness clears stale reviewer command-policy warning diagnostics, the product readiness probe includes a mark-paid workflow, npm probe launch avoids `shell: true`, and the web viewer Agents table shows last signal/latest event detail.
+- live smoke Phase 8C-17 supervised recovery and heartbeat hardening: implemented in `src/cli.ts`, `src/worker-events.ts`, `src/protocol.ts`, `scripts/run-live-agent-demo.mjs`, and `tests/live-agent-runner.e2e.test.js`.
+  Child worker processes can be supervised with `SWARM_AGENT_IDLE_TIMEOUT_SECONDS`, `SWARM_CHILD_IDLE_TIMEOUT_SECONDS`, or protocol `recovery.childIdleTimeoutSeconds`. Quiet/stalled children are killed visibly, then the runner tries same-session revive before restart fallback. Structured command JSONL now wins over text fallback so successful command events containing words like "failed assertions: []" no longer show as blocked.
+- live smoke Phase 8C-18 real-agent rerun and immediate hardening: real run `LAR-20260612T110407-live-agent-smoke-none-26068` accepted and produced a runnable Invoice Operations Dashboard. Product readiness passed with HTML, `/api/summary`, and mark-paid workflow probes; source specs remained unchanged and final target snapshots were archived. The run exposed reset/UI file-lock handling, Git `safe.directory` path normalization, non-blocking warning amplification, and premature intermediate structured agent messages. Hardening now adds reset `--stop-related-processes`, normalized forward-slash safe-directory prompt guidance, overseer warning-restatement suppression, broader final accepted-warning cleanup, and tests for those contracts.
 
 ## Next Coherent Slice
 
-Next slice: Phase 8 full-product foundation.
+Next slice: Phase 8C-19 verification and rerun after Phase 8C-18 hardening.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 is implemented: explicit run-mode labeling and a resettable `.swarm-demo/live-agent-smoke` scenario. Phase 2 is implemented: `swarm review` runs an independent reviewer, stores structured review evidence, and blocks deterministic verification when material reviewer findings exist. Phase 3 is implemented: `demo:live-agent:scripted` pulls one backend slice, runs a Codex worker, runs a Codex reviewer, runs deterministic verification, and writes summary/artifacts. Phase 4 is implemented: `swarm orchestrate` launches a visible overseer, streams JSONL into harness events/heartbeats, writes the full prompt as an artifact, validates a structured decision, and stores that decision as event/checkpoint state. Phase 5A is implemented: `swarm orchestrate --execute` can run allowlisted planning-safe harness commands such as `slices pull` and records command events/artifacts. Phase 5B is implemented: `swarm orchestrate --execute` can dispatch bounded worker/reviewer child agents for existing slices, with explicit actors, `--driver codex`, reviewer evidence gating, and visible command metadata; deterministic `verify` remains blocked inside overseer execution. Phase 5C is implemented: `npm run demo:live-agent:run` repeatedly invokes the visible overseer, carries state through pull -> worker -> review, runs deterministic `verify` after reviewer acceptance, enforces basic scenario limits, checks source hashes, and stops accepted/blocked/human-required with artifacts. Phase 6A is implemented: source mutation fault injection stops before hidden agent work and raises `human_required`. Phase 6B is implemented: reviewer repair blocks once, sends work back through the worker/reviewer path, clears the resolved review blocker, and verifies. Phase 6C is implemented: stale-run recovery marks a stale worker, restarts a fresh worker, clears only after review acceptance, and verifies. Phase 6D is implemented: context handoff refreshes checkpoints, writes resume packets, and continues through review and verification. Phase 6E is implemented: low-signal/proof-churn warning stays visible while review and verification still gate acceptance. Phase 7A is implemented: live summaries include outcome classification and generated artifact indexes. Phase 7B-1 is implemented: live runs archive reset-resistant summaries/indexes and can be compared across resets. Phase 7B-2 is implemented: the web viewer exposes archived runs, latest comparison, and artifact index detail. Next implement Phase 8 full-product foundation. The full-product destination is `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 through Phase 8C-18 are implemented or attempted as documented. The next useful work is to verify the reset/warning/safe-directory hardening, then rerun the real full-product smoke and inspect final active escalations, product workflow probe stability, quiet-agent visibility, and reset-first behavior with UI/product processes. The full-product destination remains `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.

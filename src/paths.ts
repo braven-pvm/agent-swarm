@@ -3,6 +3,7 @@ import path from "node:path";
 export const SWARM_DIR = ".swarm";
 
 export function resolveWorkspace(cwd = process.cwd()): string {
+  if (process.env.SWARM_WORKSPACE) return path.resolve(process.env.SWARM_WORKSPACE);
   return path.resolve(cwd);
 }
 

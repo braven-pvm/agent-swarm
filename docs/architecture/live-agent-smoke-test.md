@@ -1,6 +1,6 @@
 # Live Agent Smoke Test Harness
 
-Date: 2026-06-10
+Date: 2026-06-11
 
 ## Purpose
 
@@ -83,7 +83,7 @@ The fake requirements should include:
 
 Full-product mode should use a stronger product spec with API behavior, browser UI, local state, and at least one state-changing workflow. The first proposed full product is the Invoice Operations Dashboard.
 
-The scenario must be resettable. Reset must delete the demo workspace and restore target code from templates. It must never reset arbitrary paths outside `.swarm-demo/live-agent-smoke`.
+The scenario must be resettable. Reset must delete the selected demo workspace and restore target code from templates as the first action of a new run. It must not reset after completion; the completed workspace remains inspectable until the next run starts. Reset is only allowed for approved direct child workspaces under `.swarm-demo`, such as `.swarm-demo/live-agent-smoke`, `.swarm-demo/live-agent-smoke-*`, or `.swarm-demo/test-live-agent-*`.
 
 ## Required Run Modes
 
@@ -123,7 +123,7 @@ npm run demo:live-agent:serve
 npm run demo:live-agent:run
 ```
 
-Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, bounded overseer execution for planning-safe harness commands, bounded worker/reviewer child dispatch, the autonomous acceptance loop, Phase 6A-6E fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented. Full-product mode is next.
+Current implementation status: reset, serve, independent reviewer runs, scripted worker+reviewer rehearsal, visible overseer planning, bounded overseer execution for planning-safe harness commands, bounded worker/reviewer child dispatch, the autonomous acceptance loop, Phase 6A-6F fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B backend-to-dashboard full-product execution, Phase 8C-1 product evidence hardening, Phase 8C-2 reviewer handoff calibration, Phase 8C-3 real-agent rerun, Phase 8C-4 compact overseer state hardening, Phase 8C-5 real-agent calibration, Phase 8C-6 full-product budget/dependency-gate hardening, Phase 8C-7 real-agent rerun, Phase 8C-8 orchestration dependency-gate hardening, Phase 8C-9 dashboard real-agent rerun, Phase 8C-10 artifact-backed overseer launch hardening, Phase 8C-11 product-readiness feedback slices, Phase 8C-12/8C-13 real product-readiness calibration and stale-warning hardening, Phase 8C-14 real escalation-reconciliation confirmation, Phase 8C-15 reset-first lifecycle/final target snapshots, Phase 8C-16 reviewer-tooling/product-probe observability, Phase 8C-17 supervised recovery/heartbeat hardening, and Phase 8C-18 real-agent rerun plus reset/warning hardening are implemented or attempted as documented.
 
 The serve command should keep the read-only UI open. The run command should populate state over time so the user can watch:
 
@@ -140,11 +140,30 @@ The serve command should keep the read-only UI open. The run command should popu
 
 `demo:live-agent:run` currently runs the baseline autonomous acceptance loop. A later convenience mode can start its own temporary viewer on `--port 0` for automated probing.
 
-Future full-product mode:
+Full-product mode:
 
 ```powershell
 npm run demo:live-agent:full
 ```
+
+Reset and run the full-product smoke with real Codex by default:
+
+```powershell
+npm run smoke:live-agent:full
+```
+
+Full-product mode uses `--mode full-product`, broader runtime/slice/agent limits, enforces the approved invoice dashboard product spec, writes product readiness artifacts, records the manual URL and commands, and blocks with `outcomeClassification.code = "product_not_ready"` when bounded execution stops before the dashboard can be started/probed. Phase 8B continues beyond accepted backend work into the dashboard lane and accepts only after dashboard review, deterministic verification, `npm test`, local `npm start`, and browser/API probes pass. Phase 8C-1 writes structured `product-dashboard-probe.json` and `product-dashboard-probe.md` artifacts for the final HTML/API readiness checks. Phase 8C-6 records dashboard dependency-gate state in product readiness so blocked runs list missing backend refs explicitly. Phase 8C-8 adds orchestration-time source pull queues and preflight dependency blocking so the overseer can see prerequisite source work before blocked downstream work. Phase 8C-11 turns missing runtime readiness (`npm start`, local dashboard, JSON API, `npm test`) into a normal visible dashboard-target slice against `AC-PROD-001.1` through `AC-PROD-001.4` before declaring no further work. Phase 8C-12 proves that path with real agents and adds escalation reconciliation plus child-process lifecycle hardening. Phase 8C-16 lets reviewers use normal configured tooling, clears stale reviewer command-policy diagnostics after final product readiness, removes the live-run `npm` shell warning path, surfaces agent last-signal/latest-event details in the web viewer, and adds a mark-paid workflow probe to final product readiness. Phase 8C-18 confirmed the real product can be produced again and hardened reset related-process cleanup, normalized Git safe-directory guidance, and non-blocking warning restatement suppression.
+
+Real Codex calibration attempts so far:
+
+- `LAR-20260611T065131-live-agent-smoke-none-25232`: blocked with `product_not_ready` after reviewers treated read-only command-policy rejection of `npm test` as a material blocker. Phase 8C-16 corrected this at the harness level: reviewers now dispatch with normal project protocol tool access, while deterministic `swarm verify` remains the final executable command gate.
+- `LAR-20260611T073238-live-agent-smoke-none-33448`: blocked with `product_not_ready`, but accepted two backend slices and ran deterministic verification successfully. It then exposed overseer prompt/state drift: the active third backend slice was discoverable, but later overseer turns kept reading/grepping prompt artifacts instead of dispatching it.
+- `LAR-20260611T082909-live-agent-smoke-none-47084`: blocked with `product_not_ready`, but accepted four backend slices with worker/reviewer/command evidence. Compact actionable state worked; the new blocker was calibrated budget and missing dashboard dependencies (`AC-INV-002.2`, `AC-INV-003.1`) before frontend work could be served.
+- `LAR-20260611T091057-live-agent-smoke-none-10516`: blocked with `product_not_ready`, but accepted backend through `AC-INV-002.2`. Product readiness correctly showed only `AC-INV-003.1` missing; the lower-level planner rejected premature dashboard work, exposing the need for overseer source-pull queues and dependency preflight.
+- `LAR-20260611T111547-live-agent-smoke-none-55164`: accepted. Real agents created, implemented, reviewed, and verified the product-readiness slice, then final product readiness passed `npm test`, `npm start`, browser HTML, `/api/summary`, and source hash checks.
+- `LAR-20260611T115536-live-agent-smoke-none-41016`: accepted again after product-readiness prompt hardening, but exposed stale planning escalation drift. The final product was accepted while historical dashboard dependency warnings and old harness-level blockers remained active. The runner now reconciles resolved planning escalations against actual accepted slice/dependency state, and accepted summaries assert that no active blocker/human/critical escalations remain.
+
+The overseer prompt now includes a compact actionable state packet with top-level `slices`, `actionableState.activeSliceQueue`, `actionableState.nextSourcePullQueue`, `actionableState.blockedSourceQueue`, concrete active slice ids, and exact `nextCommand` suggestions. The prompt artifact remains available for audit, but Codex receives the compact prompt directly and is instructed not to read files, inspect artifacts, query SQLite, invoke commands itself, or pull dependency-blocked downstream sources. Product-readiness slices now explicitly tell workers how to prove long-running local server behavior safely, including bounded HTTP probes or exported in-process server tests when detached background process control is blocked by agent sandbox policy.
 
 This mode should use broader runtime bounds and should pass only when the final product can be run locally and inspected, or when exact blockers are recorded.
 
@@ -400,7 +419,7 @@ The run script repeatedly launches the overseer, lets it dispatch workers/review
 
 ### Slice 6: Add live smoke assertions
 
-Status: implemented for default CI with fake Codex on the real runner paths, including Phase 7A artifact index/outcome-classification assertions, Phase 7B-1 run-history comparison assertions, and Phase 7B-2 web history API assertions. A non-default real Codex smoke remains useful for manual validation.
+Status: implemented for default CI with fake Codex on the real runner paths, including Phase 7A artifact index/outcome-classification assertions, Phase 7B-1 run-history comparison assertions, Phase 7B-2 web history API assertions, Phase 8A full-product readiness assertions, Phase 8B full-product execution assertions, Phase 8C-1 product probe artifact assertions, Phase 8C-11 product-readiness feedback assertions, Phase 8C-13 stale real-overseer warning reconciliation assertions, Phase 8C-14 real-run confirmation that accepted snapshots can finish with no stale active dashboard dependency warnings, Phase 8C-15 reset isolation plus final target snapshot assertions, and Phase 8C-16 reviewer-tooling/product-workflow probe assertions. A non-default real Codex smoke remains useful for manual validation.
 
 Add an optional test or smoke checker that does not run in default CI:
 
@@ -422,6 +441,13 @@ Assertions should include:
 - stale-run recovery marks, restarts, clears resolved blockers after review, and verifies
 
 Current default E2E coverage uses fake Codex while exercising the real `--driver codex` runner paths. A non-default smoke with real Codex remains useful for manual validation.
+
+Latest real validation:
+
+- `LAR-20260611T181720-live-agent-smoke-none-42040` accepted with real Codex agents.
+- The live run proved backend-before-dashboard sequencing, dashboard lane unlock after accepted backend capabilities, reviewer/deterministic-verifier gates, final product-readiness slicing, immutable source hash checks, product readiness artifacts, artifact indexing, and run history.
+- The final product-readiness worker implemented local runtime/API behavior, passed `npm test`, captured local startup behavior, and the harness passed final HTML plus `/api/summary` probes.
+- The run confirmed Phase 8C-13 stale-warning hardening under real overseer wording: six stale dashboard dependency warnings were cleared and the accepted final snapshot had `counts.activeEscalations: 0`.
 
 ## Exit Criteria
 

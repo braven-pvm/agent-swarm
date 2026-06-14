@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -41,6 +42,13 @@ test("codex overseer records a visible scenario planning decision", () => {
   assert.equal(decision.status, "recommend_commands");
   assert.equal(decision.scenario, "live-agent-smoke");
   assert.ok(decision.recommendedCommands.some((item) => item.command.includes("slices pull")));
+  const prompt = readLatestOverseerPrompt(workspace);
+  assert.match(prompt, /Decision discipline:/);
+  assert.match(prompt, /"actionableState"/);
+  assert.match(prompt, /"activeSliceQueue"/);
+  assert.match(prompt, /Do not read prompt files/);
+  assert.doesNotMatch(prompt, /Deterministic verify remains blocked/);
+  assert.doesNotMatch(prompt, /Phase 5B does not execute deterministic verification/);
 
   const heartbeat = snapshot.heartbeats.find(
     (item) => item.actor === "live-overseer" && item.entityType === "harness" && item.entityId === "scenario:live-agent-smoke",
@@ -199,6 +207,10 @@ test("codex overseer execute mode dispatches worker and reviewer child agents", 
   );
 
   assert.match(output, /command execution: executed 3, blocked 0, failed 0/);
+  const prompt = readLatestOverseerPrompt(workspace);
+  assert.match(prompt, new RegExp(sliceId));
+  assert.match(prompt, /"activeSliceQueue"/);
+  assert.match(prompt, new RegExp(`"nextCommand": "node .* run ${sliceId} --actor backend-worker --driver codex"`));
 
   const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "180"]));
   const slice = snapshot.slices.find((item) => item.id === sliceId);
@@ -254,13 +266,13 @@ test("codex overseer execute mode dispatches worker and reviewer child agents", 
   assert.match(fs.readFileSync(reviewerCommandEvent.payload.stdoutPath, "utf8"), /Review accepted/);
 });
 
-test("codex overseer execute mode still blocks deterministic verifier dispatch in phase 5B", () => {
+test("codex overseer execute mode blocks verifier dispatch because the runner owns deterministic verification", () => {
   const workspace = setupWorkspace("test-overseer-execute-block");
   const fakeCodexScript = writeFakeOverseerCodex([
     {
       command: `node "${cli}" verify SLICE-not-real --actor live-verifier --force`,
-      purpose: "Try to execute deterministic verification before the acceptance-gate phase.",
-      expectedStateChange: "This should be blocked by the Phase 5B command validator.",
+      purpose: "Try to execute deterministic verification from an overseer decision.",
+      expectedStateChange: "This should be blocked because the live runner owns deterministic verification after review acceptance.",
       requiresHuman: false,
     },
   ]);
@@ -279,7 +291,270 @@ test("codex overseer execute mode still blocks deterministic verifier dispatch i
   assert.equal(snapshot.slices.length, 0);
   assert.ok(snapshot.recentEvents.some((event) => event.type === "overseer.command_blocked"));
   const blocked = snapshot.recentEvents.find((event) => event.type === "overseer.command_blocked");
-  assert.match(blocked.payload.reason, /Phase 5B does not execute deterministic verification/);
+  assert.match(blocked.payload.reason, /live runner owns deterministic verification/);
+});
+
+test("overseer prompt queues backend prerequisite before blocked dashboard source", () => {
+  const workspace = setupWorkspace("test-overseer-prerequisite-queue");
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "5",
+  ]);
+  const pulledSnapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  const backendTargetId = pulledSnapshot.targets.find((target) => target.name === "invoice-api")?.id;
+  const backendSliceId = pulledSnapshot.slices.find((slice) => slice.targetId === backendTargetId)?.id;
+  assert.ok(backendSliceId);
+
+  const store = new SwarmStore(workspace);
+  store.updateSliceStatus(backendSliceId, "accepted");
+  store.completeLeasesForSlice(backendSliceId);
+  store.close();
+
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: `node "${cli}" observe --events 120`,
+      purpose: "Record prompt state only for regression coverage.",
+      expectedStateChange: "No implementation work is dispatched.",
+      requiresHuman: false,
+    },
+  ]);
+
+  runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    },
+  );
+
+  const prompt = readLatestOverseerPrompt(workspace);
+  const state = extractPromptJsonAfter(prompt, "Current harness snapshot:");
+  assert.equal(state.actionableState.activeSliceQueue.length, 0);
+  assert.ok(state.actionableState.nextSourcePullQueue.length > 0);
+  assert.equal(state.actionableState.nextSourcePullQueue[0].targetName, "invoice-api");
+  assert.deepEqual(state.actionableState.nextSourcePullQueue[0].availableRefs.slice(0, 1), ["AC-INV-003.1"]);
+  assert.match(state.actionableState.nextSourcePullQueue[0].nextCommand, /slices pull --target invoice-api/);
+
+  const blockedDashboard = state.actionableState.blockedSourceQueue.find(
+    (item) => item.targetName === "invoice-dashboard",
+  );
+  assert.ok(blockedDashboard);
+  assert.deepEqual(blockedDashboard.missingDependencies, ["AC-INV-003.1"]);
+  assert.ok(blockedDashboard.prerequisiteCommands.some((command) => command.includes("--target invoice-api")));
+  assert.match(prompt, /Never recommend a slices pull command for an item in actionableState\.blockedSourceQueue/);
+});
+
+test("overseer execute mode preflights dependency-blocked dashboard pulls", () => {
+  const workspace = setupWorkspace("test-overseer-dashboard-preflight");
+  const dashboardCommand = `node "${cli}" slices pull --target invoice-dashboard --source invoice-dashboard.md --batch-size 3`;
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: dashboardCommand,
+      purpose: "Attempt a premature dashboard pull before backend dependencies are accepted.",
+      expectedStateChange: "The harness should block this before execution.",
+      requiresHuman: false,
+    },
+  ]);
+
+  const output = runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke", "--execute"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    },
+  );
+
+  assert.match(output, /command execution: executed 0, blocked 1, failed 0/);
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "80"]));
+  assert.equal(snapshot.slices.length, 0);
+  const blocked = snapshot.recentEvents.find((event) => event.type === "overseer.command_blocked");
+  assert.ok(blocked);
+  assert.match(blocked.payload.reason, /Source dependencies are not satisfied/);
+  assert.match(blocked.payload.reason, /AC-INV-001\.1/);
+});
+
+test("overseer prompt stays compact when dashboard work becomes active", () => {
+  const workspace = setupWorkspace("test-overseer-compact-dashboard-prompt");
+  runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "7",
+  ]);
+  let snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  const backendTargetId = snapshot.targets.find((target) => target.name === "invoice-api")?.id;
+  const backendSliceId = snapshot.slices.find((slice) => slice.targetId === backendTargetId)?.id;
+  assert.ok(backendSliceId);
+
+  const store = new SwarmStore(workspace);
+  store.updateSliceStatus(backendSliceId, "accepted");
+  store.completeLeasesForSlice(backendSliceId);
+  store.close();
+
+  runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-dashboard",
+    "--source",
+    "invoice-dashboard.md",
+    "--batch-size",
+    "3",
+  ]);
+
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: `node "${cli}" observe --events 120`,
+      purpose: "Record compact prompt state only for regression coverage.",
+      expectedStateChange: "No implementation work is dispatched.",
+      requiresHuman: false,
+    },
+  ]);
+  runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    },
+  );
+
+  const prompt = readLatestOverseerPrompt(workspace);
+  assert.ok(prompt.length < 24000, `expected compact prompt below Windows-safe limit, got ${prompt.length}`);
+  const state = extractPromptJsonAfter(prompt, "Current harness snapshot:");
+  assert.equal(state.actionableState.activeSliceQueue[0].targetName, "invoice-dashboard");
+  assert.match(state.actionableState.activeSliceQueue[0].nextCommand, /run SLICE-/);
+  assert.equal(state.activeEscalationSummary.total, state.activeEscalationSummary.included);
+  snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  assert.ok(snapshot.slices.some((slice) => slice.targetId === snapshot.targets.find((target) => target.name === "invoice-dashboard")?.id));
+});
+
+test("overseer launches from a short prompt after dashboard worker evidence", () => {
+  const workspace = setupWorkspace("test-overseer-short-launch-after-worker");
+  runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "7",
+  ]);
+  let snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  const backendTargetId = snapshot.targets.find((target) => target.name === "invoice-api")?.id;
+  const backendSliceId = snapshot.slices.find((slice) => slice.targetId === backendTargetId)?.id;
+  assert.ok(backendSliceId);
+
+  let store = new SwarmStore(workspace);
+  store.updateSliceStatus(backendSliceId, "accepted");
+  store.completeLeasesForSlice(backendSliceId);
+  store.close();
+
+  runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-dashboard",
+    "--source",
+    "invoice-dashboard.md",
+    "--batch-size",
+    "3",
+  ]);
+  snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  const dashboardTargetId = snapshot.targets.find((target) => target.name === "invoice-dashboard")?.id;
+  const dashboardSliceId = snapshot.slices.find((slice) => slice.targetId === dashboardTargetId)?.id;
+  assert.ok(dashboardSliceId);
+
+  const now = new Date().toISOString();
+  store = new SwarmStore(workspace);
+  store.updateSliceStatus(dashboardSliceId, "implemented");
+  store.insertAgentRun({
+    id: "RUN-test-dashboard-worker",
+    sliceId: dashboardSliceId,
+    role: "worker",
+    entityType: "slice",
+    entityId: dashboardSliceId,
+    actor: "dashboard-worker",
+    driver: "codex",
+    status: "completed",
+    attempt: 1,
+    resultPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-result.json"),
+    eventsPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-events.jsonl"),
+    startedAt: now,
+    updatedAt: now,
+  });
+  store.insertEvidence({
+    id: "EVID-test-dashboard-worker",
+    sliceId: dashboardSliceId,
+    kind: "worker_result",
+    summary: "dashboard worker result covered all UI refs",
+    payload: {
+      workerResult: {
+        status: "passed",
+        summary: "Implemented dashboard model against accepted backend capabilities.",
+        changedFiles: ["src/dashboard.js", "test/dashboard.test.js"],
+        commandsRun: Array.from({ length: 40 }, (_, index) => `command-${index}`),
+        testsRun: ["npm run test in invoice-dashboard", "npm run test in invoice-api"],
+        frAcCoverage: ["AC-UI-INV-001.1", "AC-UI-INV-001.2", "AC-UI-INV-001.3"].map((ref) => ({
+          ref,
+          status: "covered",
+          evidence: "long evidence ".repeat(80),
+        })),
+        risks: ["git safe.directory warning"],
+        nextRecommendation: "Dispatch independent review.",
+      },
+    },
+    createdAt: now,
+  });
+  store.close();
+
+  const fakeArgsPath = path.join(workspace, "fake-overseer-args.json");
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: `node "${cli}" review ${dashboardSliceId} --actor dashboard-reviewer --driver codex`,
+      purpose: "Dispatch independent dashboard review after worker evidence.",
+      expectedStateChange: "Dashboard slice gains independent reviewer evidence.",
+      requiresHuman: false,
+    },
+  ]);
+  const output = runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      FAKE_CODEX_ARGS_PATH: fakeArgsPath,
+    },
+  );
+
+  assert.match(output, /Overseer recommend_commands for live-agent-smoke/);
+  const prompt = readLatestOverseerPrompt(workspace);
+  assert.ok(prompt.length < 22000, `expected compact prompt artifact, got ${prompt.length}`);
+  const state = extractPromptJsonAfter(prompt, "Current harness snapshot:");
+  assert.equal(state.actionableState.activeSliceQueue[0].status, "implemented");
+  assert.match(state.actionableState.activeSliceQueue[0].nextCommand, new RegExp(`review ${dashboardSliceId}`));
+  assert.equal(state.actionableState.activeSliceQueue[0].agentRunCount, 1);
+  assert.equal(state.sliceSummary.active[0].id, dashboardSliceId);
+
+  const fakeArgs = JSON.parse(fs.readFileSync(fakeArgsPath, "utf8"));
+  const launchPrompt = fakeArgs.at(-1);
+  assert.equal(typeof launchPrompt, "string");
+  assert.ok(launchPrompt.length < 800, `expected short OS argv launch prompt, got ${launchPrompt.length}`);
+  assert.match(launchPrompt, /Read the overseer prompt artifact/);
+  assert.match(launchPrompt, /overseer-prompt-RUN-/);
 });
 
 function setupWorkspace(name) {
@@ -386,6 +661,50 @@ function runSwarm(workspace, args, env = {}) {
   });
 }
 
+function readLatestOverseerPrompt(workspace) {
+  const dir = path.join(workspace, ".swarm", "artifacts", "scenario-live-agent-smoke");
+  const prompt = fs
+    .readdirSync(dir)
+    .filter((name) => name.startsWith("overseer-prompt-") && name.endsWith(".md"))
+    .map((name) => ({ name, mtimeMs: fs.statSync(path.join(dir, name)).mtimeMs }))
+    .sort((left, right) => left.mtimeMs - right.mtimeMs)
+    .at(-1);
+  assert.ok(prompt);
+  return fs.readFileSync(path.join(dir, prompt.name), "utf8");
+}
+
+function extractPromptJsonAfter(prompt, marker) {
+  const markerIndex = prompt.indexOf(marker);
+  assert.notEqual(markerIndex, -1);
+  const jsonStart = prompt.indexOf("{", markerIndex);
+  assert.notEqual(jsonStart, -1);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = jsonStart; index < prompt.length; index += 1) {
+    const char = prompt[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(prompt.slice(jsonStart, index + 1));
+    }
+  }
+  throw new Error("Prompt JSON block did not terminate.");
+}
+
 function writeFakeOverseerCodex(recommendedCommands) {
   const fakeCodexDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-overseer-"));
   const scriptPath = path.join(fakeCodexDir, "fake-overseer-codex.mjs");
@@ -403,6 +722,9 @@ function writeFakeOverseerCodex(recommendedCommands) {
 import path from "node:path";
 
 const args = process.argv.slice(2);
+if (process.env.FAKE_CODEX_ARGS_PATH) {
+  fs.writeFileSync(process.env.FAKE_CODEX_ARGS_PATH, JSON.stringify(args, null, 2), "utf8");
+}
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const schemaIndex = args.indexOf("--output-schema");

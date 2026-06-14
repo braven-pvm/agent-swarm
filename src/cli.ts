@@ -21,8 +21,8 @@ import { loadProtocol } from "./protocol.js";
 import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
-import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags } from "./source-index.js";
-import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, HeartbeatState, RunMode, SliceRecord } from "./types.js";
+import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags, type SourceIndexMetadata } from "./source-index.js";
+import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, HeartbeatState, RunMode, SliceRecord, SourceRecord } from "./types.js";
 
 const program = new Command();
 
@@ -94,6 +94,7 @@ type WorkerStreamingResult = {
   stdout: string;
   stderr: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  idleTimedOut?: boolean;
 };
 
 type ScenarioManifestLoad = {
@@ -1241,9 +1242,10 @@ function renderSlices() {
 function renderAgents() {
   els.agentCount.textContent = snapshot.agentRuns.length + " runs";
   const heartbeats = new Map(snapshot.heartbeats.map((heartbeat) => [heartbeat.actor + ":" + heartbeat.entityId, heartbeat]));
-  els.agents.innerHTML = tableHtml(["Agent", "Role", "Status", "Entity", "Driver", "Attempt", "Heartbeat", "Session"], snapshot.agentRuns.slice().reverse().slice(0, 30).map((run) => {
+  els.agents.innerHTML = tableHtml(["Agent", "Role", "Status", "Entity", "Driver", "Attempt", "Heartbeat", "Last Signal", "Latest Event", "Session"], snapshot.agentRuns.slice().reverse().slice(0, 30).map((run) => {
     const entityId = run.entityId || run.sliceId;
     const heartbeat = heartbeats.get(run.actor + ":" + entityId);
+    const signal = agentSignal(run, entityId);
     return [
       '<strong>' + escapeHtml(run.actor) + '</strong><div class="sub">' + escapeHtml(run.id) + '</div>',
       escapeHtml(run.role || "agent"),
@@ -1252,9 +1254,38 @@ function renderAgents() {
       escapeHtml(run.driver),
       escapeHtml(run.attempt),
       heartbeat ? pill(heartbeat.state) + '<div class="sub">' + escapeHtml(heartbeat.detail || "") + '</div>' : '<span class="muted">none</span>',
+      signal ? escapeHtml(formatAge(signal.timestamp)) : '<span class="muted">no recent signal</span>',
+      signal ? '<strong>' + escapeHtml(signal.type) + '</strong><div class="sub">' + escapeHtml(signal.detail || "") + '</div>' : '<span class="muted">none</span>',
       escapeHtml(run.sessionId || "none"),
     ];
   }), "No agent runs");
+}
+
+function agentSignal(run, entityId) {
+  const events = (snapshot.recentEvents || []).filter((event) => {
+    if (event.actor !== run.actor) return false;
+    if (event.entityId === run.id || event.entityId === run.sliceId || event.entityId === entityId) return true;
+    return event.payload && (event.payload.runId === run.id || event.payload.sliceId === run.sliceId);
+  });
+  const event = events.at(-1);
+  if (!event) return undefined;
+  const payload = event.payload || {};
+  return {
+    timestamp: event.timestamp,
+    type: payload.agentEventType || event.type,
+    detail: payload.heartbeatState || payload.status || payload.summary || payload.reason || "",
+  };
+}
+
+function formatAge(timestamp) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) return "unknown";
+  const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+  if (seconds < 60) return seconds + "s ago";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes + "m ago";
+  const hours = Math.round(minutes / 60);
+  return hours + "h ago";
 }
 
 function renderHeartbeats() {
@@ -2686,7 +2717,19 @@ recovery
       const lastMessagePath = path.join(artifactPath, `worker-result-${revivedRunId}.json`);
       const schemaPath = path.join(workspace, "schemas", "worker-result.schema.json");
       writeWorkerResultSchema(schemaPath);
-      const prompt = `Continue the implementation for slice ${slice.id}. Preserve the immutable FR/AC scope and finish with the required worker result JSON if possible.`;
+      const lane = store.listLanes().find((item) => item.id === slice.laneId);
+      const priorResultState =
+        previousRun.resultPath && fs.existsSync(previousRun.resultPath)
+          ? `Prior structured result exists at ${previousRun.resultPath}. Inspect it only if needed.`
+          : "No prior structured worker result artifact was captured for this run.";
+      const prompt = buildWorkerRevivePrompt({
+        slice,
+        targetPath: target.path,
+        laneName: lane?.name,
+        previousRunId: previousRun.id,
+        previousStatus: previousRun.status,
+        priorResultState,
+      });
 
       store.insertAgentRun({
         id: revivedRunId,
@@ -2755,6 +2798,7 @@ recovery
         store,
         driver: previousRun.driver,
         classify: adapter.classifyHeartbeat?.bind(adapter),
+        idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
       });
       const finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
       const stderrPath = result.stderr ? path.join(artifactPath, `worker-revive-${revivedRunId}-stderr.log`) : undefined;
@@ -2803,6 +2847,7 @@ recovery
             exitCode: result.status,
             workerEvents,
             structuredResultWritten: finalization.structuredResultWritten,
+            idleTimedOut: result.idleTimedOut,
             eventsPath: jsonlPath,
             resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
           },
@@ -3041,6 +3086,7 @@ async function executeOverseerRun(input: {
     stdout?: string;
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+    idleTimedOut?: boolean;
   };
   if (input.driver === "fixture") {
     const decision = runFixtureOverseerDecision({ scenario: input.scenario, snapshot });
@@ -3077,6 +3123,7 @@ async function executeOverseerRun(input: {
       driver: input.driver,
       eventPrefix: "overseer",
       classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
     overseerFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -3274,6 +3321,7 @@ async function executeWorkerRun(input: {
     stdout?: string;
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+    idleTimedOut?: boolean;
   };
   let finalization: WorkerFinalization;
   if (driverId === "fixture") {
@@ -3305,6 +3353,7 @@ async function executeWorkerRun(input: {
       store: input.store,
       driver: driverId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
     finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -3352,6 +3401,7 @@ async function executeWorkerRun(input: {
         structuredResultWritten: finalization.structuredResultWritten,
         failureReason: finalization.failureReason,
         costUsd: finalization.costUsd,
+        idleTimedOut: result.idleTimedOut,
         runId,
         previousRunId: input.previousRunId,
         eventsPath: jsonlPath,
@@ -3482,6 +3532,7 @@ async function executeReviewRun(input: {
     stdout?: string;
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+    idleTimedOut?: boolean;
   };
   if (input.driver === "fixture") {
     const reviewResult = runFixtureReview({
@@ -3504,7 +3555,7 @@ async function executeReviewRun(input: {
       schemaPath,
       resultPath,
       model: input.model,
-      readOnly: true,
+      readOnly: false,
       resultSchema: reviewResultSchema,
       driverConfig: protocol.protocol.workers.drivers[input.driver] ?? {},
     };
@@ -3520,6 +3571,7 @@ async function executeReviewRun(input: {
       driver: input.driver,
       eventPrefix: "reviewer",
       classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
     reviewFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -3586,6 +3638,7 @@ async function executeReviewRun(input: {
           structuredResultWritten: reviewFinalization.structuredResultWritten,
           failureReason: reviewFinalization.failureReason,
           costUsd: reviewFinalization.costUsd,
+          idleTimedOut: result.idleTimedOut,
           runId,
           eventsPath: jsonlPath,
           resultPath,
@@ -3674,6 +3727,7 @@ function spawnWorkerStreaming(input: {
   driver: string;
   eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
+  idleTimeoutMs?: number;
 }): Promise<WorkerStreamingResult> {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(input.jsonlPath), { recursive: true });
@@ -3696,28 +3750,107 @@ function spawnWorkerStreaming(input: {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let settled = false;
+    let idleTimedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const idleTimeoutMs = input.idleTimeoutMs ?? configuredAgentIdleTimeoutMs();
+    const entityType = input.entityType ?? "slice";
+    const entityId = input.entityId ?? input.sliceId;
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    const clearTimers = () => {
+      if (killTimer) clearTimeout(killTimer);
+    };
+
+    const armIdleTimer = () => {
+      if (!idleTimeoutMs || settled) return;
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        idleTimedOut = true;
+        const message = `Agent child process produced no output for ${Math.round(idleTimeoutMs / 1000)}s; terminating for supervised recovery.`;
+        stderrChunks.push(message);
+        input.store.upsertHeartbeat({
+          id: `heartbeat:${input.actor}`,
+          actor: input.actor,
+          state: "blocked",
+          detail: message,
+          entityType,
+          entityId,
+        });
+        input.store.addEvent(
+          createEvent({
+            actor: input.actor,
+            type: `${input.eventPrefix ?? "worker"}.child_idle_timeout`,
+            entityType,
+            entityId,
+            payload: {
+              driver: input.driver,
+              idleTimeoutMs,
+              pid: child.pid,
+              jsonlPath: input.jsonlPath,
+            },
+          }),
+        );
+        child.kill();
+      }, idleTimeoutMs);
+    };
+    armIdleTimer();
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      armIdleTimer();
       stdoutChunks.push(chunk);
       fs.appendFileSync(input.jsonlPath, chunk, "utf8");
       ingestor.ingest(chunk);
     });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      armIdleTimer();
       stderrChunks.push(chunk);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      const workerEvents = ingestor.flush();
+      resolve({
+        status: 1,
+        stdout: stdoutChunks.join(""),
+        stderr: [...stderrChunks, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n"),
+        workerEvents,
+        idleTimedOut,
+      });
+    });
     child.on("close", (status) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
       const workerEvents = ingestor.flush();
       resolve({
         status,
         stdout: stdoutChunks.join(""),
         stderr: stderrChunks.join(""),
         workerEvents,
+        idleTimedOut,
       });
     });
   });
+}
+
+function configuredAgentIdleTimeoutMs(): number | undefined {
+  const raw = process.env.SWARM_AGENT_IDLE_TIMEOUT_SECONDS ?? process.env.SWARM_CHILD_IDLE_TIMEOUT_SECONDS;
+  if (!raw) return undefined;
+  const seconds = Number.parseInt(raw, 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return seconds * 1000;
+}
+
+function agentIdleTimeoutMsForProtocol(protocol: ReturnType<typeof loadProtocol>): number | undefined {
+  const envOverride = configuredAgentIdleTimeoutMs();
+  if (envOverride) return envOverride;
+  const configured = protocol.protocol.recovery.childIdleTimeoutSeconds;
+  if (typeof configured !== "number" || !Number.isFinite(configured) || configured <= 0) return undefined;
+  return configured * 1000;
 }
 
 function printWorkerRunResult(result: WorkerRunResult): void {
@@ -4822,10 +4955,12 @@ function buildReviewPrompt(input: {
       : "- none recorded";
   const latestWorker = input.evidence.filter((item) => item.kind === "worker_result" && item.ref).at(-1);
   const latestCommand = input.evidence.filter((item) => item.kind === "command").at(-1);
+  const safeDirectoryPath = formatGitSafeDirectoryPath(input.targetPath);
   return `You are an independent reviewer inside the Agent Swarm MVP harness.
 
-You are reviewing implementation work for a slice. You must not edit code, state, or source specs.
-Use read-only inspection. Judge whether the work genuinely satisfies the immutable FR/AC refs.
+You are reviewing implementation work for a slice. Use the tools and commands normally available under the project protocol to inspect the implementation, run targeted checks, and gather evidence.
+Your role is independent review, not repair: do not change implementation code unless the protocol explicitly asks you to perform reviewer-side repair. Never edit source specs.
+Judge whether the work genuinely satisfies the immutable FR/AC refs.
 
 Target workspace:
 ${input.targetPath}
@@ -4875,10 +5010,16 @@ Source hash status:
 ${JSON.stringify(input.sourceMutations, null, 2)}
 
 Review rules:
-- Do not modify files or specs.
+- Do not modify source specs.
+- Prefer evidence from code inspection, targeted commands, recorded worker evidence, and recorded deterministic command evidence.
+- If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Do not reinterpret or rewrite the source spec.
 - Treat missing per-FR/AC evidence as a finding.
 - Treat stubs, hardcoded shortcuts, hollow tests, or unproven runtime paths as material risks.
+- Deterministic command verification is a separate harness gate after reviewer acceptance.
+- You may run npm test, node --test, git, shell, or other local inspection commands when useful and allowed by the configured driver/protocol.
+- If command execution is unavailable or a command fails for policy/environment reasons, record that limitation in testAssessment and judge the implementation using code inspection, source refs, worker result evidence, and recorded command evidence.
+- Use blocked only when evidence is missing or contradictory, code inspection shows a material behavior gap, source mutation is detected, or the implementation cannot be inspected safely.
 - If source spec mutation is detected, set sourceMutationDetected true and status human_required.
 - If the work is close but needs code/test repair, use repair_required.
 - If review cannot safely proceed due to missing evidence or runtime blockers, use blocked.
@@ -4892,6 +5033,10 @@ function readArtifactSnippet(filePath: string, maxLength = 4000): string {
   const content = fs.readFileSync(filePath, "utf8").trim();
   if (content.length <= maxLength) return content;
   return `${content.slice(0, maxLength)}\n... truncated ...`;
+}
+
+function formatGitSafeDirectoryPath(targetPath: string): string {
+  return path.resolve(targetPath).replace(/\\/g, "/");
 }
 
 function inspectSourceMutations(slice: SliceRecord): SourceMutationFinding[] {
@@ -5687,6 +5832,444 @@ function loadScenarioManifest(workspace: string, scenario: string): ScenarioMani
   return { path: manifestPath, exists: true, data: parsed as Record<string, unknown> };
 }
 
+function buildOverseerStatePacket(input: {
+  scenario: string;
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>;
+  execute: boolean;
+}) {
+  const targetById = new Map(input.snapshot.targets.map((target) => [target.id, target]));
+  const laneById = new Map(input.snapshot.lanes.map((lane) => [lane.id, lane]));
+  const sourceByUri = new Map(input.snapshot.sources.map((source) => [source.uri, source]));
+  const cli = `node "${process.argv[1]}"`;
+  const sourcePullQueues = buildOverseerSourcePullQueues(input.snapshot, cli);
+  const summarizedSlices = input.snapshot.slices.map((slice) => {
+    const target = targetById.get(slice.targetId);
+    const lane = laneById.get(slice.laneId);
+    const evidenceKinds = [...new Set(slice.evidence.map((evidence) => evidence.kind))];
+    const sourceDomains = [
+      ...new Set(
+        slice.sourceRefs
+          .map((sourceRef) => sourceByUri.get(sourceRef.uri))
+          .filter((source): source is SourceRecord => Boolean(source))
+          .map((source) => sourceDomain(source)),
+      ),
+    ];
+    const isDashboard =
+      target?.name.toLowerCase().includes("dashboard") || slice.frAcRefs.some((ref) => ref.startsWith("AC-UI"));
+    const workerActor = isDashboard ? "dashboard-worker" : "backend-worker";
+    const reviewerActor = isDashboard ? "dashboard-reviewer" : "backend-reviewer";
+    let nextCommand: string | undefined;
+    let nextCommandPurpose: string | undefined;
+    if (["ready", "blocked", "repairing"].includes(slice.status)) {
+      nextCommand = `${cli} run ${slice.id} --actor ${workerActor} --driver codex`;
+      nextCommandPurpose = "Dispatch the worker for the active slice selected by the harness.";
+    } else if (["implemented", "ready_for_review"].includes(slice.status)) {
+      nextCommand = `${cli} review ${slice.id} --actor ${reviewerActor} --driver codex`;
+      nextCommandPurpose = "Dispatch independent review for worker evidence already recorded on the slice.";
+    }
+    return {
+      id: slice.id,
+      title: slice.title,
+      status: slice.status,
+      targetId: slice.targetId,
+      targetName: target?.name,
+      laneId: slice.laneId,
+      laneName: lane?.name,
+      sourceDomains,
+      frAcRefs: slice.frAcRefs,
+      leases: slice.leases.map((lease) => ({ ref: lease.frAcRef, status: lease.status })),
+      evidenceKinds,
+      hasWorkerEvidence: evidenceKinds.includes("worker_result"),
+      hasReviewEvidence: evidenceKinds.includes("review_result"),
+      hasCommandEvidence: evidenceKinds.includes("command"),
+      reviewStatus: slice.reviewResult?.status,
+      agentRuns: slice.agentRuns.map((run) => ({
+        id: run.id,
+        role: run.role,
+        actor: run.actor,
+        status: run.status,
+        driver: run.driver,
+        attempt: run.attempt,
+      })),
+      nextCommand,
+      nextCommandPurpose,
+    };
+  });
+  const compactActionableSlice = (slice: (typeof summarizedSlices)[number]) => ({
+    id: slice.id,
+    title: slice.title,
+    status: slice.status,
+    targetId: slice.targetId,
+    targetName: slice.targetName,
+    laneId: slice.laneId,
+    laneName: slice.laneName,
+    sourceDomains: slice.sourceDomains,
+    frAcRefs: slice.frAcRefs.slice(0, 12),
+    omittedFrAcRefs: Math.max(0, slice.frAcRefs.length - 12),
+    leases: slice.leases.slice(0, 12),
+    omittedLeases: Math.max(0, slice.leases.length - 12),
+    evidenceKinds: slice.evidenceKinds,
+    hasWorkerEvidence: slice.hasWorkerEvidence,
+    hasReviewEvidence: slice.hasReviewEvidence,
+    hasCommandEvidence: slice.hasCommandEvidence,
+    reviewStatus: slice.reviewStatus,
+    agentRunCount: slice.agentRuns.length,
+    agentRuns: slice.agentRuns.slice(-3),
+    nextCommand: slice.nextCommand,
+    nextCommandPurpose: slice.nextCommandPurpose,
+  });
+  const activeSlices = summarizedSlices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+  const activeSliceQueue = activeSlices.map(compactActionableSlice);
+  const escalationSummary = summarizeEscalationsForPrompt(input.snapshot.activeEscalations);
+  const acceptedSlices = summarizedSlices.filter((slice) => slice.status === "accepted");
+  return {
+    scenario: input.scenario,
+    runMode: input.snapshot.runMode,
+    generatedAt: input.snapshot.generatedAt,
+    execution: {
+      executeEnabled: input.execute,
+      harnessExecutesRecommendations: true,
+      agentMustNotInvokeTools: true,
+      deterministicVerification: "The live runner executes deterministic verification after reviewer acceptance.",
+    },
+    actionableState: {
+      activeSliceQueue,
+      nextSourcePullQueue: sourcePullQueues.ready.slice(0, 8).map((item) => ({
+        ...item,
+        availableRefCount: item.availableRefs.length,
+        availableRefs: item.availableRefs.slice(0, 12),
+        omittedAvailableRefs: Math.max(0, item.availableRefs.length - 12),
+      })),
+      blockedSourceQueue: sourcePullQueues.blocked.slice(0, 8).map((item) => ({
+        ...item,
+        availableRefCount: item.availableRefs.length,
+        availableRefs: item.availableRefs.slice(0, 12),
+        omittedAvailableRefs: Math.max(0, item.availableRefs.length - 12),
+      })),
+      acceptedSliceCount: acceptedSlices.length,
+      acceptedSliceIds: acceptedSlices.map((slice) => slice.id).slice(-20),
+      blockedSliceIds: summarizedSlices.filter((slice) => slice.status === "blocked").map((slice) => slice.id),
+    },
+    targets: input.snapshot.targets.map((target) => ({ id: target.id, name: target.name, path: target.path })),
+    sources: input.snapshot.sources.map((source) => summarizeSourceForPrompt(source)),
+    domains: input.snapshot.domains.map((domain) => ({
+      domain: domain.domain,
+      available: domain.available,
+      active: domain.active,
+      blocked: domain.blocked,
+      completed: domain.completed,
+      activeSlices: domain.activeSlices,
+      blockedSlices: domain.blockedSlices,
+      acceptedSlices: domain.acceptedSlices,
+      tags: domain.tags,
+      sourceIds: domain.sourceIds,
+    })),
+    lanes: input.snapshot.lanes.map((lane) => ({
+      id: lane.id,
+      name: lane.name,
+      purpose: lane.purpose,
+      state: lane.state,
+      targetId: lane.targetId,
+      targetName: targetById.get(lane.targetId)?.name,
+      activeLeaseCount: lane.activeLeases.length,
+      activeLeases: lane.activeLeases.slice(0, 12),
+      activeSliceIds: activeSliceQueue.filter((slice) => slice.laneId === lane.id).map((slice) => slice.id),
+    })),
+    sliceSummary: {
+      total: summarizedSlices.length,
+      byStatus: countBy(summarizedSlices.map((slice) => slice.status)),
+      active: activeSliceQueue,
+      recentAccepted: acceptedSlices.slice(-5).map(compactActionableSlice),
+    },
+    agentRunSummary: {
+      total: input.snapshot.agentRuns.length,
+      byStatus: countBy(input.snapshot.agentRuns.map((run) => run.status)),
+      byRole: countBy(input.snapshot.agentRuns.map((run) => run.role ?? "unknown")),
+      recent: input.snapshot.agentRuns.slice(-10).map((run) => ({
+        id: run.id,
+        role: run.role,
+        actor: run.actor,
+        status: run.status,
+        driver: run.driver,
+        entityType: run.entityType,
+        entityId: run.entityId,
+        sliceId: run.sliceId,
+        updatedAt: run.updatedAt,
+      })),
+    },
+    activeEscalationSummary: escalationSummary.summary,
+    activeEscalations: escalationSummary.items.map((escalation) => ({
+      id: escalation.id,
+      level: escalation.level,
+      entityType: escalation.entityType,
+      entityId: escalation.entityId,
+      message: escalation.message,
+    })),
+    recentEvents: input.snapshot.recentEvents.slice(-12).map((event) => ({
+      timestamp: event.timestamp,
+      actor: event.actor,
+      type: event.type,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      payloadSummary: summarizePromptPayload(event.payload),
+    })),
+  };
+}
+
+function summarizeScenarioManifestForPrompt(manifest: ScenarioManifestLoad): ScenarioManifestLoad {
+  const data = manifest.data;
+  const targets = Array.isArray(data.targets)
+    ? data.targets.slice(0, 10).map((target) => {
+        const record = promptRecord(target);
+        return {
+          name: stringProp(record, "name"),
+          role: stringProp(record, "role"),
+          path: stringProp(record, "path"),
+          source: stringProp(record, "source"),
+        };
+      })
+    : undefined;
+  const sources = Array.isArray(data.sources)
+    ? data.sources.slice(0, 10).map((source) => {
+        const record = promptRecord(source);
+        return {
+          id: stringProp(record, "id"),
+          title: stringProp(record, "title"),
+          uri: stringProp(record, "uri"),
+          domain: stringProp(record, "domain"),
+        };
+      })
+    : undefined;
+  const commands = promptRecord(data.commands);
+  const fullProductMode = promptRecord(data.fullProductMode);
+
+  return {
+    path: manifest.path,
+    exists: manifest.exists,
+    data: {
+      scenarioId: stringProp(data, "scenarioId"),
+      runMode: stringProp(data, "runMode"),
+      phase: stringProp(data, "phase"),
+      mode: stringProp(data, "mode"),
+      workspace: stringProp(data, "workspace"),
+      productSpec: stringProp(data, "productSpec"),
+      expectedOutcome: stringProp(data, "expectedOutcome"),
+      limits: data.limits,
+      fullProductMode: Object.keys(fullProductMode).length
+        ? {
+            plannedCommand: stringProp(fullProductMode, "plannedCommand"),
+            productSpec: stringProp(fullProductMode, "productSpec"),
+            maxSlices: fullProductMode.maxSlices,
+            maxAgentRuns: fullProductMode.maxAgentRuns,
+            maxRuntimeMinutes: fullProductMode.maxRuntimeMinutes,
+            maxTurns: fullProductMode.maxTurns,
+          }
+        : undefined,
+      targets,
+      sources,
+      commandKeys: Object.keys(commands),
+    },
+  };
+}
+
+function promptRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stringProp(record: Record<string, unknown>, key: string): string | undefined {
+  return typeof record[key] === "string" ? record[key] : undefined;
+}
+
+function summarizeSourceForPrompt(source: SourceRecord) {
+  const refs = sourceFrAcRefs(source);
+  const refPreview = refs.slice(0, 16);
+  return {
+    id: source.id,
+    title: source.title,
+    uri: source.uri,
+    domain: sourceDomain(source),
+    priority: sourcePriority(source),
+    tags: sourceTags(source),
+    dependsOn: sourceDependsOn(source),
+    frAcRefCount: refs.length,
+    frAcRefs: refPreview,
+    omittedFrAcRefs: Math.max(0, refs.length - refPreview.length),
+  };
+}
+
+function summarizeEscalationsForPrompt(escalations: ReturnType<typeof buildObservabilitySnapshot>["activeEscalations"]) {
+  const highSeverity = escalations.filter((item) => item.level !== "warning" && item.level !== "info");
+  const lowSeverity = escalations.filter((item) => item.level === "warning" || item.level === "info").slice(-6);
+  const itemsById = new Map([...highSeverity, ...lowSeverity].map((item) => [item.id, item]));
+  const items = [...itemsById.values()];
+  return {
+    items,
+    summary: {
+      total: escalations.length,
+      included: items.length,
+      omitted: Math.max(0, escalations.length - items.length),
+      byLevel: countBy(escalations.map((item) => item.level)),
+    },
+  };
+}
+
+function buildOverseerSourcePullQueues(snapshot: ReturnType<typeof buildObservabilitySnapshot>, cli: string) {
+  const ready: Array<{
+    sourceId: string;
+    sourceTitle: string;
+    sourceDomain: string;
+    targetId: string;
+    targetName: string;
+    availableRefs: string[];
+    batchSize: number;
+    nextCommand: string;
+    reason: string;
+  }> = [];
+  const blocked: Array<{
+    sourceId: string;
+    sourceTitle: string;
+    sourceDomain: string;
+    targetId?: string;
+    targetName?: string;
+    availableRefs: string[];
+    dependsOn: string[];
+    missingDependencies: string[];
+    reason: string;
+    prerequisiteCommands: string[];
+  }> = [];
+
+  const sourceSummaries = snapshot.sources
+    .map((source) => {
+      const target = targetForSource(snapshot, source);
+      const refs = sourceFrAcRefs(source);
+      const availableRefs = refs.filter((ref) => sourceRefIsAvailable(snapshot, source, ref));
+      const dependsOn = sourceDependsOn(source);
+      const missingDependencies = dependsOn.filter((ref) => latestSnapshotLeaseForRef(snapshot, ref)?.status !== "completed");
+      return {
+        source,
+        target,
+        refs,
+        availableRefs,
+        dependsOn,
+        missingDependencies,
+      };
+    })
+    .filter((item) => item.target && item.availableRefs.length > 0)
+    .sort((left, right) => sourcePriority(left.source) - sourcePriority(right.source) || left.source.title.localeCompare(right.source.title));
+
+  for (const item of sourceSummaries) {
+    const target = item.target;
+    if (!target) continue;
+    const domain = sourceDomain(item.source);
+    if (item.missingDependencies.length > 0) {
+      blocked.push({
+        sourceId: item.source.id,
+        sourceTitle: item.source.title,
+        sourceDomain: domain,
+        targetId: target.id,
+        targetName: target.name,
+        availableRefs: item.availableRefs,
+        dependsOn: item.dependsOn,
+        missingDependencies: item.missingDependencies,
+        reason: `Missing accepted prerequisite refs: ${item.missingDependencies.join(", ")}.`,
+        prerequisiteCommands: prerequisitePullCommandsFor(snapshot, cli, item.missingDependencies),
+      });
+      continue;
+    }
+
+    const batchSize = isDashboardSource(item.source) ? Math.min(3, item.availableRefs.length) : 1;
+    ready.push({
+      sourceId: item.source.id,
+      sourceTitle: item.source.title,
+      sourceDomain: domain,
+      targetId: target.id,
+      targetName: target.name,
+      availableRefs: item.availableRefs,
+      batchSize,
+      nextCommand: `${cli} slices pull --target ${target.name} --source ${item.source.id} --batch-size ${batchSize}`,
+      reason: `Source has ${item.availableRefs.length} unclaimed FR/AC refs and all declared source dependencies are accepted.`,
+    });
+  }
+
+  return { ready, blocked };
+}
+
+function prerequisitePullCommandsFor(
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  cli: string,
+  missingDependencies: string[],
+): string[] {
+  const commands: string[] = [];
+  for (const missingRef of missingDependencies) {
+    const source = snapshot.sources.find((candidate) => sourceFrAcRefs(candidate).includes(missingRef));
+    if (!source) continue;
+    const target = targetForSource(snapshot, source);
+    if (!target) continue;
+    if (!sourceRefIsAvailable(snapshot, source, missingRef)) continue;
+    commands.push(`${cli} slices pull --target ${target.name} --source ${source.id} --batch-size 1`);
+  }
+  return [...new Set(commands)];
+}
+
+function targetForSource(snapshot: ReturnType<typeof buildObservabilitySnapshot>, source: SourceRecord) {
+  const sourcePath = path.resolve(source.uri).toLowerCase();
+  return snapshot.targets.find((target) => {
+    const targetPath = path.resolve(target.path).toLowerCase();
+    return sourcePath === targetPath || sourcePath.startsWith(`${targetPath}${path.sep}`);
+  });
+}
+
+function sourceDependsOn(source: SourceRecord): string[] {
+  const metadata = source.metadata as SourceIndexMetadata | undefined;
+  return Array.isArray(metadata?.dependsOn)
+    ? [...new Set(metadata.dependsOn.map((ref) => String(ref).toUpperCase()).filter(Boolean))]
+    : [];
+}
+
+function sourceRefIsAvailable(snapshot: ReturnType<typeof buildObservabilitySnapshot>, source: SourceRecord, ref: string): boolean {
+  const lease = latestSnapshotLeaseForRef(snapshot, ref);
+  if (lease && lease.status !== "released") return false;
+  return !isBroadFrSatisfiedByCompletedSnapshotAcs(snapshot, ref, sourceFrAcRefs(source));
+}
+
+function latestSnapshotLeaseForRef(snapshot: ReturnType<typeof buildObservabilitySnapshot>, ref: string) {
+  const normalizedRef = ref.toUpperCase();
+  return snapshot.slices
+    .flatMap((slice) => slice.leases)
+    .filter((lease) => lease.frAcRef.toUpperCase() === normalizedRef)
+    .sort((left, right) => snapshotLeaseStatusPriority(left.status) - snapshotLeaseStatusPriority(right.status) || right.updatedAt.localeCompare(left.updatedAt))
+    .at(0);
+}
+
+function snapshotLeaseStatusPriority(status: string): number {
+  if (status === "active") return 0;
+  if (status === "completed") return 1;
+  return 2;
+}
+
+function isBroadFrSatisfiedByCompletedSnapshotAcs(
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>,
+  ref: string,
+  refs: string[],
+): boolean {
+  const match = /^FR-(.+)-([0-9]+)$/i.exec(ref);
+  if (!match) return false;
+  const acPrefix = `AC-${match[1]}-${match[2]}.`.toUpperCase();
+  const childAcs = refs.filter((candidate) => candidate.toUpperCase().startsWith(acPrefix));
+  if (childAcs.length === 0) return false;
+  return childAcs.every((candidate) => latestSnapshotLeaseForRef(snapshot, candidate)?.status === "completed");
+}
+
+function isDashboardSource(source: SourceRecord): boolean {
+  return /(?:dashboard|frontend|\bui\b)/i.test(`${source.title} ${sourceDomain(source)} ${sourceTags(source).join(" ")}`);
+}
+
+function summarizePromptPayload(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  const keys = ["runId", "sliceId", "status", "passed", "commandKey", "executed", "blocked", "failed", "reason", "message"];
+  const summary = Object.fromEntries(keys.filter((key) => payload[key] !== undefined).map((key) => [key, payload[key]]));
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
 function buildOverseerPrompt(input: {
   workspace: string;
   scenario: string;
@@ -5694,6 +6277,11 @@ function buildOverseerPrompt(input: {
   snapshot: ReturnType<typeof buildObservabilitySnapshot>;
   execute: boolean;
 }): string {
+  const statePacket = buildOverseerStatePacket({
+    scenario: input.scenario,
+    snapshot: input.snapshot,
+    execute: input.execute,
+  });
   return `You are the visible overseer agent for the Agent Swarm live smoke harness.
 
 Scenario:
@@ -5703,13 +6291,14 @@ Workspace:
 ${input.workspace}
 
 Your current execution mode:
-${input.execute ? "- Phase 5B bounded execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
-- You may dispatch worker and reviewer child agents only through harness commands when execution is enabled.
-- Do not dispatch verifier agents yet.
+${input.execute ? "- Bounded command execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
+- You may recommend worker and reviewer child-agent dispatch only through harness commands when execution is enabled.
+- The harness executes recommended commands after your JSON decision. Do not run commands yourself.
+- The harness runs deterministic verification automatically after reviewer acceptance. Do not recommend verifier dispatch unless a human asks for diagnostics.
 - Do not edit target code.
 - Do not mutate source specs.
 - Recommend exact harness commands that move harness state forward.
-${input.execute ? "- The harness may execute allowlisted state commands plus bounded child dispatch: run/review with an existing slice id, explicit --actor, and --driver codex. Deterministic verify remains blocked until a later acceptance-gate phase." : "- A human or later runner may execute recommended commands next."}
+${input.execute ? "- The harness may execute allowlisted state commands plus bounded child dispatch: run/review with an existing slice id, explicit --actor, and --driver codex." : "- A human or later runner may execute recommended commands next."}
 
 Planning priorities:
 - Use immutable source specs and FR/AC refs as the source of truth.
@@ -5717,6 +6306,15 @@ Planning priorities:
 - Prefer meaningful component/capability slices over proof-only or AC-churn slices.
 - If a required manifest, source, target, or state boundary is missing, report a blocker with scope and next action.
 - Keep commands inside the harness contract; never recommend direct SQLite edits or hidden state mutation.
+
+Decision discipline:
+- You already have the authoritative actionable state packet below. Do not read prompt files, list artifacts, query SQLite, grep state files, or invoke harness commands yourself.
+- If actionableState.activeSliceQueue has an item with nextCommand, recommend that exact command first unless a listed blocker makes it unsafe.
+- If there is no active slice and actionableState.nextSourcePullQueue has an item with nextCommand, recommend the first queue item before any blocked downstream source.
+- Never recommend a slices pull command for an item in actionableState.blockedSourceQueue; use its missingDependencies and prerequisiteCommands to continue prerequisite work first.
+- Do not recommend domains inspect or observe solely to discover a slice id that already appears in actionableState.activeSliceQueue.
+- Use observe/domains inspect only when actionableState explicitly lacks a concrete slice id or when you need to confirm a blocker.
+- Return one JSON object only.
 
 Allowed command contract:
 - node "${process.argv[1]}" observe --events 120
@@ -5726,16 +6324,15 @@ Allowed command contract:
 - node "${process.argv[1]}" slices pull --target <target> --source <source> --batch-size <n> [lane options]
 - node "${process.argv[1]}" run <slice-id> --actor <actor> --driver codex
 - node "${process.argv[1]}" review <slice-id> --actor <actor> --driver codex
-- node "${process.argv[1]}" verify <slice-id> --actor <actor> --force (recommend only; blocked from execution in Phase 5B)
 - node "${process.argv[1]}" report <slice-id>
 - node "${process.argv[1]}" checkpoint create --role <role> --entity <type:id> --summary <summary>
 - node "${process.argv[1]}" escalations create --level <level> --entity <type:id> --message <message>
 
 Scenario manifest:
-${jsonForPrompt(input.manifest)}
+${jsonForPrompt(summarizeScenarioManifestForPrompt(input.manifest))}
 
 Current harness snapshot:
-${jsonForPrompt(input.snapshot)}
+${jsonForPrompt(statePacket)}
 
 Return only the required JSON object. Your decision must include:
 - currentPriority
@@ -5748,7 +6345,68 @@ Return only the required JSON object. Your decision must include:
 }
 
 function buildOverseerLaunchPrompt(promptPath: string, scenario: string): string {
-  return `You are the visible overseer agent for scenario ${scenario}. Read the full harness prompt from this file, follow it exactly, and return only the required JSON object: ${promptPath}`;
+  return `You are the visible overseer agent for Agent Swarm scenario ${scenario}.
+
+Read the overseer prompt artifact below before deciding:
+${promptPath}
+
+That artifact contains the authoritative current harness snapshot, allowed command contract, and decision discipline.
+Use only that artifact and the files it explicitly points to. Do not inspect unrelated state files or mutate target/source files.
+Return only the required JSON object for scenario ${scenario}.`;
+}
+
+function getOverseerEscalationSuppressionReason(input: {
+  blocker: OverseerDecision["blockers"][number];
+  activeEscalations: ReturnType<SwarmStore["listEscalations"]>;
+  entityId: string;
+}): string | undefined {
+  const message = String(input.blocker.message ?? "");
+  const normalizedMessage = normalizeEscalationMessage(message);
+  const sameScope = input.activeEscalations.filter(
+    (item) => item.status === "active" && item.entityType === "harness" && item.entityId === input.entityId,
+  );
+  const duplicate = sameScope.find(
+    (item) => item.level === input.blocker.level && normalizeEscalationMessage(item.message) === normalizedMessage,
+  );
+  if (duplicate) return `duplicate active escalation ${duplicate.id}`;
+
+  if (input.blocker.level !== "warning") return undefined;
+  if (isNonBlockingWarningRestatement(message)) {
+    return "non-blocking warning restatement; existing warnings remain visible";
+  }
+
+  const duplicateWarningFamily = sameScope.find(
+    (item) => item.level === "warning" && isSameOperationalWarningFamily(item.message, message),
+  );
+  if (duplicateWarningFamily) return `duplicate warning family already active as ${duplicateWarningFamily.id}`;
+  return undefined;
+}
+
+function normalizeEscalationMessage(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\b(?:escalation|warning|blocker)-[a-z0-9]+\b/g, "<id>")
+    .replace(/\bSLICE-[a-f0-9]+\b/gi, "<slice>")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isNonBlockingWarningRestatement(message: string): boolean {
+  return (
+    /existing warning escalations?/i.test(message) &&
+    /(does not block|not mark(?:ed)? .*blocking|authoritative snapshot)/i.test(message)
+  );
+}
+
+function isSameOperationalWarningFamily(left: string, right: string): boolean {
+  const combined = `${left}\n${right}`;
+  if (/git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(combined)) {
+    return (
+      /git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(left) &&
+      /git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(right)
+    );
+  }
+  return false;
 }
 
 function runFixtureOverseerDecision(input: {
@@ -5939,7 +6597,30 @@ function applyOverseerDecision(input: {
     });
   }
 
+  const activeEscalations = input.store.listEscalations("active");
   for (const blocker of blockers) {
+    const suppressionReason = getOverseerEscalationSuppressionReason({
+      blocker,
+      activeEscalations,
+      entityId: input.entityId,
+    });
+    if (suppressionReason) {
+      input.store.addEvent(
+        createEvent({
+          actor: input.actor,
+          type: "overseer.escalation_suppressed",
+          entityType: "harness",
+          entityId: input.entityId,
+          payload: {
+            level: blocker.level,
+            message: blocker.message,
+            scope: blocker.scope,
+            reason: suppressionReason,
+          },
+        }),
+      );
+      continue;
+    }
     const now = new Date().toISOString();
     const escalation = {
       id: makeId("escalation"),
@@ -5954,6 +6635,7 @@ function applyOverseerDecision(input: {
       updatedAt: now,
     };
     input.store.insertEscalation(escalation);
+    activeEscalations.push(escalation);
     input.store.addEvent(
       createEvent({
         actor: input.actor,
@@ -6100,15 +6782,17 @@ function executeOverseerRecommendedCommands(input: {
     const stdoutPath = path.join(input.artifactPath, `overseer-command-${input.runId}-${commandIndex}.stdout.log`);
     const stderrPath = path.join(input.artifactPath, `overseer-command-${input.runId}-${commandIndex}.stderr.log`);
     const result = spawnSync(process.execPath, [process.argv[1], ...validation.cliArgs], {
-      cwd: input.workspace,
+      cwd: process.cwd(),
       shell: false,
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, SWARM_WORKSPACE: input.workspace },
     });
     fs.writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
     fs.writeFileSync(stderrPath, result.stderr ?? "", "utf8");
 
+    const stderrText = (result.stderr ?? "").trim();
     const execution: OverseerCommandExecution = {
       ...baseResult,
       commandKey: validation.commandKey,
@@ -6119,7 +6803,7 @@ function executeOverseerRecommendedCommands(input: {
       exitCode: result.status,
       stdoutPath,
       stderrPath,
-      reason: result.status === 0 ? undefined : result.error?.message ?? `Command exited with status ${result.status}`,
+      reason: result.status === 0 ? undefined : stderrText || result.error?.message || `Command exited with status ${result.status}`,
     };
     input.store.addEvent(
       createEvent({
@@ -6230,6 +6914,8 @@ function validateOverseerCommand(
     return { ok: true, cliArgs, commandKey: `domains ${subcommand}`, category: "state" };
   }
   if (commandName === "slices" && subcommand === "pull") {
+    const dependencyValidation = validateSlicesPullDependencies(cliArgs, workspace, store);
+    if (!dependencyValidation.ok) return dependencyValidation;
     return { ok: true, cliArgs, commandKey: "slices pull", category: "state" };
   }
   if (commandName === "run") {
@@ -6254,13 +6940,52 @@ function validateOverseerCommand(
   if (commandName === "verify") {
     return {
       ok: false,
-      reason: "Phase 5B does not execute deterministic verification commands yet; dispatch worker/reviewer agents first.",
+      reason: "The live runner owns deterministic verification after reviewer acceptance; do not dispatch verifier commands from overseer decisions.",
     };
   }
   if (["checkpoint", "escalations"].includes(commandName)) {
-    return { ok: false, reason: "Phase 5B records overseer decisions directly and does not execute checkpoint/escalation commands." };
+    return { ok: false, reason: "The harness records overseer decisions directly and does not execute checkpoint/escalation commands." };
   }
-  return { ok: false, reason: `Command is not allowlisted for Phase 5B: ${commandName}${subcommand ? ` ${subcommand}` : ""}` };
+  return { ok: false, reason: `Command is not allowlisted for overseer bounded execution: ${commandName}${subcommand ? ` ${subcommand}` : ""}` };
+}
+
+function validateSlicesPullDependencies(
+  cliArgs: string[],
+  workspace: string,
+  store: SwarmStore,
+): { ok: true } | { ok: false; reason: string } {
+  const sourceSelector = cliOptionValue(cliArgs.slice(2), "--source");
+  if (!sourceSelector) return { ok: true };
+  const source = selectSourceForCommandValidation(store, sourceSelector, workspace);
+  if (!source) return { ok: false, reason: `Cannot pull slice; source not found: ${sourceSelector}` };
+  const missingDependencies = sourceDependsOn(source).filter((ref) => store.latestLeaseFor(ref)?.status !== "completed");
+  if (missingDependencies.length === 0) return { ok: true };
+  return {
+    ok: false,
+    reason: `Source dependencies are not satisfied: ${missingDependencies.join(", ")}`,
+  };
+}
+
+function selectSourceForCommandValidation(store: SwarmStore, selector: string, workspace: string): SourceRecord | undefined {
+  const raw = selector.toLowerCase();
+  const resolved = path.resolve(workspace, selector).toLowerCase();
+  return store.listSources().find((source) => {
+    const uri = source.uri.toLowerCase();
+    return (
+      source.id.toLowerCase() === raw ||
+      source.title.toLowerCase() === raw ||
+      uri === raw ||
+      uri === resolved ||
+      path.basename(source.uri).toLowerCase() === raw
+    );
+  });
+}
+
+function cliOptionValue(args: string[], option: string): string | undefined {
+  const index = args.indexOf(option);
+  if (index < 0) return undefined;
+  const value = args[index + 1];
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 function validateOverseerChildDispatch(input: {
@@ -6391,6 +7116,7 @@ function buildWorkerPrompt(input: {
   const sourceRefs = input.slice.sourceRefs
     .map((source) => `- ${source.title ?? source.uri}: ${source.uri}`)
     .join("\n");
+  const safeDirectoryPath = formatGitSafeDirectoryPath(input.targetPath);
   return `You are an implementation worker inside the Agent Swarm MVP harness.
 
 Target workspace:
@@ -6433,9 +7159,36 @@ Instructions:
 - Do not modify source spec files.
 - Prefer minimal, behavior-focused changes.
 - Run relevant target tests if available.
+- If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Provide frAcCoverage for every in-scope FR/AC ref.
 - Return the final answer in the required structured schema.
 `;
+}
+
+function buildWorkerRevivePrompt(input: {
+  slice: SliceRecord;
+  targetPath: string;
+  laneName?: string;
+  previousRunId: string;
+  previousStatus: string;
+  priorResultState: string;
+}): string {
+  return `You are being resumed by the Agent Swarm supervised recovery protocol.
+
+Previous run:
+- id: ${input.previousRunId}
+- status: ${input.previousStatus}
+- ${input.priorResultState}
+
+Recovery objective:
+- Inspect the current target state and your prior session context.
+- If the implementation work is already complete, do not redo it; emit the required structured worker result for the slice.
+- If work is incomplete, finish only the in-scope slice work, run relevant verification, and emit the required structured worker result.
+- If you cannot safely complete or prove the work, return a structured blocked/failed result with exact reasons.
+
+This is not permission to change source specs or expand scope.
+
+${buildWorkerPrompt({ slice: input.slice, targetPath: input.targetPath, laneName: input.laneName })}`;
 }
 
 function writeWorkerResultSchema(schemaPath: string): void {

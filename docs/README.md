@@ -1,6 +1,6 @@
 # Agent Swarm Planning Docs
 
-Date: 2026-05-25
+Date: 2026-06-11
 
 Start here:
 
@@ -9,7 +9,7 @@ Start here:
 
 - [MVP Requirements](requirements/mvp-requirements.md) — current product baseline and MVP scope.
 - [MVP Prototype Plan](requirements/mvp-prototype-plan.md) — buildable FR/AC plan for the first prototype.
-- [Live Smoke Invoice Dashboard Product Spec](requirements/live-smoke-invoice-dashboard-product-spec.md) — proposed small real product target for ultimate smoke/full-product mode.
+- [Live Smoke Invoice Dashboard Product Spec](requirements/live-smoke-invoice-dashboard-product-spec.md) — approved small real product target for ultimate smoke/full-product mode.
 - [MVP Agent Harness Architecture](architecture/mvp-agent-harness.md) — control plane, spec server, worktree/lane model, verification, and command shape.
 - [Architecture Decisions](architecture/decisions.md) — ADR-style summary of settled decisions.
 - [Source and Status Adapter Contracts](architecture/source-adapter-contract.md) — read-only source adapters vs write-back status sinks.
@@ -30,7 +30,7 @@ Start here:
 - [Resume Context Demo](examples/resume-context-demo.md) — repeatable fixture scenario covering latest checkpoints and role-specific resume packets.
 - [Source Index Demo](examples/source-index-demo.md) — repeatable fixture scenario checking source inspect, search, domain status, and graph usefulness.
 - [Web Observability E2E Demo](examples/web-observability-demo.md) — repeatable browser-facing lifecycle scenario covering tabs, source search, reports, agents, blockers, recovery, and checkpoints.
-- [Live Agent Smoke Demo](examples/live-agent-smoke.md) — planned resettable real-agent rehearsal runbook.
+- [Live Agent Smoke Demo](examples/live-agent-smoke.md) — resettable real-agent rehearsal and full-product runbook.
 
 Current implementation snapshot:
 
@@ -39,11 +39,11 @@ Current implementation snapshot:
 - fixture, Codex, and Claude Code worker dispatch through driver adapters, streaming event ingestion, heartbeats, verifier gates, evidence, reports, timeline, graph, watch, recovery, checkpoints, and resume packets are implemented
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters, structured review evidence, reviewer JSONL events, and review-gated verification are implemented
 - visible overseer dispatch (fixture, codex, claude) through the driver registry, structured overseer decisions, overseer JSONL events, prompt artifacts, role/entity agent runs, and overseer checkpoints are implemented
-- bounded overseer command execution, command artifacts, command events, Phase 5A state-command allowlist, Phase 5B worker/reviewer child dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
+- bounded overseer command execution, command artifacts, command events, Phase 5A state-command allowlist, Phase 5B worker/reviewer child dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B backend-to-dashboard full-product execution, Phase 8C-1 product evidence hardening, Phase 8C-2 reviewer handoff calibration, Phase 8C-3 real-agent rerun, Phase 8C-4 compact overseer state hardening, Phase 8C-5 real-agent calibration, Phase 8C-6 full-product budget/dependency-gate hardening, Phase 8C-7 real-agent rerun, Phase 8C-8 orchestration dependency-gate hardening, Phase 8C-9 real-agent dashboard rerun, Phase 8C-10 artifact-backed overseer launch hardening, Phase 8C-11 product-readiness feedback slices, Phase 8C-12 real product-readiness calibration hardening, Phase 8C-13 stale real-overseer warning reconciliation, Phase 8C-14 real escalation-reconciliation confirmation, Phase 8C-15 reset-first lifecycle/final target snapshots, and Phase 8C-16 reviewer-tooling/product-probe observability hardening are implemented or attempted as documented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, Events, and History
 - web-observability E2E harness is implemented and writes browser/API artifacts
-- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
-- latest known verification: `npm test` passes 61/61 and `git diff --check` is clean
+- live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B full-product execution, Phase 8C-1 product evidence hardening, Phase 8C-2 reviewer handoff calibration, Phase 8C-3 real-agent rerun, Phase 8C-4 compact overseer state hardening, Phase 8C-5 real-agent calibration, Phase 8C-6 full-product budget/dependency-gate hardening, Phase 8C-7 real-agent rerun, Phase 8C-8 orchestration dependency-gate hardening, Phase 8C-9 real-agent dashboard rerun, Phase 8C-10 artifact-backed overseer launch hardening, Phase 8C-11 product-readiness feedback slices, Phase 8C-12 real product-readiness calibration hardening, Phase 8C-13 stale real-overseer warning reconciliation, Phase 8C-14 real escalation-reconciliation confirmation, Phase 8C-15 reset-first lifecycle/final target snapshots, and Phase 8C-16 reviewer-tooling/product-probe observability hardening are implemented or attempted as documented
+- latest known verification: `npm test` passes 70/70 after Phase 8C-16; focused reviewer, web-viewer, and full-product checks pass; latest real full-product smoke `LAR-20260612T055330-live-agent-smoke-none-29148` accepted with `productReadiness.passed === true`, failed assertions `[]`, and archived final target snapshots, and Phase 8C-16 addresses its remaining reviewer-policy warning diagnostics before the next real rerun
 
 Current thesis:
 

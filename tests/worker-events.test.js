@@ -47,3 +47,72 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
     store.close();
   }
 });
+
+test("classifies structured command events before text fallback", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-worker-events-structured-${process.pid}`);
+  fs.rmSync(workspace, { recursive: true, force: true });
+  const store = new SwarmStore(workspace);
+  try {
+    store.init();
+    const result = ingestWorkerJsonl({
+      store,
+      actor: "worker-events-structured-test",
+      sliceId: "SLICE-test",
+      driver: "codex",
+      jsonl: [
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "npm test",
+            status: "completed",
+            exit_code: 0,
+            aggregated_output: "fail 0\\nfailed assertions []",
+          },
+        }),
+      ].join("\n"),
+    });
+
+    assert.deepEqual(result.inferredStates, ["testing"]);
+    const heartbeat = store.listHeartbeats().find((item) => item.actor === "worker-events-structured-test");
+    assert.equal(heartbeat?.state, "testing");
+    assert.match(heartbeat?.detail ?? "", /item:command_execution/);
+    assert.match(heartbeat?.detail ?? "", /exit:0/);
+    assert.match(heartbeat?.detail ?? "", /cmd:npm test/);
+  } finally {
+    store.close();
+  }
+});
+
+test("classifies nonzero structured command events as blocked", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-worker-events-blocked-${process.pid}`);
+  fs.rmSync(workspace, { recursive: true, force: true });
+  const store = new SwarmStore(workspace);
+  try {
+    store.init();
+    const result = ingestWorkerJsonl({
+      store,
+      actor: "worker-events-blocked-test",
+      sliceId: "SLICE-test",
+      driver: "codex",
+      jsonl: [
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            command: "npm test",
+            status: "completed",
+            exit_code: 1,
+          },
+        }),
+      ].join("\n"),
+    });
+
+    assert.deepEqual(result.inferredStates, ["blocked"]);
+    const heartbeat = store.listHeartbeats().find((item) => item.actor === "worker-events-blocked-test");
+    assert.equal(heartbeat?.state, "blocked");
+    assert.match(heartbeat?.detail ?? "", /exit:1/);
+  } finally {
+    store.close();
+  }
+});

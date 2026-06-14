@@ -76,6 +76,7 @@ export function defaultProtocol(): ProtocolConfig {
         reviveRetries: 2,
         highlightFinalAttempt: true,
         releaseAfterRetries: false,
+        childIdleTimeoutSeconds: 0,
       },
       workers: {
         defaultDriver: "codex",

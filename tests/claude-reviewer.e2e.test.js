@@ -10,7 +10,7 @@ const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
 const template = path.join(repoRoot, "fixtures", "templates", "invoice-api");
 
-test("claude reviewer runs read-only end-to-end and applies the outcome", () => {
+test("claude reviewer runs with normal configured tool access and applies the outcome", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-claude-reviewer-${process.pid}`);
   const target = path.join(workspace, "invoice-api");
   const fakeClaudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-claude-reviewer-"));
@@ -87,8 +87,8 @@ if (!args.includes("-p") || !args.includes("--json-schema")) {
   console.error("fake-claude-reviewer: expected -p and --json-schema in args");
   process.exit(2);
 }
-if (args[args.indexOf("--permission-mode") + 1] !== "plan") {
-  console.error("fake-claude-reviewer: expected --permission-mode plan (read-only)");
+if (args[args.indexOf("--permission-mode") + 1] !== "acceptEdits") {
+  console.error("fake-claude-reviewer: expected --permission-mode acceptEdits for normal reviewer tool access");
   process.exit(3);
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

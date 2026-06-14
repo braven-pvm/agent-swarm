@@ -8,6 +8,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const args = parseArgs(process.argv.slice(2));
 const defaultWorkspace = path.join(repoRoot, ".swarm-demo", "live-agent-smoke");
 const workspace = path.resolve(args.workspace ?? defaultWorkspace);
+const stopRelatedProcesses = args["stop-related-processes"] === "true";
 
 assertApprovedWorkspace(workspace);
 
@@ -22,6 +23,7 @@ const sourceSpecsDir = path.join(workspace, "source-specs");
 const productSpec = path.join(sourceSpecsDir, "live-smoke-invoice-dashboard-product-spec.md");
 const manifestPath = path.join(workspace, "live-agent-smoke.json");
 
+const stoppedProcesses = stopRelatedProcesses ? stopRelatedProcessesForWorkspace(workspace) : [];
 resetWorkspace();
 runSwarm(["init"]);
 runSwarm(["run-mode", "set", "live-agent-smoke"]);
@@ -76,11 +78,12 @@ const manifest = {
     maxRuntimeMinutes: 45,
   },
   fullProductMode: {
-    plannedCommand: "npm run demo:live-agent:full",
+    plannedCommand: "npm run smoke:live-agent:full",
     productSpec: path.relative(repoRoot, sourceProductSpec).replace(/\\/g, "/"),
     maxSlices: 12,
-    maxAgentRuns: 30,
-    maxRuntimeMinutes: 120,
+    maxAgentRuns: 60,
+    maxRuntimeMinutes: 45,
+    maxTurns: 40,
   },
   targets: [
     {
@@ -109,7 +112,8 @@ const manifest = {
     serve: "npm run demo:live-agent:serve",
     liveRun: "npm run demo:live-agent:run",
     scripted: "npm run demo:live-agent:scripted",
-    futureFullProduct: "npm run demo:live-agent:full",
+    fullProduct: "npm run demo:live-agent:full",
+    resetAndFullProduct: "npm run smoke:live-agent:full",
   },
 };
 
@@ -119,6 +123,7 @@ const summary = {
   workspace,
   runMode: snapshot.runMode,
   manifest: manifestPath,
+  stoppedProcesses,
   counts: {
     targets: snapshot.targets.length,
     sources: snapshot.sources.length,
@@ -132,7 +137,14 @@ const summary = {
 console.log(JSON.stringify(summary, null, 2));
 
 function resetWorkspace() {
-  fs.rmSync(workspace, { recursive: true, force: true });
+  try {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Failed to reset live smoke workspace ${workspace}: ${message}. Stop any active swarm serve/product processes for this workspace or rerun with --stop-related-processes.`,
+    );
+  }
   fs.mkdirSync(workspace, { recursive: true });
   fs.cpSync(invoiceTemplate, invoiceTarget, { recursive: true });
   fs.cpSync(dashboardTemplate, dashboardTarget, { recursive: true });
@@ -140,6 +152,81 @@ function resetWorkspace() {
   fs.copyFileSync(sourceProductSpec, productSpec);
   tryInitGit(invoiceTarget);
   tryInitGit(dashboardTarget);
+}
+
+function stopRelatedProcessesForWorkspace(targetWorkspace) {
+  if (process.platform !== "win32") return [];
+  const isDefaultWorkspace = samePath(targetWorkspace, defaultWorkspace);
+  const script = String.raw`
+$workspace = $env:SWARM_RESET_WORKSPACE
+$workspaceSlash = $workspace -replace '\\','/'
+$relativeToken = $env:SWARM_RESET_RELATIVE_TOKEN
+$isDefault = $env:SWARM_RESET_DEFAULT -eq 'true'
+$stopped = @()
+
+function Stop-ById([int]$processId, [string]$reason) {
+  if ($processId -eq $PID) { return }
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$processId" -ErrorAction SilentlyContinue
+  if (-not $process) { return }
+  $name = [string]$process.Name
+  $commandLine = [string]$process.CommandLine
+  if ($name -notmatch '^(node|npm|cmd|pwsh|powershell)\.exe$') { return }
+  try {
+    Stop-Process -Id $processId -Force -ErrorAction Stop
+    $script:stopped += [pscustomobject]@{
+      pid = $processId
+      name = $name
+      reason = $reason
+      commandLine = $commandLine
+    }
+  } catch {}
+}
+
+$workspaceProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $cmd = [string]$_.CommandLine
+  if (-not $cmd) {
+    $false
+  } else {
+    $mentionsWorkspace = $cmd.Contains($workspace) -or $cmd.Contains($workspaceSlash) -or ($relativeToken -and $cmd.Contains($relativeToken))
+    $isSmokeServer = $cmd -match 'dist[\\/]+cli\.js.*serve|npm.*start|node.*src[\\/]+dashboard\.js'
+    $mentionsWorkspace -and $isSmokeServer
+  }
+}
+foreach ($process in $workspaceProcesses) {
+  Stop-ById -processId ([int]$process.ProcessId) -reason 'workspace command line'
+}
+
+if ($isDefault) {
+  foreach ($port in @(4318, 4319, 4321)) {
+    try {
+      $owners = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+      foreach ($owner in $owners) {
+        Stop-ById -processId ([int]$owner) -reason "default live smoke port $port"
+      }
+    } catch {}
+  }
+}
+
+$stopped | ConvertTo-Json -Compress
+`;
+  try {
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        SWARM_RESET_WORKSPACE: targetWorkspace,
+        SWARM_RESET_RELATIVE_TOKEN: path.relative(repoRoot, targetWorkspace).replace(/\\/g, "/"),
+        SWARM_RESET_DEFAULT: String(isDefaultWorkspace),
+      },
+    }).trim();
+    if (!output) return [];
+    const parsed = JSON.parse(output);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
 }
 
 function runSwarm(commandArgs) {
@@ -152,10 +239,26 @@ function runSwarm(commandArgs) {
 }
 
 function assertApprovedWorkspace(target) {
-  if (!samePath(target, defaultWorkspace)) {
-    throw new Error(`Refusing to reset workspace outside approved live smoke root: ${defaultWorkspace}`);
+  const demoRoot = path.join(repoRoot, ".swarm-demo");
+  const resolved = path.resolve(target);
+  const relative = path.relative(demoRoot, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to reset workspace outside approved live smoke root: ${demoRoot}`);
   }
-  if (samePath(target, repoRoot) || samePath(path.dirname(target), repoRoot)) {
+  if (relative.includes(path.sep)) {
+    throw new Error(`Refusing nested live smoke workspace reset: ${resolved}`);
+  }
+  const workspaceName = path.basename(resolved);
+  const approvedName =
+    samePath(resolved, defaultWorkspace) ||
+    workspaceName.startsWith("live-agent-smoke-") ||
+    workspaceName.startsWith("test-live-agent-");
+  if (!approvedName) {
+    throw new Error(
+      `Refusing to reset unapproved live smoke workspace name: ${workspaceName}. Use live-agent-smoke, live-agent-smoke-*, or test-live-agent-* under ${demoRoot}.`,
+    );
+  }
+  if (samePath(resolved, repoRoot) || samePath(resolved, path.dirname(repoRoot)) || samePath(resolved, demoRoot)) {
     throw new Error(`Refusing unsafe live smoke workspace: ${target}`);
   }
 }

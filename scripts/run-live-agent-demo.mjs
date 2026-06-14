@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { refreshCheckpoint } from "../dist/checkpoints.js";
 import { createEvent } from "../dist/events.js";
@@ -20,22 +20,41 @@ const defaultWorkspace = path.join(repoRoot, ".swarm-demo", "live-agent-smoke");
 const workspace = path.resolve(args.workspace ?? defaultWorkspace);
 const resetBeforeRun = args.reset === "true";
 const scenario = args.scenario ?? "live-agent-smoke";
-const maxTurns = Number.parseInt(args["max-turns"] ?? "8", 10);
-const executeLimit = Number.parseInt(args["execute-limit"] ?? "3", 10);
-const maxRuntimeSeconds = Number.parseInt(args["max-runtime-seconds"] ?? "600", 10);
-const maxSlices = Number.parseInt(args["max-slices"] ?? "5", 10);
-const maxAgentRuns = Number.parseInt(args["max-agent-runs"] ?? "12", 10);
+const mode = args.mode ?? "acceptance-loop";
+if (!["acceptance-loop", "full-product"].includes(mode)) {
+  throw new Error(`Invalid --mode ${mode}; expected acceptance-loop or full-product`);
+}
+const fullProductMode = mode === "full-product";
+const maxTurns = Number.parseInt(args["max-turns"] ?? (fullProductMode ? "40" : "8"), 10);
+const executeLimit = Number.parseInt(args["execute-limit"] ?? (fullProductMode ? "4" : "3"), 10);
+const maxRuntimeSeconds = Number.parseInt(args["max-runtime-seconds"] ?? (fullProductMode ? "2700" : "600"), 10);
+const maxSlices = Number.parseInt(args["max-slices"] ?? (fullProductMode ? "12" : "5"), 10);
+const maxAgentRuns = Number.parseInt(args["max-agent-runs"] ?? (fullProductMode ? "60" : "12"), 10);
 const faultMode = args.fault ?? "none";
-if (!["none", "source-mutation", "reviewer-repair", "stale-run", "context-handoff", "low-signal"].includes(faultMode)) {
+const validFaultModes = [
+  "none",
+  "source-mutation",
+  "reviewer-repair",
+  "stale-run",
+  "context-handoff",
+  "low-signal",
+  "supervised-revive",
+];
+if (!validFaultModes.includes(faultMode)) {
   throw new Error(
-    `Invalid --fault ${faultMode}; expected none, source-mutation, reviewer-repair, stale-run, context-handoff, or low-signal`,
+    `Invalid --fault ${faultMode}; expected ${validFaultModes.slice(0, -1).join(", ")}, or ${validFaultModes.at(-1)}`,
   );
 }
-const runPhase = faultMode === "none" ? "phase-5c-autonomous-acceptance-loop" : "phase-6-fault-injection";
+if (fullProductMode && faultMode !== "none") {
+  throw new Error("Full-product mode does not support fault injection yet; run Phase 6 faults with --mode acceptance-loop.");
+}
+const runPhase = fullProductMode
+  ? "phase-8-full-product-execution"
+  : faultMode === "none"
+    ? "phase-5c-autonomous-acceptance-loop"
+    : "phase-6-fault-injection";
 const cli = path.join(repoRoot, "dist", "cli.js");
 const resetScript = path.join(repoRoot, "scripts", "reset-live-agent-smoke.mjs");
-const invoiceTemplate = path.join(repoRoot, "fixtures", "templates", "invoice-api");
-const dashboardTemplate = path.join(repoRoot, "fixtures", "templates", "invoice-dashboard");
 const sourceProductSpec = path.join(repoRoot, "docs", "requirements", "live-smoke-invoice-dashboard-product-spec.md");
 
 const invoiceTarget = path.join(workspace, "invoice-api");
@@ -46,11 +65,24 @@ const dashboardSpec = path.join(dashboardTarget, "specs", "invoice-dashboard.md"
 const manifestPath = path.join(workspace, "live-agent-smoke.json");
 const summaryPath = path.resolve(args.summary ?? path.join(workspace, "live-agent-run-summary.json"));
 const artifactsPath = path.resolve(args.artifacts ?? path.join(workspace, "live-agent-run-artifacts"));
+const productReadinessPath = path.join(artifactsPath, "product-readiness.json");
+const productReadinessMarkdownPath = path.join(artifactsPath, "product-readiness.md");
+const productTestOutputPath = path.join(artifactsPath, "product-dashboard-test-output.txt");
+const productStartOutputPath = path.join(artifactsPath, "product-dashboard-start-output.txt");
+const productProbePath = path.join(artifactsPath, "product-dashboard-probe.json");
+const productProbeMarkdownPath = path.join(artifactsPath, "product-dashboard-probe.md");
 const historyRoot = path.resolve(args["history-root"] ?? path.join(repoRoot, ".swarm-demo", "live-agent-run-history"));
 const historyEnabled = args.history !== "false";
 const scenarioEntityId = `scenario:${scenario}`;
 const runStartedAt = new Date().toISOString();
 const runId = sanitizeRunId(args["run-id"] ?? `LAR-${compactTimestamp(runStartedAt)}-${scenario}-${faultMode}-${process.pid}`);
+const productReadinessRefs = ["AC-PROD-001.1", "AC-PROD-001.2", "AC-PROD-001.3", "AC-PROD-001.4"];
+const productReadinessBlockerIds = new Set([
+  "dashboard-test-script",
+  "dashboard-test-passes",
+  "dashboard-start-script",
+  "dashboard-start-probed",
+]);
 
 assertApprovedWorkspace(workspace);
 if (historyEnabled) assertApprovedHistoryRoot(historyRoot, workspace);
@@ -59,11 +91,15 @@ if (resetBeforeRun || !fs.existsSync(path.join(workspace, ".swarm", "state.db"))
   resetScenario();
 }
 ensureWorkspaceInitialized();
+if (fullProductMode) {
+  assertFullProductPrerequisites();
+}
 
 runSwarm(["run-mode", "set", "live-agent-smoke"]);
 updateManifest({
   phase: runPhase,
   runMode: "live-agent-smoke",
+  mode,
 });
 
 fs.mkdirSync(artifactsPath, { recursive: true });
@@ -78,6 +114,20 @@ const staleRecovery = {
   markOutputPath: undefined,
   restartOutputPath: undefined,
   restartActor: "live-recovery-worker",
+};
+const supervisedRecovery = {
+  recoveredRunId: undefined,
+  revivedRunId: undefined,
+  restartedRunId: undefined,
+  sliceId: undefined,
+  detectedAtTurn: undefined,
+  revivedAtTurn: undefined,
+  restartedAtTurn: undefined,
+  reviveOutputPath: undefined,
+  restartOutputPath: undefined,
+  reviveActor: "live-recovery-agent",
+  restartActor: "live-recovery-worker",
+  attemptedRunIds: [],
 };
 const contextHandoff = {
   sliceId: undefined,
@@ -102,9 +152,13 @@ const turns = [];
 const verifyRuns = [];
 const repairClearances = [];
 const staleRecoveryClearances = [];
+const dependencyWarningClearances = [];
+const diagnosticWarningClearances = [];
+const acceptedSliceWarningClearances = [];
 let finalOutcome = undefined;
 let finalReason = undefined;
 let finalSliceId = undefined;
+let productReadiness = undefined;
 
 for (let turn = 1; turn <= maxTurns; turn += 1) {
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
@@ -143,6 +197,12 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
     continue;
   }
 
+  const supervisedAction = handleSupervisedRecovery(turn, before);
+  if (supervisedAction) {
+    turns.push(supervisedAction);
+    continue;
+  }
+
   const contextHandoffAction = handleContextHandoffFault(turn, before);
   if (contextHandoffAction) {
     turns.push(contextHandoffAction);
@@ -155,12 +215,52 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
     continue;
   }
 
+  const activeSlices = before.slices.filter((slice) => isActiveSlice(slice));
   const acceptedSlice = before.slices.find((slice) => slice.status === "accepted");
-  if (acceptedSlice) {
-    finalOutcome = "accepted";
-    finalReason = `Slice ${acceptedSlice.id} is accepted.`;
+  if (acceptedSlice && (!fullProductMode || activeSlices.length === 0)) {
     finalSliceId = acceptedSlice.id;
-    break;
+    recordAcceptedSliceWarningClearances(acceptedSlice, before.activeEscalations, turn);
+    if (fullProductMode) {
+      productReadiness = inspectProductReadiness({ runCommands: true });
+      recordDependencyWarningClearances(productReadiness, before, turn);
+      if (productReadiness.passed) {
+        finalOutcome = "accepted";
+        finalReason = "Full-product readiness passed; invoice dashboard target is locally runnable.";
+        break;
+      }
+      turns.push({
+        turn,
+        kind: "product-readiness",
+        sliceId: acceptedSlice.id,
+        passed: false,
+        blockers: productReadiness.blockers,
+      });
+      const readinessWork = ensureProductReadinessWork({ productReadiness, snapshot: before, turn });
+      if (readinessWork) {
+        turns.push(readinessWork);
+        continue;
+      }
+      if (productReadiness.noFurtherWorkVisible) {
+        finalOutcome = "blocked";
+        finalReason = `Full-product readiness failed with no further visible work: ${productReadiness.blockers
+          .map((item) => item.message)
+          .join("; ")}`;
+        raiseScenarioEscalation("blocker", finalReason);
+        break;
+      }
+    } else {
+      finalOutcome = "accepted";
+      finalReason = `Slice ${acceptedSlice.id} is accepted.`;
+      break;
+    }
+  } else if (acceptedSlice && fullProductMode && activeSlices.length > 0) {
+    turns.push({
+      turn,
+      kind: "product-readiness-deferred",
+      sliceId: acceptedSlice.id,
+      activeSlices: activeSlices.map((slice) => ({ id: slice.id, status: slice.status, refs: slice.frAcRefs })),
+      reason: "Accepted work exists, but active product work is still visible.",
+    });
   }
 
   const readyForVerify = before.slices.find((slice) => isReadyForDeterministicVerify(slice));
@@ -196,9 +296,41 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       clearedEscalations: allClearedEscalations,
     });
     if (verifiedSlice?.status === "accepted") {
+      finalSliceId = readyForVerify.id;
+      recordAcceptedSliceWarningClearances(verifiedSlice, afterVerify.activeEscalations, turn);
+      if (fullProductMode) {
+        productReadiness = inspectProductReadiness({ runCommands: true });
+        recordDependencyWarningClearances(productReadiness, afterVerify, turn);
+        if (productReadiness.passed) {
+          finalOutcome = "accepted";
+          finalReason = "Full-product readiness passed; invoice dashboard target is locally runnable.";
+          break;
+        }
+        turns.push({
+          turn,
+          kind: "product-readiness",
+          sliceId: readyForVerify.id,
+          passed: false,
+          blockers: productReadiness.blockers,
+        });
+        const readinessWork = ensureProductReadinessWork({ productReadiness, snapshot: afterVerify, turn });
+        if (readinessWork) {
+          turns.push(readinessWork);
+          continue;
+        }
+        if (productReadiness.noFurtherWorkVisible) {
+          finalOutcome = "blocked";
+          finalReason = `Full-product readiness failed with no further visible work: ${productReadiness.blockers
+            .map((item) => item.message)
+            .join("; ")}`;
+          raiseScenarioEscalation("blocker", finalReason);
+          break;
+        } else {
+          continue;
+        }
+      }
       finalOutcome = "accepted";
       finalReason = `Slice ${readyForVerify.id} passed reviewer and deterministic verification gates.`;
-      finalSliceId = readyForVerify.id;
       break;
     }
     finalOutcome = hasHumanRequired(afterVerify) ? "human_required" : "blocked";
@@ -248,6 +380,15 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
     latestCommandSummary.executed === 0 &&
     (latestCommandSummary.blocked > 0 || latestCommandSummary.failed > 0)
   ) {
+    if (fullProductMode && commandSummaryHasRecoverableDependencyBlock(latestCommandSummary)) {
+      turns.push({
+        turn,
+        kind: "recoverable-dependency-block",
+        reason: "Overseer attempted dependency-blocked downstream work; continuing so the next overseer turn can select prerequisite source work.",
+        commandSummary: latestCommandSummary,
+      });
+      continue;
+    }
     finalOutcome = "blocked";
     finalReason = "Overseer command execution made no progress and reported blocked/failed commands.";
     raiseScenarioEscalation("blocker", finalReason);
@@ -261,11 +402,17 @@ if (!finalOutcome) {
   raiseScenarioEscalation("blocker", finalReason);
 }
 
+productReadiness = productReadiness ?? inspectProductReadiness({ runCommands: fullProductMode });
+if (fullProductMode) {
+  recordAllAcceptedSliceWarningClearances(observe(120), "final");
+  recordDependencyWarningClearances(productReadiness, observe(120), "final");
+}
+
 const finalSnapshot = observe(260);
 const finalSourceMutations = inspectSourceMutations(finalSnapshot.sources);
 const graph = JSON.parse(runSwarm(["graph", "--format", "json"]));
-const acceptedSlice = finalSnapshot.slices.find((slice) => slice.status === "accepted");
-const selectedSliceId = finalSliceId ?? acceptedSlice?.id ?? finalSnapshot.slices[0]?.id;
+const acceptedSlice = finalSnapshot.slices.filter((slice) => slice.status === "accepted").at(-1);
+const selectedSliceId = finalSliceId ?? acceptedSlice?.id ?? finalSnapshot.slices.at(-1)?.id;
 const report = selectedSliceId ? runSwarm(["report", selectedSliceId]) : "";
 const timeline = selectedSliceId ? JSON.parse(runSwarm(["timeline", selectedSliceId, "--json"])) : { items: [] };
 
@@ -276,6 +423,7 @@ const timelinePath = path.join(artifactsPath, "timeline.json");
 const artifactIndexPath = path.join(artifactsPath, "artifact-index.json");
 const artifactIndexMarkdownPath = path.join(artifactsPath, "artifact-index.md");
 const historyPaths = historyEnabled ? buildHistoryPaths(runId) : undefined;
+const finalTargetSnapshots = historyPaths ? snapshotFinalTargets(historyPaths) : undefined;
 fs.writeFileSync(snapshotPath, `${JSON.stringify(finalSnapshot, null, 2)}\n`, "utf8");
 fs.writeFileSync(graphPath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
 fs.writeFileSync(reportPath, report, "utf8");
@@ -297,6 +445,12 @@ const staleRestartRun = staleRecovery.sliceId
         run.role === "worker" &&
         run.status === "completed",
     )
+  : undefined;
+const supervisedReviveRun = supervisedRecovery.revivedRunId
+  ? finalSnapshot.agentRuns.find((run) => run.id === supervisedRecovery.revivedRunId)
+  : undefined;
+const supervisedRestartRun = supervisedRecovery.restartedRunId
+  ? finalSnapshot.agentRuns.find((run) => run.id === supervisedRecovery.restartedRunId)
   : undefined;
 const staleRunEscalationActive = finalSnapshot.activeEscalations.some(
   (item) => item.entityType === "slice" && item.entityId === staleRecovery.sliceId && item.message.includes(staleRecovery.staleRunId),
@@ -322,11 +476,14 @@ const outcomeClassification = classifyOutcome({
   finalOutcome,
   finalReason,
   faultMode,
+  fullProductMode,
+  productReadiness,
   finalSnapshot,
   finalSlice,
   verifyRuns,
   turns,
   staleRecovery,
+  supervisedRecovery,
   finalSourceMutations,
 });
 const artifactPaths = {
@@ -343,12 +500,22 @@ const artifactPaths = {
   recoveryScan: staleRecovery.scanOutputPath,
   recoveryMark: staleRecovery.markOutputPath,
   recoveryRestart: staleRecovery.restartOutputPath,
+  recoveryRevive: supervisedRecovery.reviveOutputPath,
+  recoveryRestartAfterRevive: supervisedRecovery.restartOutputPath,
   contextWorkerPacket: contextHandoff.packetPaths.worker,
   contextReviewerPacket: contextHandoff.packetPaths.reviewer,
   contextVerifierPacket: contextHandoff.packetPaths.verifier,
   contextOverseerPacket: contextHandoff.packetPaths.overseer,
   contextRecoveryPacket: contextHandoff.packetPaths.recovery,
   lowSignalWarning: lowSignal.warningPath,
+  productReadiness: fullProductMode ? productReadinessPath : undefined,
+  productReadinessMarkdown: fullProductMode ? productReadinessMarkdownPath : undefined,
+  productTestOutput: fullProductMode ? productReadiness.commandResults.test.outputPath : undefined,
+  productStartOutput: fullProductMode ? productReadiness.commandResults.start.outputPath : undefined,
+  productProbe: fullProductMode ? productReadiness.commandResults.start.probeOutputPath : undefined,
+  productProbeMarkdown: fullProductMode ? productReadiness.commandResults.start.probeMarkdownPath : undefined,
+  finalInvoiceApi: finalTargetSnapshots?.invoiceApi?.path,
+  finalInvoiceDashboard: finalTargetSnapshots?.invoiceDashboard?.path,
   artifactIndex: artifactIndexPath,
   artifactIndexMarkdown: artifactIndexMarkdownPath,
 };
@@ -362,6 +529,7 @@ const summary = {
   generatedAt: new Date().toISOString(),
   phase: runPhase,
   scenario,
+  mode,
   fault: {
     mode: faultMode,
     injected: injectedFaults,
@@ -396,9 +564,21 @@ const summary = {
   verifyRuns,
   repairClearances,
   staleRecoveryClearances,
+  dependencyWarningClearances,
+  diagnosticWarningClearances,
+  acceptedSliceWarningClearances,
   staleRecovery: faultMode === "stale-run" ? staleRecovery : undefined,
+  supervisedRecovery:
+    faultMode === "supervised-revive" || supervisedRecovery.detectedAtTurn
+      ? {
+          ...supervisedRecovery,
+          revivedRunStatus: supervisedReviveRun?.status,
+          restartedRunStatus: supervisedRestartRun?.status,
+        }
+      : undefined,
   contextHandoff: faultMode === "context-handoff" ? contextHandoff : undefined,
   lowSignal: faultMode === "low-signal" ? lowSignal : undefined,
+  productReadiness: fullProductMode ? productReadiness : undefined,
   runs: {
     overseers: finalSnapshot.agentRuns.filter((run) => run.role === "overseer" && run.entityId === scenarioEntityId),
     workers: workerRuns,
@@ -412,6 +592,7 @@ const summary = {
     ? {
         enabled: true,
         ...historyPaths,
+        finalTargets: finalTargetSnapshots,
       }
     : { enabled: false },
   assertions: {
@@ -430,7 +611,10 @@ const summary = {
         finalSnapshot.recentEvents.some(
           (event) => event.type === "checkpoint.refreshed" && event.actor === "live-context-handoff",
         )) ||
-      (faultMode === "low-signal" && Boolean(lowSignalWarning) && Boolean(lowSignalEvent)),
+      (faultMode === "low-signal" && Boolean(lowSignalWarning) && Boolean(lowSignalEvent)) ||
+      (faultMode === "supervised-revive" &&
+        Boolean(supervisedRecovery.detectedAtTurn) &&
+        finalSnapshot.recentEvents.some((event) => event.type === "worker.child_idle_timeout")),
     sourceMutationStoppedBeforeHiddenWork: faultMode !== "source-mutation" || finalSnapshot.agentRuns.length === 0,
     reviewerRepairLoopExercised:
       faultMode !== "reviewer-repair" ||
@@ -451,6 +635,18 @@ const summary = {
     staleRunEscalationCleared: faultMode !== "stale-run" || staleRecoveryClearances.length > 0,
     staleRunBlockerNotActiveAfterAcceptance:
       faultMode !== "stale-run" || finalOutcome !== "accepted" || !staleRunEscalationActive,
+    supervisedReviveLoopExercised:
+      faultMode !== "supervised-revive" ||
+      Boolean(
+        supervisedRecovery.detectedAtTurn &&
+          supervisedRecovery.revivedAtTurn &&
+          supervisedReviveRun?.status === "completed" &&
+          finalSnapshot.recentEvents.some((event) => event.type === "recovery.revive_started") &&
+          finalSnapshot.recentEvents.some((event) => event.type === "recovery.revive_completed"),
+      ),
+    supervisedRecoveryDoesNotBypassVerification:
+      faultMode !== "supervised-revive" ||
+      Boolean(verifyRuns.some((run) => run.turn > supervisedRecovery.detectedAtTurn && run.accepted) && finalSlice?.status === "accepted"),
     contextHandoffPacketsGenerated:
       faultMode !== "context-handoff" ||
       Boolean(
@@ -502,6 +698,41 @@ const summary = {
     deterministicVerifyAfterReview: faultMode === "source-mutation" || (verifyRuns.length > 0 && Boolean(reviewEvidence)),
     finalOutcomeIsBounded: ["accepted", "blocked", "human_required"].includes(finalOutcome),
     sourceSpecsUnchanged: faultMode === "source-mutation" || finalSourceMutations.every((item) => !item.mutated),
+    fullProductModeRequiresProductSpec:
+      !fullProductMode ||
+      Boolean(productReadiness.productSpec.exists && productReadiness.productSpec.registered && productReadiness.productSpec.unchanged),
+    fullProductReadinessRecorded:
+      !fullProductMode || Boolean(productReadiness && productReadiness.blockers && productReadiness.commands.manualUrl),
+    productReadinessBlocksIncompleteTarget:
+      !fullProductMode ||
+      productReadiness.passed ||
+      (finalOutcome === "blocked" && productReadiness.blockers.length > 0),
+    productProbeArtifactRecorded:
+      !fullProductMode ||
+      !productReadiness.passed ||
+      Boolean(
+        productReadiness.commandResults.start.probeOutputPath &&
+          fs.existsSync(productReadiness.commandResults.start.probeOutputPath) &&
+          productReadiness.commandResults.start.probeMarkdownPath &&
+          fs.existsSync(productReadiness.commandResults.start.probeMarkdownPath),
+      ),
+    productProbeChecksPassed:
+      !fullProductMode ||
+      !productReadiness.passed ||
+      Boolean(
+        productReadiness.commandResults.start.probes?.ui?.passed &&
+          productReadiness.commandResults.start.probes?.api?.passed &&
+          productReadiness.commandResults.start.probes?.api?.jsonFieldsPresent?.openTotalCents === true &&
+          productReadiness.commandResults.start.probes?.markPaid?.passed,
+      ),
+    finalTargetSnapshotsArchived:
+      !historyEnabled ||
+      Boolean(
+        finalTargetSnapshots?.invoiceApi?.exists &&
+          finalTargetSnapshots?.invoiceDashboard?.exists &&
+          fs.existsSync(finalTargetSnapshots.invoiceApi.path) &&
+          fs.existsSync(finalTargetSnapshots.invoiceDashboard.path),
+      ),
     sourceMutationEscalated:
       faultMode !== "source-mutation" ||
       finalSnapshot.activeEscalations.some(
@@ -513,6 +744,9 @@ const summary = {
       ),
     acceptedHasCompletedLeases:
       finalOutcome !== "accepted" || Boolean(finalSlice?.leases.every((lease) => lease.status === "completed")),
+    acceptedHasNoActiveBlockingEscalations:
+      finalOutcome !== "accepted" ||
+      !finalSnapshot.activeEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level)),
     blockedHasVisibleReason:
       finalOutcome === "accepted" ||
       finalSnapshot.activeEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level)),
@@ -521,6 +755,10 @@ const summary = {
 };
 
 fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+if (fullProductMode) {
+  fs.writeFileSync(productReadinessPath, `${JSON.stringify(productReadiness, null, 2)}\n`, "utf8");
+  fs.writeFileSync(productReadinessMarkdownPath, renderProductReadinessMarkdown(productReadiness), "utf8");
+}
 fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 
 const artifactIndex = buildArtifactIndex(summary);
@@ -560,13 +798,19 @@ updateManifest({
   runMode: "live-agent-smoke",
   liveRun: {
     runId,
-    command: "npm run demo:live-agent:run",
+    command: fullProductMode
+      ? resetBeforeRun
+        ? "npm run smoke:live-agent:full"
+        : "npm run demo:live-agent:full"
+      : "npm run demo:live-agent:run",
+    mode,
     driver,
     summary: summaryPath,
     fault: faultMode,
     finalOutcome,
     finalReason,
     outcomeClassification,
+    productReadiness: fullProductMode ? productReadiness : undefined,
     artifactIndex: artifactIndexPath,
     history: summary.history,
     updatedAt: new Date().toISOString(),
@@ -582,11 +826,14 @@ function classifyOutcome({
   finalOutcome,
   finalReason,
   faultMode,
+  fullProductMode,
+  productReadiness,
   finalSnapshot,
   finalSlice,
   verifyRuns,
   turns,
   staleRecovery,
+  supervisedRecovery,
   finalSourceMutations,
 }) {
   const activeBlockingEscalations = finalSnapshot.activeEscalations.filter((item) =>
@@ -627,11 +874,30 @@ function classifyOutcome({
     return {
       code: "accepted",
       severity: "accepted",
-      explanation: "The selected slice reached accepted status after worker evidence, independent review, and deterministic verification.",
+      explanation: fullProductMode
+        ? "The full-product run passed product readiness after worker evidence, independent review, deterministic verification, and final product checks."
+        : "The selected slice reached accepted status after worker evidence, independent review, and deterministic verification.",
       evidence: {
         ...evidence,
         acceptedVerifyRun: latestVerify?.accepted ? latestVerify : undefined,
         reviewStatus: finalSlice?.reviewResult?.status,
+        productReadiness: fullProductMode ? productReadiness : undefined,
+      },
+    };
+  }
+
+  if (fullProductMode && productReadiness && !productReadiness.passed) {
+    return {
+      code: "product_not_ready",
+      severity: "blocked",
+      explanation: "The live smoke accepted at least one implementation slice, but the invoice dashboard product is not locally runnable yet.",
+      evidence: {
+        ...evidence,
+        productReadiness: {
+          artifact: productReadinessPath,
+          blockers: productReadiness.blockers,
+          commands: productReadiness.commands,
+        },
       },
     };
   }
@@ -656,6 +922,35 @@ function classifyOutcome({
       evidence: {
         ...evidence,
         staleRecovery,
+      },
+    };
+  }
+
+  if (supervisedRecovery.detectedAtTurn && !supervisedRecovery.revivedAtTurn && !supervisedRecovery.restartedAtTurn) {
+    return {
+      code: "recovery_blocked",
+      severity: "blocked",
+      explanation: "A failed worker run was detected, but supervised recovery did not attempt revive or restart before the run stopped.",
+      evidence: {
+        ...evidence,
+        supervisedRecovery,
+      },
+    };
+  }
+
+  if (
+    faultMode === "supervised-revive" &&
+    supervisedRecovery.detectedAtTurn &&
+    supervisedRecovery.revivedAtTurn &&
+    finalOutcome !== "accepted"
+  ) {
+    return {
+      code: "recovery_blocked",
+      severity: "blocked",
+      explanation: "The supervised recovery path ran, but the revived/restarted work did not reach accepted status.",
+      evidence: {
+        ...evidence,
+        supervisedRecovery,
       },
     };
   }
@@ -746,6 +1041,7 @@ function buildArtifactIndex(summary) {
       "decisionPath",
       "scanOutputPath",
       "markOutputPath",
+      "reviveOutputPath",
       "restartOutputPath",
       "warningPath",
     ];
@@ -789,6 +1085,11 @@ function buildArtifactIndex(summary) {
       latestWorkerResult: summary.artifacts.workerResult,
       latestReviewerResult: summary.artifacts.reviewerResult,
       latestVerificationOutput: summary.artifacts.verificationOutput,
+      latestRecoveryRevive: summary.artifacts.recoveryRevive,
+      productReadiness: summary.artifacts.productReadiness,
+      productProbe: summary.artifacts.productProbe,
+      finalInvoiceApi: summary.artifacts.finalInvoiceApi,
+      finalInvoiceDashboard: summary.artifacts.finalInvoiceDashboard,
     },
     items,
   };
@@ -839,6 +1140,8 @@ function artifactCategory(key) {
   if (key.includes("recovery")) return "recovery";
   if (key.includes("context")) return "handoff";
   if (key.includes("lowSignal")) return "warning";
+  if (key.includes("finalInvoice")) return "target-snapshot";
+  if (key.includes("product")) return "product";
   return "other";
 }
 
@@ -857,12 +1160,22 @@ function artifactDescription(key) {
     recoveryScan: "Recovery scan output.",
     recoveryMark: "Recovery mark-stale output.",
     recoveryRestart: "Recovery restart output.",
+    recoveryRevive: "Supervised recovery same-session revive output.",
+    recoveryRestartAfterRevive: "Supervised recovery restart fallback output.",
     contextWorkerPacket: "Worker resume packet generated at context handoff.",
     contextReviewerPacket: "Reviewer resume packet generated at context handoff.",
     contextVerifierPacket: "Verifier resume packet generated at context handoff.",
     contextOverseerPacket: "Overseer resume packet generated at context handoff.",
     contextRecoveryPacket: "Recovery resume packet generated at context handoff.",
     lowSignalWarning: "Lane-scoped low-signal/proof-churn warning artifact.",
+    productReadiness: "Full-product readiness JSON with final commands, checks, and blockers.",
+    productReadinessMarkdown: "Human-readable full-product readiness report.",
+    productTestOutput: "Invoice dashboard npm test output from the product readiness check.",
+    productStartOutput: "Invoice dashboard npm start output and local probe result from the product readiness check.",
+    productProbe: "Structured HTML/API probe evidence from the final invoice dashboard readiness check.",
+    productProbeMarkdown: "Human-readable HTML/API probe evidence from the final invoice dashboard readiness check.",
+    finalInvoiceApi: "Final invoice API target snapshot captured at run completion.",
+    finalInvoiceDashboard: "Final invoice dashboard target snapshot captured at run completion.",
   };
   return descriptions[key] ?? "Run artifact.";
 }
@@ -880,6 +1193,7 @@ function escapeMarkdownTableCell(value) {
 
 function buildHistoryPaths(runId) {
   const runDir = path.join(historyRoot, runId);
+  const finalTargetsDir = path.join(runDir, "final-targets");
   return {
     root: historyRoot,
     runDir,
@@ -887,9 +1201,42 @@ function buildHistoryPaths(runId) {
     summary: path.join(runDir, "summary.json"),
     artifactIndex: path.join(runDir, "artifact-index.json"),
     artifactIndexMarkdown: path.join(runDir, "artifact-index.md"),
+    finalTargetsDir,
+    finalInvoiceApi: path.join(finalTargetsDir, "invoice-api"),
+    finalInvoiceDashboard: path.join(finalTargetsDir, "invoice-dashboard"),
     originalSummary: summaryPath,
     originalArtifactIndex: artifactIndexPath,
     originalArtifactIndexMarkdown: artifactIndexMarkdownPath,
+  };
+}
+
+function snapshotFinalTargets(paths) {
+  return {
+    invoiceApi: copyFinalTargetSnapshot(invoiceTarget, paths.finalInvoiceApi),
+    invoiceDashboard: copyFinalTargetSnapshot(dashboardTarget, paths.finalInvoiceDashboard),
+  };
+}
+
+function copyFinalTargetSnapshot(source, destination) {
+  fs.rmSync(destination, { recursive: true, force: true });
+  if (!fs.existsSync(source)) {
+    return {
+      source,
+      path: destination,
+      exists: false,
+      reason: "source target does not exist",
+    };
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, {
+    recursive: true,
+    filter: (entryPath) => ![".git", "node_modules"].includes(path.basename(entryPath)),
+  });
+  return {
+    source,
+    path: destination,
+    exists: fs.existsSync(destination),
+    excluded: [".git", "node_modules"],
   };
 }
 
@@ -948,6 +1295,7 @@ function createHistoryRecord(summary) {
     summary: summary.history.summary,
     artifactIndex: summary.history.artifactIndex,
     artifactIndexMarkdown: summary.history.artifactIndexMarkdown,
+    finalTargets: summary.history.finalTargets,
     originalSummary: summary.history.originalSummary,
     originalArtifactIndex: summary.history.originalArtifactIndex,
     originalArtifactIndexMarkdown: summary.history.originalArtifactIndexMarkdown,
@@ -982,93 +1330,37 @@ function sanitizeRunId(value) {
 }
 
 function resetScenario() {
-  if (samePath(workspace, defaultWorkspace)) {
-    execFileSync(process.execPath, [resetScript], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-    });
-    return;
+  const resetArgs = [resetScript];
+  if (!samePath(workspace, defaultWorkspace)) {
+    resetArgs.push("--workspace", workspace);
   }
-
-  fs.rmSync(workspace, { recursive: true, force: true });
-  fs.mkdirSync(workspace, { recursive: true });
-  fs.cpSync(invoiceTemplate, invoiceTarget, { recursive: true });
-  fs.cpSync(dashboardTemplate, dashboardTarget, { recursive: true });
-  fs.mkdirSync(path.dirname(productSpec), { recursive: true });
-  fs.copyFileSync(sourceProductSpec, productSpec);
-  runSwarm(["init"]);
-  runSwarm(["run-mode", "set", "live-agent-smoke"]);
-  runSwarm(["target", "init", invoiceTarget]);
-  runSwarm(["target", "init", dashboardTarget]);
-  runSwarm([
-    "sources",
-    "add-file",
-    productSpec,
-    "--domain",
-    "Invoice Product",
-    "--tags",
-    "product,full-stack,invoice-dashboard",
-    "--priority",
-    "1",
-  ]);
-  runSwarm([
-    "sources",
-    "add-file",
-    invoiceSpec,
-    "--domain",
-    "Invoice Backend",
-    "--tags",
-    "backend,api,invoices,dashboard-enabler",
-    "--priority",
-    "2",
-  ]);
-  runSwarm([
-    "sources",
-    "add-file",
-    dashboardSpec,
-    "--domain",
-    "Invoice Dashboard",
-    "--tags",
-    "frontend,dashboard,invoices",
-    "--priority",
-    "3",
-  ]);
-  const snapshot = observe(40);
-  fs.writeFileSync(
-    manifestPath,
-    `${JSON.stringify(
-      {
-        scenarioId: scenario,
-        runMode: "live-agent-smoke",
-        phase: "phase-1-reset-and-run-mode",
-        generatedAt: new Date().toISOString(),
-        workspace,
-        productSpec,
-        expectedOutcome: "accepted_product_or_blocked_with_reasons",
-        targets: [
-          { name: "invoice-api", path: invoiceTarget, role: "backend", source: invoiceSpec },
-          { name: "invoice-dashboard", path: dashboardTarget, role: "frontend", source: dashboardSpec },
-        ],
-        sources: snapshot.sources.map((source) => ({
-          id: source.id,
-          title: source.title,
-          uri: source.uri,
-          hash: source.hash,
-          domain: source.metadata?.domain ?? "Unassigned",
-        })),
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  if (resetBeforeRun) {
+    resetArgs.push("--stop-related-processes");
+  }
+  execFileSync(process.execPath, resetArgs, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
 }
 
 function ensureWorkspaceInitialized() {
   if (!fs.existsSync(path.join(workspace, ".swarm", "state.db"))) {
     throw new Error(`Live smoke workspace is not initialized: ${workspace}. Run npm run demo:live-agent:reset first.`);
+  }
+}
+
+function assertFullProductPrerequisites() {
+  if (!fs.existsSync(productSpec)) {
+    throw new Error(`Full-product mode requires copied product spec: ${productSpec}. Run npm run demo:live-agent:reset first.`);
+  }
+  const snapshot = observe(80);
+  const productSource = findProductSpecSource(snapshot.sources);
+  if (!productSource) {
+    throw new Error(
+      `Full-product mode requires the invoice dashboard product spec to be registered as a source: ${productSpec}`,
+    );
   }
 }
 
@@ -1123,6 +1415,14 @@ function injectConfiguredFault() {
       },
     ];
   }
+  if (faultMode === "supervised-revive") {
+    return [
+      {
+        mode: faultMode,
+        expectedDetection: "a stalled child worker is terminated, recorded, resumed by session id, and then gated by review and verification",
+      },
+    ];
+  }
   return [];
 }
 
@@ -1130,13 +1430,421 @@ function observe(events) {
   return JSON.parse(runSwarm(["observe", "--events", String(events)]));
 }
 
+function commandSummaryHasRecoverableDependencyBlock(summary) {
+  const results = Array.isArray(summary?.results) ? summary.results : [];
+  if (results.length === 0) return false;
+  return results.every((result) => {
+    if (!["blocked", "failed"].includes(result?.status)) return false;
+    const reason = String(result?.reason ?? "");
+    return /Source dependencies are not satisfied|Missing accepted refs/i.test(reason);
+  });
+}
+
+function recordDependencyWarningClearances(readiness, snapshot, turn) {
+  const dependencyCleared = clearSatisfiedDashboardDependencyWarnings(readiness, snapshot, turn);
+  if (dependencyCleared.length > 0) {
+    dependencyWarningClearances.push(...dependencyCleared);
+    turns.push({
+      turn,
+      kind: "dependency-warning-clearance",
+      clearedEscalations: dependencyCleared,
+      reason: "Dashboard dependency gate is now satisfied.",
+    });
+  }
+
+  const diagnosticCleared = clearAcceptedReviewerCommandWarnings(readiness, snapshot, turn);
+  if (diagnosticCleared.length > 0) {
+    diagnosticWarningClearances.push(...diagnosticCleared);
+    turns.push({
+      turn,
+      kind: "diagnostic-warning-clearance",
+      clearedEscalations: diagnosticCleared,
+      reason: "Final product readiness passed; reviewer command-policy warnings are historical diagnostics.",
+    });
+  }
+}
+
+function recordAcceptedSliceWarningClearances(slice, activeEscalations, turn) {
+  const acceptedCleared = clearAcceptedSliceHistoricalWarnings(slice, activeEscalations, turn);
+  if (acceptedCleared.length === 0) return;
+  acceptedSliceWarningClearances.push(...acceptedCleared);
+  turns.push({
+    turn,
+    kind: "accepted-slice-warning-clearance",
+    sliceId: slice.id,
+    clearedEscalations: acceptedCleared,
+    reason: "Slice is accepted; historical worker/reviewer/command warnings for this slice are resolved.",
+  });
+}
+
+function recordAllAcceptedSliceWarningClearances(snapshot, turn) {
+  const acceptedSlices = Array.isArray(snapshot?.slices) ? snapshot.slices.filter((slice) => slice.status === "accepted") : [];
+  const activeEscalations = Array.isArray(snapshot?.activeEscalations) ? snapshot.activeEscalations : [];
+  for (const slice of acceptedSlices) {
+    recordAcceptedSliceWarningClearances(slice, activeEscalations, turn);
+  }
+}
+
+function clearAcceptedSliceHistoricalWarnings(slice, activeEscalations, turn) {
+  if (!slice || slice.status !== "accepted") return [];
+  const clearable = activeEscalations.filter((escalation) => {
+    if (escalation.status !== "active") return false;
+    if (!["warning", "blocker"].includes(escalation.level)) return false;
+    if (escalation.entityType !== "slice" || escalation.entityId !== slice.id) return false;
+    const haystack = `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""}`;
+    return isAcceptedSliceHistoricalWarning(haystack);
+  });
+  return clearable.map((escalation) => {
+    const reason = "Slice is accepted after review and deterministic verification; historical warning/blocker is resolved.";
+    try {
+      runSwarm(["escalations", "clear", escalation.id, "--reason", reason, "--actor", "live-acceptance-loop"]);
+      return {
+        turn,
+        sliceId: slice.id,
+        id: escalation.id,
+        level: escalation.level,
+        message: escalation.message,
+        cleared: true,
+        reason,
+      };
+    } catch (error) {
+      return {
+        turn,
+        sliceId: slice.id,
+        id: escalation.id,
+        level: escalation.level,
+        message: escalation.message,
+        cleared: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+function isAcceptedSliceHistoricalWarning(text) {
+  if (/low-signal|proof-churn/i.test(text)) return false;
+  return (
+    /failed worker|worker.*failed|worker attempt/i.test(text) ||
+    /no worker|missing worker|no review|missing review|no command|missing command/i.test(text) ||
+    /stale|unrelated worktree|existing warning escalation|active backend slice/i.test(text) ||
+    /command.*policy[- ]?rejected|read-only (?:code )?inspection/i.test(text) ||
+    /git status.*modified.*untracked.*\.swarm|git.*permission warnings?|unable to access .*git\/ignore|dubious ownership/i.test(text)
+  );
+}
+
+function clearSatisfiedDashboardDependencyWarnings(readiness, snapshot, turn) {
+  if (!fullProductMode) return [];
+  const activeEscalations = Array.isArray(snapshot?.activeEscalations) ? snapshot.activeEscalations : [];
+  const acceptedSliceIds = new Set(
+    (Array.isArray(snapshot?.slices) ? snapshot.slices : [])
+      .filter((slice) => slice.status === "accepted")
+      .map((slice) => slice.id),
+  );
+  const activeSliceIds = new Set(
+    (Array.isArray(snapshot?.slices) ? snapshot.slices : [])
+      .filter((slice) => isActiveSlice(slice))
+      .map((slice) => slice.id),
+  );
+  const dependencySatisfied = Boolean(readiness?.dashboardDependencies?.satisfied);
+  const productAccepted = Boolean(readiness?.passed);
+  const clearable = activeEscalations
+    .map((escalation) => {
+      if (escalation.status !== "active") return undefined;
+      if (escalation.entityType !== "harness" || escalation.entityId !== scenarioEntityId) return undefined;
+      const message = String(escalation.message ?? "");
+      if (dependencySatisfied && isDashboardDependencyPlanningMessage(message)) {
+        return {
+          escalation,
+          reason: "Dashboard dependency gate is satisfied; declared backend refs are accepted.",
+        };
+      }
+      if (dependencySatisfied && isDashboardPullPlanningWarning(message)) {
+        return {
+          escalation,
+          reason: "Dashboard planning warning is stale; backend prerequisite slices are resolved.",
+        };
+      }
+      if (isAcceptedSlicePlanningBlocker(message, acceptedSliceIds, activeSliceIds)) {
+        return {
+          escalation,
+          reason: "Referenced slice is accepted and no longer blocked in harness state.",
+        };
+      }
+      if (productAccepted && isHistoricalPlanningNoise(message)) {
+        return {
+          escalation,
+          reason: "Final product readiness passed; historical planning warning is no longer active.",
+        };
+      }
+      return undefined;
+    })
+    .filter(Boolean);
+  return clearable.map(({ escalation, reason }) => {
+    try {
+      runSwarm(["escalations", "clear", escalation.id, "--reason", reason, "--actor", "live-acceptance-loop"]);
+      return {
+        turn,
+        id: escalation.id,
+        level: escalation.level,
+        message: escalation.message,
+        cleared: true,
+        reason,
+      };
+    } catch (error) {
+      return {
+        turn,
+        id: escalation.id,
+        level: escalation.level,
+        message: escalation.message,
+        cleared: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+function isDashboardDependencyPlanningMessage(message) {
+  return (
+    /Invoice Dashboard source/i.test(message) &&
+    /blocked/i.test(message) &&
+    /(backend|accepted|prerequisite refs|missing accepted refs|missing accepted backend prerequisite refs)/i.test(message)
+  );
+}
+
+function isDashboardPullPlanningWarning(message) {
+  return /Do not pull .*Dashboard/i.test(message) || /Do not pull dashboard work/i.test(message);
+}
+
+function isAcceptedSlicePlanningBlocker(message, acceptedSliceIds, activeSliceIds) {
+  const refs = [...message.matchAll(/\bSLICE-[a-f0-9]+\b/gi)].map((match) => match[0]);
+  if (refs.length === 0) return false;
+  if (!refs.every((id) => acceptedSliceIds.has(id) && !activeSliceIds.has(id))) return false;
+  return /blocker|blocked|review.*not completed|independent review/i.test(message);
+}
+
+function isHistoricalPlanningNoise(message) {
+  return (
+    /historical blocker\/warning/i.test(message) ||
+    /earlier dashboard dependency blocking/i.test(message) ||
+    /historical dashboard prerequisite warnings/i.test(message) ||
+    /dashboard prerequisite warnings appear stale/i.test(message) ||
+    /existing warning escalations?/i.test(message) ||
+    /authoritative snapshot .*not mark.*blocking/i.test(message) ||
+    /does not block .*dispatch/i.test(message) ||
+    /git permission warnings?|untracked \.swarm|modified implementation\/test files/i.test(message)
+  );
+}
+
+function clearAcceptedReviewerCommandWarnings(readiness, snapshot, turn) {
+  if (!fullProductMode || !readiness?.passed) return [];
+  const activeEscalations = Array.isArray(snapshot?.activeEscalations) ? snapshot.activeEscalations : [];
+  const clearable = activeEscalations.filter((escalation) => {
+    if (escalation.status !== "active" || escalation.level !== "warning") return false;
+    return isReviewerCommandPolicyWarning(`${escalation.message ?? ""} ${escalation.reason ?? ""}`);
+  });
+  return clearable.map((escalation) => {
+    const reason = "Final product readiness and deterministic verification passed; this reviewer command-policy note is historical diagnostic noise.";
+    try {
+      runSwarm(["escalations", "clear", escalation.id, "--reason", reason, "--actor", "live-acceptance-loop"]);
+      return {
+        turn,
+        id: escalation.id,
+        level: escalation.level,
+        entityType: escalation.entityType,
+        entityId: escalation.entityId,
+        message: escalation.message,
+        cleared: true,
+        reason,
+      };
+    } catch (error) {
+      return {
+        turn,
+        id: escalation.id,
+        level: escalation.level,
+        entityType: escalation.entityType,
+        entityId: escalation.entityId,
+        message: escalation.message,
+        cleared: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+function isReviewerCommandPolicyWarning(text) {
+  return (
+    /reviewer command execution/i.test(text) ||
+    /direct reviewer command verification/i.test(text) ||
+    /command.*policy[- ]?rejected/i.test(text) ||
+    /read-only (?:code )?inspection/i.test(text)
+  );
+}
+
 function runSwarm(commandArgs) {
   return execFileSync(process.execPath, [cli, ...commandArgs], {
-    cwd: workspace,
+    cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, SWARM_LIVE_FAULT: faultMode },
+    env: { ...process.env, SWARM_LIVE_FAULT: faultMode, SWARM_WORKSPACE: workspace },
   });
+}
+
+function runSwarmCapture(commandArgs) {
+  const result = spawnSync(process.execPath, [cli, ...commandArgs], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, SWARM_LIVE_FAULT: faultMode, SWARM_WORKSPACE: workspace },
+    windowsHide: true,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0 && !result.error,
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error ? result.error.message : undefined,
+  };
+}
+
+function writeCommandCapture(outputPath, capture) {
+  fs.writeFileSync(
+    outputPath,
+    [
+      `exitCode: ${capture.status ?? "unknown"}`,
+      `ok: ${capture.ok ? "true" : "false"}`,
+      capture.error ? `error: ${capture.error}` : undefined,
+      "--- stdout ---",
+      capture.stdout.trimEnd(),
+      "--- stderr ---",
+      capture.stderr.trimEnd(),
+      "",
+    ]
+      .filter((line) => line !== undefined)
+      .join("\n"),
+    "utf8",
+  );
+}
+
+function handleSupervisedRecovery(turn, snapshot) {
+  const candidate = findSupervisedRecoveryCandidate(snapshot);
+  if (!candidate) return undefined;
+
+  const { run, slice, reason } = candidate;
+  supervisedRecovery.detectedAtTurn ??= turn;
+  supervisedRecovery.sliceId ??= slice.id;
+  supervisedRecovery.recoveredRunId = run.id;
+  if (!supervisedRecovery.attemptedRunIds.includes(run.id)) supervisedRecovery.attemptedRunIds.push(run.id);
+
+  const turnRecord = {
+    turn,
+    kind: "supervised-recovery",
+    sliceId: slice.id,
+    recoveredRunId: run.id,
+    recoveredRunStatus: run.status,
+    detectedReason: reason,
+    sessionId: run.sessionId,
+    reviveOutputPath: undefined,
+    restartOutputPath: undefined,
+    revivedRunId: undefined,
+    revivedRunStatus: undefined,
+    restartedRunId: undefined,
+    restartedRunStatus: undefined,
+  };
+
+  let after = snapshot;
+  if (run.sessionId && !supervisedRecovery.revivedAtTurn) {
+    const capture = runSwarmCapture(["recovery", "revive", run.id, "--actor", supervisedRecovery.reviveActor]);
+    supervisedRecovery.reviveOutputPath = path.join(artifactsPath, `turn-${turn}-recovery-revive.txt`);
+    writeCommandCapture(supervisedRecovery.reviveOutputPath, capture);
+    supervisedRecovery.revivedAtTurn = turn;
+    turnRecord.reviveOutputPath = supervisedRecovery.reviveOutputPath;
+    turnRecord.reviveCommandOk = capture.ok;
+    after = observe(240);
+    const revivedRun = findLatestWorkerRunAfter(after, slice.id, run.startedAt, run.id);
+    supervisedRecovery.revivedRunId = revivedRun?.id;
+    turnRecord.revivedRunId = revivedRun?.id;
+    turnRecord.revivedRunStatus = revivedRun?.status;
+    if (revivedRun?.status === "completed") return turnRecord;
+  }
+
+  if (!supervisedRecovery.restartedAtTurn) {
+    const restartSourceRunId = turnRecord.revivedRunId ?? run.id;
+    const capture = runSwarmCapture([
+      "recovery",
+      "restart",
+      restartSourceRunId,
+      "--actor",
+      supervisedRecovery.restartActor,
+      "--driver",
+      driver,
+    ]);
+    supervisedRecovery.restartOutputPath = path.join(artifactsPath, `turn-${turn}-recovery-restart-after-revive.txt`);
+    writeCommandCapture(supervisedRecovery.restartOutputPath, capture);
+    supervisedRecovery.restartedAtTurn = turn;
+    turnRecord.restartOutputPath = supervisedRecovery.restartOutputPath;
+    turnRecord.restartCommandOk = capture.ok;
+    after = observe(240);
+    const restartedRun = findLatestWorkerRunAfter(after, slice.id, run.startedAt, restartSourceRunId);
+    supervisedRecovery.restartedRunId = restartedRun?.id;
+    turnRecord.restartedRunId = restartedRun?.id;
+    turnRecord.restartedRunStatus = restartedRun?.status;
+  }
+
+  return turnRecord;
+}
+
+function findSupervisedRecoveryCandidate(snapshot) {
+  const slicesById = new Map(snapshot.slices.map((slice) => [slice.id, slice]));
+  const workerRuns = snapshot.agentRuns
+    .filter((run) => run.role === "worker" && ["failed", "stale"].includes(run.status))
+    .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+
+  for (const run of workerRuns) {
+    const slice = slicesById.get(run.sliceId);
+    if (!slice || ["accepted", "closed"].includes(slice.status)) continue;
+    if (supervisedRecovery.restartedAtTurn && supervisedRecovery.sliceId === slice.id) continue;
+    if (hasLaterCompletedWorker(snapshot, run)) continue;
+    const recentFailureEvent = latestRunFailureEvent(snapshot, run);
+    const reason =
+      recentFailureEvent?.payload?.idleTimedOut === true
+        ? "child idle timeout"
+        : run.resultPath
+          ? "failed worker run"
+          : "failed worker run without structured result";
+    return { run, slice, reason };
+  }
+  return undefined;
+}
+
+function findLatestWorkerRunAfter(snapshot, sliceId, startedAfter, excludedRunId) {
+  const startedAfterMs = Date.parse(startedAfter ?? "");
+  return snapshot.agentRuns
+    .filter((run) => {
+      if (run.role !== "worker" || run.sliceId !== sliceId || run.id === excludedRunId) return false;
+      if (Number.isFinite(startedAfterMs) && Date.parse(run.startedAt) < startedAfterMs) return false;
+      return true;
+    })
+    .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
+    .at(0);
+}
+
+function hasLaterCompletedWorker(snapshot, run) {
+  const runStartedAt = Date.parse(run.startedAt);
+  return snapshot.agentRuns.some((candidate) => {
+    if (candidate.role !== "worker" || candidate.sliceId !== run.sliceId || candidate.id === run.id) return false;
+    if (candidate.status !== "completed") return false;
+    return !Number.isFinite(runStartedAt) || Date.parse(candidate.startedAt) >= runStartedAt;
+  });
+}
+
+function latestRunFailureEvent(snapshot, run) {
+  return snapshot.recentEvents
+    .filter((event) => {
+      if (!["worker.completed", "recovery.revive_completed", "recovery.restart_completed"].includes(event.type)) return false;
+      return event.payload?.runId === run.id || event.entityId === run.id || event.payload?.previousRunId === run.id;
+    })
+    .at(-1);
 }
 
 function handleStaleRunFault(turn, snapshot) {
@@ -1521,6 +2229,873 @@ function inspectSourceMutations(sources) {
       reason: currentHash === source.hash ? undefined : "Source hash differs from registered immutable hash.",
     };
   });
+}
+
+function findProductSpecSource(sources) {
+  const expected = path.resolve(productSpec).toLowerCase();
+  return sources.find((source) => path.resolve(source.uri).toLowerCase() === expected);
+}
+
+function inspectProductReadiness({ runCommands }) {
+  const snapshot = observe(120);
+  const productSource = findProductSpecSource(snapshot.sources);
+  const productSourceMutation = productSource ? inspectSourceMutations([productSource])[0] : undefined;
+  const packagePath = path.join(dashboardTarget, "package.json");
+  const packageJson = readJsonFile(packagePath);
+  const scripts = packageJson && typeof packageJson === "object" && packageJson.scripts ? packageJson.scripts : {};
+  const hasTestScript = typeof scripts.test === "string" && scripts.test.trim().length > 0;
+  const hasStartScript = typeof scripts.start === "string" && scripts.start.trim().length > 0;
+  const manualUrl = "http://127.0.0.1:4321";
+  const dashboardSlices = snapshot.slices.filter((slice) => slice.frAcRefs.some((ref) => ref.startsWith("AC-UI")));
+  const acceptedDashboardSlices = dashboardSlices.filter((slice) => slice.status === "accepted");
+  const activeDashboardSlices = dashboardSlices.filter((slice) => !["accepted", "closed"].includes(slice.status));
+  const productReadinessSlices = snapshot.slices.filter((slice) => isProductReadinessSlice(slice));
+  const activeProductReadinessSlices = productReadinessSlices.filter((slice) => isActiveSlice(slice));
+  const dashboardDependencies = inspectDashboardDependencyGate(snapshot);
+  const testResult = runCommands && hasTestScript
+    ? runNpmScript("test", productTestOutputPath)
+    : {
+        command: "npm test",
+        attempted: false,
+        passed: false,
+        outputPath: hasTestScript ? productTestOutputPath : undefined,
+        reason: hasTestScript ? "Command execution disabled for this readiness pass." : "No npm test script is defined.",
+      };
+  const startResult = runCommands && hasStartScript
+    ? runStartProbe(manualUrl, productStartOutputPath, productProbePath, productProbeMarkdownPath)
+    : {
+        command: "npm start",
+        attempted: false,
+        passed: false,
+        manualUrl,
+        outputPath: hasStartScript ? productStartOutputPath : undefined,
+        reason: hasStartScript ? "Command execution disabled for this readiness pass." : "No npm start script is defined.",
+      };
+  const checks = [
+    {
+      id: "product-spec-present",
+      label: "Product spec exists in reset workspace",
+      passed: fs.existsSync(productSpec),
+      severity: "blocker",
+      message: `Expected copied product spec at ${productSpec}.`,
+    },
+    {
+      id: "product-spec-registered",
+      label: "Product spec is registered as immutable source",
+      passed: Boolean(productSource),
+      severity: "blocker",
+      message: "The invoice dashboard product spec must be registered as a source before full-product work starts.",
+    },
+    {
+      id: "product-spec-unchanged",
+      label: "Product spec hash is unchanged",
+      passed: Boolean(productSourceMutation && !productSourceMutation.mutated),
+      severity: "blocker",
+      message: productSourceMutation?.reason ?? "The product spec source hash could not be checked.",
+    },
+    {
+      id: "dashboard-target-exists",
+      label: "Invoice dashboard target exists",
+      passed: fs.existsSync(dashboardTarget),
+      severity: "blocker",
+      message: `Expected dashboard target at ${dashboardTarget}.`,
+    },
+    {
+      id: "dashboard-package-json",
+      label: "Invoice dashboard package.json exists",
+      passed: Boolean(packageJson),
+      severity: "blocker",
+      message: `Expected package.json at ${packagePath}.`,
+    },
+    {
+      id: "dashboard-dependencies-accepted",
+      label: "Dashboard source dependencies are accepted",
+      passed: dashboardDependencies.satisfied,
+      severity: "blocker",
+      message: dashboardDependencies.dependsOn.length === 0
+        ? "No dashboard dependency refs were declared."
+        : dashboardDependencies.satisfied
+          ? "All declared dashboard dependency refs are accepted."
+          : `Missing accepted backend refs: ${dashboardDependencies.missingRefs.join(", ")}.`,
+    },
+    {
+      id: "dashboard-test-script",
+      label: "Invoice dashboard has npm test",
+      passed: hasTestScript,
+      severity: "blocker",
+      message: "The final product must expose npm test.",
+    },
+    {
+      id: "dashboard-test-passes",
+      label: "Invoice dashboard npm test passes",
+      passed: Boolean(testResult.passed),
+      severity: "blocker",
+      message: testResult.reason ?? "npm test must pass for the final product target.",
+    },
+    {
+      id: "dashboard-start-script",
+      label: "Invoice dashboard has npm start",
+      passed: hasStartScript,
+      severity: "blocker",
+      message: "The final product must expose npm start so a human can open the dashboard.",
+    },
+    {
+      id: "dashboard-start-probed",
+      label: "Invoice dashboard local URL is probed",
+      passed: Boolean(startResult.passed),
+      severity: "blocker",
+      message: startResult.reason ?? "The dashboard must start locally and respond to browser/API probes.",
+    },
+    {
+      id: "dashboard-slice-accepted",
+      label: "Invoice dashboard implementation slice is accepted",
+      passed: acceptedDashboardSlices.length > 0,
+      severity: "blocker",
+      message: "At least one dashboard/UI slice must pass worker, reviewer, and deterministic verification before product acceptance.",
+    },
+  ];
+  const blockers = checks
+    .filter((check) => !check.passed && check.severity === "blocker")
+    .map((check) => ({ id: check.id, label: check.label, message: check.message }));
+  return {
+    mode: "full-product",
+    generatedAt: new Date().toISOString(),
+    productName: "Invoice Operations Dashboard",
+    passed: blockers.length === 0,
+    productSpec: {
+      repoPath: sourceProductSpec,
+      workspacePath: productSpec,
+      exists: fs.existsSync(productSpec),
+      registered: Boolean(productSource),
+      sourceId: productSource?.id,
+      hash: productSource?.hash,
+      unchanged: Boolean(productSourceMutation && !productSourceMutation.mutated),
+      mutation: productSourceMutation,
+    },
+    target: {
+      name: "invoice-dashboard",
+      path: dashboardTarget,
+      exists: fs.existsSync(dashboardTarget),
+      packageJson: packagePath,
+      packageExists: Boolean(packageJson),
+      scripts,
+    },
+    dashboardDependencies,
+    commands: {
+      install: "npm install",
+      test: "npm test",
+      start: "npm start",
+      manualUrl,
+    },
+    commandResults: {
+      test: testResult,
+      start: startResult,
+    },
+    dashboardSlices: {
+      total: dashboardSlices.length,
+      active: activeDashboardSlices.length,
+      accepted: acceptedDashboardSlices.length,
+      ids: dashboardSlices.map((slice) => ({ id: slice.id, status: slice.status, refs: slice.frAcRefs })),
+    },
+    productReadinessSlices: {
+      total: productReadinessSlices.length,
+      active: activeProductReadinessSlices.length,
+      ids: productReadinessSlices.map((slice) => ({ id: slice.id, status: slice.status, refs: slice.frAcRefs })),
+    },
+    checks,
+    blockers,
+    noFurtherWorkVisible:
+      blockers.length > 0 &&
+      acceptedDashboardSlices.length > 0 &&
+      activeDashboardSlices.length === 0 &&
+      activeProductReadinessSlices.length === 0,
+  };
+}
+
+function ensureProductReadinessWork({ productReadiness, snapshot, turn }) {
+  if (!shouldCreateProductReadinessWork(productReadiness)) return undefined;
+
+  const activeReadinessSlice = snapshot.slices.find((slice) => isProductReadinessSlice(slice) && isActiveSlice(slice));
+  if (activeReadinessSlice) {
+    return {
+      turn,
+      kind: "product-readiness-work-visible",
+      sliceId: activeReadinessSlice.id,
+      status: activeReadinessSlice.status,
+      refs: activeReadinessSlice.frAcRefs,
+      blockers: productReadiness.blockers,
+      reason: "Runtime-readiness blockers are already represented by an active product readiness slice.",
+    };
+  }
+
+  const store = new SwarmStore(workspace);
+  try {
+    const productSource = findProductSpecSource(store.listSources());
+    const target = findDashboardTarget(store);
+    if (!productSource || !target) {
+      return undefined;
+    }
+
+    const selectedRefs = productReadinessRefs.filter((ref) => {
+      const lease = store.latestLeaseFor(ref);
+      return !lease || lease.status === "released";
+    });
+    if (selectedRefs.length === 0) {
+      return undefined;
+    }
+
+    const now = new Date().toISOString();
+    let lane = store.firstActiveLaneForTarget(target.id);
+    let laneCreated = false;
+    if (!lane) {
+      lane = {
+        id: makeId("lane"),
+        name: "Product Readiness Lane: Invoice Dashboard Runtime",
+        purpose: "Remove final local-runtime blockers for the invoice dashboard product.",
+        focusLabels: ["frontend", "dashboard", "product-readiness", "runtime", "live-smoke"],
+        targetId: target.id,
+        orchestrator: "live-overseer",
+        worktree: target.path,
+        state: "active",
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.insertLane(lane);
+      laneCreated = true;
+      store.addEvent(
+        createEvent({
+          actor: "live-acceptance-loop",
+          type: "lane.created",
+          entityType: "lane",
+          entityId: lane.id,
+          payload: {
+            reason: "Product readiness blockers needed a visible runtime lane.",
+            purpose: lane.purpose,
+          },
+        }),
+      );
+    }
+
+    const sourceRef = {
+      adapterId: productSource.adapterId,
+      kind: productSource.kind,
+      uri: productSource.uri,
+      title: productSource.title,
+      hash: productSource.hash,
+      section: "FR-PROD-001",
+    };
+    const blockerLabels = productReadiness.blockers
+      .filter((blocker) => productReadinessBlockerIds.has(blocker.id))
+      .map((blocker) => blocker.label);
+    const slice = {
+      id: makeId("slice"),
+      laneId: lane.id,
+      targetId: target.id,
+      title: "Resolve invoice dashboard product readiness",
+      status: "ready",
+      sourceRefs: [sourceRef],
+      frAcRefs: selectedRefs,
+      deliveryQuestion: "Can the invoice dashboard be started locally, expose the browser UI and JSON API, and pass npm test?",
+      workPackageType: "runtime_capability",
+      minimumMeaningfulOutcome: "removes_blocker",
+      scope: [
+        "Implement or repair npm start for the dashboard target.",
+        "Ensure the local dashboard UI is served by the app entrypoint.",
+        "Ensure JSON API endpoints used by the dashboard are served by the same local app.",
+        "Ensure npm test passes for the final dashboard target.",
+        "Use safe runtime proof: prefer bounded local probes or an exported in-process server test over detached background PowerShell jobs when sandbox policy blocks process cleanup.",
+      ],
+      outOfScope: [
+        "Do not mutate source specs.",
+        "Do not replace accepted backend/dashboard behavior with unrelated fixture-only code.",
+        "Do not add external services, credentials, or non-local dependencies.",
+        "Do not treat a long-running npm start timeout as failure when it prints the expected local URL and separate probes prove the app is serving.",
+      ],
+      expectedEvidence: [
+        "npm test output for invoice-dashboard.",
+        "npm start output showing a local URL.",
+        "Product readiness probe evidence for browser HTML, /api/summary JSON, and the mark-paid API workflow.",
+        "If direct detached-process probing is blocked, include the policy rejection plus an in-process HTTP probe that starts and closes the app safely.",
+      ],
+      unblockTargets: ["final-product-acceptance", "human-open-dashboard"],
+      verificationRequirements: [
+        "Run npm test in invoice-dashboard.",
+        "Run npm start and probe the browser dashboard URL.",
+        "Probe /api/summary for invoiceCount and openTotalCents.",
+        "Probe the mark-paid workflow by updating an overdue invoice to paid and confirming summary counts change.",
+        "For long-running servers, prove start output separately from a bounded HTTP probe that can cleanly close the server.",
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.insertSlice(slice);
+
+    const leases = selectedRefs.map((frAcRef) => {
+      const lease = {
+        id: makeId("lease"),
+        frAcRef,
+        laneId: lane.id,
+        sliceId: slice.id,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.insertLease(lease);
+      return lease;
+    });
+
+    const dependency = {
+      id: makeId("dependency"),
+      fromType: "slice",
+      fromId: slice.id,
+      target: "full product readiness probe",
+      reason: "Product readiness slices must prove the final dashboard can be started and opened locally.",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.insertDependency(dependency);
+
+    store.addEvent(
+      createEvent({
+        actor: "live-acceptance-loop",
+        type: "product_readiness.slice_created",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          reason: "Full-product readiness found runtime blockers after dashboard acceptance.",
+          blockers: productReadiness.blockers,
+          blockerLabels,
+          frAcRefs: selectedRefs,
+          laneId: lane.id,
+          sourceId: productSource.id,
+        },
+      }),
+    );
+    store.addEvent(
+      createEvent({
+        actor: "live-overseer",
+        type: "planner.decision",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          decisionType: "serve_product_readiness_slice",
+          deliveryQuestion: slice.deliveryQuestion,
+          workPackageType: slice.workPackageType,
+          minimumMeaningfulOutcome: slice.minimumMeaningfulOutcome,
+          selectedScope: selectedRefs,
+          sourceRefs: [productSource.id],
+          dependenciesConsidered: ["accepted dashboard implementation", "full product readiness probe"],
+          readinessEvidence: productReadiness.blockers,
+          protocolRules: ["runtime_blockers_become_visible_work", "require_final_product_probe"],
+          reason: "Runtime readiness blockers are implementation work, so the harness served a visible slice instead of stopping at hidden blocker state.",
+          rejectedAlternatives: [
+            {
+              action: "stop immediately as product_not_ready",
+              reason: "A target-local runtime repair is still available and should be attempted before final blockage.",
+            },
+          ],
+          expectedNextAction: "Dispatch a dashboard worker, review the repair, then run deterministic verification and final product probes.",
+          laneId: lane.id,
+        },
+      }),
+    );
+    refreshCheckpoint({
+      store,
+      role: "planner",
+      entityType: "slice",
+      entityId: slice.id,
+      actor: "live-acceptance-loop",
+      reason: "Product readiness feedback slice served.",
+    });
+    refreshCheckpoint({
+      store,
+      role: "planner",
+      entityType: "lane",
+      entityId: lane.id,
+      actor: "live-acceptance-loop",
+      reason: "Product readiness feedback updated lane planning state.",
+    });
+
+    return {
+      turn,
+      kind: "product-readiness-slice-created",
+      sliceId: slice.id,
+      laneId: lane.id,
+      laneCreated,
+      blockers: productReadiness.blockers,
+      refs: selectedRefs,
+      leases: leases.map((lease) => lease.frAcRef),
+      reason: "Runtime readiness blockers were converted into a visible implementation slice.",
+    };
+  } finally {
+    store.close();
+  }
+}
+
+function shouldCreateProductReadinessWork(productReadiness) {
+  if (!productReadiness || productReadiness.passed) return false;
+  if (!productReadiness.dashboardDependencies?.satisfied) return false;
+  if ((productReadiness.dashboardSlices?.accepted ?? 0) < 1) return false;
+  return productReadiness.blockers.some((blocker) => productReadinessBlockerIds.has(blocker.id));
+}
+
+function findDashboardTarget(store) {
+  const resolvedDashboardTarget = path.resolve(dashboardTarget).toLowerCase();
+  return store.listTargets().find((target) => {
+    const targetPath = path.resolve(target.path).toLowerCase();
+    return target.name === "invoice-dashboard" || targetPath === resolvedDashboardTarget || path.basename(target.path) === "invoice-dashboard";
+  });
+}
+
+function isActiveSlice(slice) {
+  return !["accepted", "closed"].includes(slice.status);
+}
+
+function isProductReadinessSlice(slice) {
+  return Array.isArray(slice.frAcRefs) && slice.frAcRefs.some((ref) => productReadinessRefs.includes(String(ref).toUpperCase()));
+}
+
+function inspectDashboardDependencyGate(snapshot) {
+  const dependsOn = parseDependsOnRefs(dashboardSpec);
+  const acceptedRefs = new Set();
+  for (const slice of snapshot.slices) {
+    if (slice.status !== "accepted") continue;
+    for (const ref of slice.frAcRefs ?? []) {
+      acceptedRefs.add(ref);
+    }
+    for (const lease of slice.leases ?? []) {
+      if (lease.status === "completed") {
+        acceptedRefs.add(lease.frAcRef);
+      }
+    }
+  }
+  const acceptedDependsOn = dependsOn.filter((ref) => acceptedRefs.has(ref));
+  const missingRefs = dependsOn.filter((ref) => !acceptedRefs.has(ref));
+  return {
+    source: dashboardSpec,
+    dependsOn,
+    acceptedRefs: acceptedDependsOn,
+    missingRefs,
+    satisfied: dependsOn.length > 0 && missingRefs.length === 0,
+  };
+}
+
+function parseDependsOnRefs(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  const content = fs.readFileSync(filePath, "utf8");
+  const match = /^Depends-On:\s*(.+)$/im.exec(content);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readJsonFile(filePath) {
+  if (!fs.existsSync(filePath)) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return { parseError: error.message };
+  }
+}
+
+function runNpmScript(scriptName, outputPath) {
+  const command = `npm ${scriptName}`;
+  const invocation = npmInvocation(scriptName);
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: dashboardTarget,
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  const output = [
+    `$ ${command}`,
+    "",
+    "## stdout",
+    result.stdout ?? "",
+    "",
+    "## stderr",
+    result.stderr ?? "",
+    "",
+    `status: ${result.status ?? "unknown"}`,
+    result.error ? `error: ${result.error.message}` : "",
+  ].filter(Boolean).join("\n");
+  fs.writeFileSync(outputPath, `${output}\n`, "utf8");
+  return {
+    command,
+    attempted: true,
+    passed: result.status === 0,
+    status: result.status,
+    signal: result.signal,
+    outputPath,
+    reason: result.status === 0 ? undefined : result.error?.message ?? `npm ${scriptName} exited with status ${result.status}`,
+  };
+}
+
+function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath) {
+  const outputFd = fs.openSync(outputPath, "w");
+  let child;
+  try {
+    fs.writeSync(outputFd, `$ npm start\n\n`);
+    const invocation = npmInvocation("start");
+    child = spawn(invocation.command, invocation.args, {
+      cwd: dashboardTarget,
+      stdio: ["ignore", outputFd, outputFd],
+      env: {
+        ...process.env,
+        PORT: "4321",
+        HOST: "127.0.0.1",
+      },
+    });
+
+    const uiProbe = waitForHttp(`${manualUrl}/`, {
+      label: "dashboard-html",
+      expectText: "Invoice Operations Dashboard",
+      timeoutMs: 7000,
+    });
+    const apiProbe = uiProbe.passed
+      ? waitForHttp(`${manualUrl}/api/summary`, {
+          label: "dashboard-summary-api",
+          expectJsonFields: ["invoiceCount", "openTotalCents"],
+          timeoutMs: 3000,
+        })
+      : { passed: false, reason: "Skipped API probe because UI probe failed." };
+    const markPaidProbe = apiProbe.passed
+      ? runMarkPaidProbe(manualUrl)
+      : { passed: false, reason: "Skipped mark-paid workflow because summary API probe failed." };
+    const probeArtifact = {
+      generatedAt: new Date().toISOString(),
+      command: "npm start",
+      cwd: dashboardTarget,
+      manualUrl,
+      passed: uiProbe.passed && apiProbe.passed && markPaidProbe.passed,
+      probes: {
+        ui: uiProbe,
+        api: apiProbe,
+        markPaid: markPaidProbe,
+      },
+    };
+    fs.writeFileSync(probeOutputPath, `${JSON.stringify(probeArtifact, null, 2)}\n`, "utf8");
+    fs.writeFileSync(probeMarkdownPath, renderProductProbeMarkdown(probeArtifact), "utf8");
+    fs.writeSync(outputFd, `\n\n## probes\n${JSON.stringify(probeArtifact, null, 2)}\n`);
+    return {
+      command: "npm start",
+      attempted: true,
+      passed: uiProbe.passed && apiProbe.passed,
+      manualUrl,
+      outputPath,
+      probeOutputPath,
+      probeMarkdownPath,
+      probes: {
+        ui: uiProbe,
+        api: apiProbe,
+        markPaid: markPaidProbe,
+      },
+      reason: uiProbe.passed && apiProbe.passed && markPaidProbe.passed ? undefined : markPaidProbe.reason ?? apiProbe.reason ?? uiProbe.reason,
+    };
+  } finally {
+    if (child && !child.killed) {
+      terminateProcessTree(child);
+    }
+    fs.closeSync(outputFd);
+  }
+}
+
+function npmInvocation(scriptName) {
+  if (process.platform === "win32") {
+    const npmCliPath = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    if (fs.existsSync(npmCliPath)) {
+      return { command: process.execPath, args: [npmCliPath, scriptName] };
+    }
+  }
+  return { command: "npm", args: [scriptName] };
+}
+
+function runMarkPaidProbe(manualUrl) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const manualUrl = ${JSON.stringify(manualUrl)};
+async function readJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const body = await response.text();
+  let json;
+  try {
+    json = JSON.parse(body);
+  } catch (error) {
+    throw new Error(url + " returned non-JSON: " + (error && error.message ? error.message : String(error)));
+  }
+  if (!response.ok) {
+    throw new Error(url + " returned HTTP " + response.status + ": " + body.slice(0, 200));
+  }
+  return json;
+}
+try {
+  const beforeSummary = await readJson(manualUrl + "/api/summary");
+  const overdue = await readJson(manualUrl + "/api/invoices?status=overdue");
+  const candidate = Array.isArray(overdue) && overdue.length > 0 ? overdue[0] : undefined;
+  if (!candidate || !candidate.id) {
+    throw new Error("No overdue invoice was available for the mark-paid workflow probe.");
+  }
+  const patched = await readJson(manualUrl + "/api/invoices/" + encodeURIComponent(candidate.id) + "/status", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status: "paid" })
+  });
+  const afterSummary = await readJson(manualUrl + "/api/summary");
+  const paidCountIncreased = afterSummary.paidCount === beforeSummary.paidCount + 1;
+  const overdueCountDecreased = afterSummary.overdueCount === beforeSummary.overdueCount - 1;
+  const patchedPaid = patched.status === "paid";
+  const passed = paidCountIncreased && overdueCountDecreased && patchedPaid;
+  console.log(JSON.stringify({
+    label: "mark-paid-workflow",
+    url: manualUrl + "/api/invoices/" + candidate.id + "/status",
+    passed,
+    status: 200,
+    candidate: { id: candidate.id, previousStatus: candidate.status },
+    patched: { id: patched.id, status: patched.status },
+    beforeSummary,
+    afterSummary,
+    paidCountIncreased,
+    overdueCountDecreased,
+    reason: passed ? undefined : "Mark-paid workflow did not update paid/overdue summary counts as expected."
+  }));
+  process.exit(passed ? 0 : 4);
+} catch (error) {
+  console.log(JSON.stringify({
+    label: "mark-paid-workflow",
+    url: manualUrl + "/api/invoices/:id/status",
+    passed: false,
+    reason: error && error.message ? error.message : String(error)
+  }));
+  process.exit(1);
+}`,
+    ],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  return parseProbeOutput(result.stdout, {
+    label: "mark-paid-workflow",
+    url: `${manualUrl}/api/invoices/:id/status`,
+    fallbackReason: (result.stderr || result.stdout || `probe exited ${result.status}`).trim(),
+  });
+}
+
+function terminateProcessTree(child) {
+  if (!child?.pid) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      child.kill();
+    } catch {
+      // The process may already be gone after taskkill.
+    }
+    child.unref();
+    return;
+  }
+  child.kill();
+  child.unref();
+}
+
+function waitForHttp(url, { label, expectText, expectJsonFields = [], timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+  let lastResult = {
+    label,
+    url,
+    passed: false,
+    expectedText: expectText,
+    expectedJsonFields: expectJsonFields,
+    reason: "No response before timeout.",
+  };
+  while (Date.now() < deadline) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `const url = ${JSON.stringify(url)};
+const expectText = ${JSON.stringify(expectText)};
+const expectedJsonFields = ${JSON.stringify(expectJsonFields)};
+try {
+  const response = await fetch(url);
+  const body = await response.text();
+  let json;
+  let jsonParseError;
+  try {
+    json = JSON.parse(body);
+  } catch (error) {
+    jsonParseError = error && error.message ? error.message : String(error);
+  }
+  const missingJsonFields = expectedJsonFields.filter((field) => !json || !Object.prototype.hasOwnProperty.call(json, field));
+  const textMatched = !expectText || body.includes(expectText);
+  const passed = response.ok && textMatched && missingJsonFields.length === 0;
+  const jsonFieldsPresent = Object.fromEntries(expectedJsonFields.map((field) => [field, Boolean(json && Object.prototype.hasOwnProperty.call(json, field))]));
+  const probe = {
+    label: ${JSON.stringify(label)},
+    url,
+    passed,
+    status: response.status,
+    ok: response.ok,
+    contentType: response.headers.get("content-type"),
+    expectedText: expectText || undefined,
+    textMatched,
+    expectedJsonFields,
+    jsonFieldsPresent,
+    missingJsonFields,
+    jsonPreview: json && typeof json === "object" ? Object.fromEntries(Object.entries(json).slice(0, 10)) : undefined,
+    jsonParseError: expectedJsonFields.length > 0 ? jsonParseError : undefined,
+    bodySnippet: body.slice(0, 500),
+    reason: passed ? undefined : (!response.ok ? "HTTP " + response.status : (!textMatched ? "Missing expected text: " + expectText : "Missing expected JSON fields: " + missingJsonFields.join(", "))),
+  };
+  console.log(JSON.stringify(probe));
+  if (!passed) {
+    process.exit(4);
+  }
+  process.exit(0);
+} catch (error) {
+  console.log(JSON.stringify({
+    label: ${JSON.stringify(label)},
+    url,
+    passed: false,
+    expectedText: expectText || undefined,
+    expectedJsonFields,
+    reason: error && error.message ? error.message : String(error)
+  }));
+  process.exit(1);
+}`,
+      ],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    const parsed = parseProbeOutput(result.stdout, {
+      label,
+      url,
+      expectedText: expectText,
+      expectedJsonFields: expectJsonFields,
+      fallbackReason: (result.stderr || result.stdout || `probe exited ${result.status}`).trim(),
+    });
+    if (result.status === 0) {
+      return parsed;
+    }
+    lastResult = parsed;
+    sleep(250);
+  }
+  return lastResult;
+}
+
+function parseProbeOutput(stdout, fallback) {
+  const trimmed = String(stdout ?? "").trim();
+  if (trimmed) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // fall through to fallback
+    }
+  }
+  return {
+    label: fallback.label,
+    url: fallback.url,
+    passed: false,
+    expectedText: fallback.expectedText,
+    expectedJsonFields: fallback.expectedJsonFields,
+    reason: fallback.fallbackReason || "Probe did not produce structured output.",
+  };
+}
+
+function sleep(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function renderProductReadinessMarkdown(readiness) {
+  const lines = [
+    "# Full Product Readiness",
+    "",
+    `Generated: ${readiness.generatedAt}`,
+    `Product: ${readiness.productName}`,
+    `Passed: ${readiness.passed ? "yes" : "no"}`,
+    `Manual URL: ${readiness.commands.manualUrl}`,
+    "",
+    "## Commands",
+    "",
+    `- Install: ${readiness.commands.install}`,
+    `- Test: ${readiness.commands.test}`,
+    `- Start: ${readiness.commands.start}`,
+    "",
+    "## Checks",
+    "",
+    "| Check | Result | Severity | Detail |",
+    "| --- | --- | --- | --- |",
+  ];
+  for (const check of readiness.checks) {
+    lines.push(
+      `| ${escapeMarkdownTableCell(check.label)} | ${check.passed ? "passed" : "failed"} | ${escapeMarkdownTableCell(
+        check.severity,
+      )} | ${escapeMarkdownTableCell(check.message)} |`,
+    );
+  }
+  lines.push("", "## Blockers", "");
+  if (readiness.blockers.length === 0) {
+    lines.push("None.");
+  } else {
+    for (const blocker of readiness.blockers) {
+      lines.push(`- ${blocker.label}: ${blocker.message}`);
+    }
+  }
+  lines.push("", "## Dashboard Dependency Gate", "");
+  lines.push(`Satisfied: ${readiness.dashboardDependencies.satisfied ? "yes" : "no"}`);
+  lines.push(`Source: ${readiness.dashboardDependencies.source}`);
+  lines.push(`Declared refs: ${readiness.dashboardDependencies.dependsOn.join(", ") || "none"}`);
+  lines.push(`Accepted refs: ${readiness.dashboardDependencies.acceptedRefs.join(", ") || "none"}`);
+  lines.push(`Missing refs: ${readiness.dashboardDependencies.missingRefs.join(", ") || "none"}`);
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function renderProductProbeMarkdown(probe) {
+  const lines = [
+    "# Invoice Dashboard Product Probe",
+    "",
+    `Generated: ${probe.generatedAt}`,
+    `Manual URL: ${probe.manualUrl}`,
+    `Passed: ${probe.passed ? "yes" : "no"}`,
+    "",
+    "## Probes",
+    "",
+    "| Probe | Result | Status | Detail |",
+    "| --- | --- | --- | --- |",
+  ];
+  for (const [key, result] of Object.entries(probe.probes)) {
+    lines.push(
+      `| ${escapeMarkdownTableCell(result.label ?? key)} | ${result.passed ? "passed" : "failed"} | ${escapeMarkdownTableCell(
+        result.status ?? "",
+      )} | ${escapeMarkdownTableCell(result.reason ?? result.contentType ?? result.url)} |`,
+    );
+  }
+  lines.push("", "## Required API Fields", "");
+  const apiProbe = probe.probes.api;
+  if (!apiProbe?.expectedJsonFields?.length) {
+    lines.push("None.");
+  } else {
+    for (const field of apiProbe.expectedJsonFields) {
+      lines.push(`- ${field}: ${apiProbe.jsonFieldsPresent?.[field] ? "present" : "missing"}`);
+    }
+  }
+  const markPaidProbe = probe.probes.markPaid;
+  lines.push("", "## Mark Paid Workflow", "");
+  if (!markPaidProbe) {
+    lines.push("Not run.");
+  } else {
+    lines.push(`Passed: ${markPaidProbe.passed ? "yes" : "no"}`);
+    lines.push(`Invoice: ${markPaidProbe.candidate?.id ?? "unknown"}`);
+    lines.push(`Paid count increased: ${markPaidProbe.paidCountIncreased ? "yes" : "no"}`);
+    lines.push(`Overdue count decreased: ${markPaidProbe.overdueCountDecreased ? "yes" : "no"}`);
+    if (markPaidProbe.reason) lines.push(`Reason: ${markPaidProbe.reason}`);
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
 }
 
 function raiseScenarioEscalation(level, message) {

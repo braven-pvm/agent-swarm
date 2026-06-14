@@ -1,6 +1,6 @@
 # Worker Driver Adapters
 
-Date: 2026-06-10
+Date: 2026-06-12
 
 The harness dispatches implementation workers through a model-agnostic adapter registry instead of a hardcoded Codex CLI invocation. Feasibility research and vendor verification: [Claude Code and Model-Agnostic Workers](../research/claude-code-and-model-agnostic-workers.md).
 
@@ -21,6 +21,8 @@ Shared invariants the adapter must not change: the worker prompt, the worker-res
 
 ```yaml
 protocol:
+  recovery:
+    childIdleTimeoutSeconds: 0
   workers:
     defaultDriver: codex
     drivers:
@@ -35,19 +37,21 @@ protocol:
 
 `swarm run <slice> --driver <id>` overrides the default. Tests and local stubs override the binary per driver with `SWARM_<DRIVER>_COMMAND` / `SWARM_<DRIVER>_ARGS` (JSON array), e.g. `SWARM_CLAUDE_COMMAND` / `SWARM_CLAUDE_ARGS`.
 
+`protocol.recovery.childIdleTimeoutSeconds` is off by default (`0`). When set, the spawn runner terminates a child process that produces no stdout/stderr for that duration, records a blocked heartbeat and `<role>.child_idle_timeout`, and lets the live runner attempt same-session `recovery revive` before restart fallback. The environment variables `SWARM_AGENT_IDLE_TIMEOUT_SECONDS` and `SWARM_CHILD_IDLE_TIMEOUT_SECONDS` override the protocol value for local smoke runs and tests.
+
 ## Security posture per driver
 
 - `codex`: OS-level sandbox via `--sandbox workspace-write`.
 - `claude`: policy-level permissions only (no OS sandbox on Windows). Default `acceptEdits` plus a tool allowlist; use `bypassPermissions` only for disposable fixtures or containerized targets. `settingSources: ""` keeps developer-machine plugins/skills out of worker runs. Headless auth uses the machine's Claude login; CI should set `ANTHROPIC_API_KEY`.
 
-## Read-only and reviewer dispatch
+## Role posture and reviewer dispatch
 
-`WorkerRunSpec` carries two fields that let one adapter serve both worker and reviewer roles:
+`WorkerRunSpec` carries two fields that let one adapter serve worker, reviewer, and overseer roles:
 
-- `readOnly` — when `true`, the adapter forces a read-only posture, **authoritative over driver config**: codex uses `--sandbox read-only`; claude uses `--permission-mode plan` with no edit-tool allowlist. A reviewer's read-only guarantee cannot be defeated by a `driverConfig` override (the default codex config is `workspace-write`, so this matters).
+- `readOnly` — when `true`, the adapter forces a read-only posture, **authoritative over driver config**: codex uses `--sandbox read-only`; claude uses `--permission-mode plan` with no edit-tool allowlist. This is used for roles that must remain analysis-only, such as the visible overseer; it is not forced for reviewers.
 - `resultSchema` — the Zod schema `finalize` validates the structured result against. Defaults to the worker-result schema; the reviewer passes the review-result schema. The codex adapter ignores it (codex validates via its own `--output-schema` file).
 
-`swarm review <slice> --driver claude` runs an independent reviewer under `--permission-mode plan`. The `inspectSourceMutations` before/after check remains as defense-in-depth against any driver mutating immutable source specs.
+`swarm review <slice> --driver <id>` runs an independent reviewer with the target protocol's normal driver posture, not a hardcoded read-only posture. Reviewers may use local commands/tools when useful, while their prompt keeps the role independent: review should produce findings/evidence, not silently repair implementation work unless a project protocol explicitly asks for that. Immutable source specs remain protected by the `inspectSourceMutations` before/after check.
 
 The visible overseer (`swarm orchestrate`) dispatches through the same registry under the read-only posture, reusing `readOnly` + `resultSchema` (the overseer-decision schema). `swarm orchestrate --driver claude` runs the overseer under `--permission-mode plan`. The overseer agent run is read-only analysis; the separate bounded `--execute` command flow is harness-driven and unaffected.
 

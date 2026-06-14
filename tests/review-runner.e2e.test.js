@@ -147,6 +147,20 @@ const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const status = process.env.FAKE_REVIEW_STATUS || "accepted";
 const refs = JSON.parse(process.env.FAKE_REVIEW_REFS || "[]");
 const accepted = status === "accepted";
+const prompt = args.at(-1) || "";
+const sandboxIndex = args.indexOf("--sandbox");
+if (sandboxIndex >= 0 && args[sandboxIndex + 1] === "read-only") {
+  console.error("reviewer should use normal configured command/tool access, not forced read-only sandbox");
+  process.exit(3);
+}
+if (!prompt.includes("You may run npm test, node --test, git, shell, or other local inspection commands")) {
+  console.error("review prompt is missing the reviewer command/tool access rule");
+  process.exit(2);
+}
+if (!prompt.includes("safe.directory=") || !prompt.includes("normalized forward-slash path")) {
+  console.error("review prompt should recommend normalized forward-slash git safe.directory usage");
+  process.exit(4);
+}
 console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-review-thread" }));
 console.log(JSON.stringify({ type: "review.analysis", status }));
 if (outputPath) {

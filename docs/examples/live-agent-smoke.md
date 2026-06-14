@@ -1,8 +1,8 @@
 # Live Agent Smoke Demo
 
-Date: 2026-06-10
+Date: 2026-06-12
 
-Status: Phase 1 reset/run-mode setup, Phase 2 independent reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer planning, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented. Full-product mode is still planned.
+Status: Phase 1 reset/run-mode setup through Phase 8C-18 real-agent rerun and immediate hardening are implemented or attempted as documented. The current hardening baseline is a real full-product smoke run that accepted with product readiness passed and produced a runnable Invoice Operations Dashboard; completed runs preserve terminal workspace state and archive final target snapshots before any later reset, and the live fault suite now covers same-session revive after a stalled child worker.
 
 This demo is the resettable real-world smoke test for the harness. Unlike fixture demos, it must use a real Codex overseer/planner to coordinate real Codex workers and real Codex verifier/reviewer agents.
 
@@ -62,6 +62,13 @@ Each run is also archived outside the reset workspace by default:
 .swarm-demo/live-agent-run-history/
 ```
 
+Lifecycle rule: reset happens at the start of a new run, not at completion. After a run finishes, `.swarm-demo/live-agent-smoke` remains in its terminal state for inspection. The next `--reset` run clears and recreates the workspace as its first action. Archived runs also include final target snapshots:
+
+```text
+.swarm-demo/live-agent-run-history/<run-id>/final-targets/invoice-api/
+.swarm-demo/live-agent-run-history/<run-id>/final-targets/invoice-dashboard/
+```
+
 Compare the latest two archived runs:
 
 ```powershell
@@ -111,6 +118,14 @@ node scripts\run-live-agent-demo.mjs --reset --fault stale-run
 ```
 
 This lets the overseer create the slice, injects a stale worker run on that slice, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale-run blocker only after independent review accepts the restarted work, and then runs deterministic verification.
+
+Run the Phase 6F supervised-revive fault:
+
+```powershell
+node scripts\run-live-agent-demo.mjs --reset --fault supervised-revive
+```
+
+This runs a real child-worker process through the configured driver path, lets it emit JSONL and then go quiet without a structured result, terminates it through child idle supervision, records `worker.child_idle_timeout`, revives the captured session through `recovery revive`, and still requires independent review plus deterministic verification before acceptance. For local fake-Codex tests the timeout is usually set with `SWARM_AGENT_IDLE_TIMEOUT_SECONDS=1`; real runs can use environment overrides or target protocol `recovery.childIdleTimeoutSeconds`.
 
 Run the Phase 6D context-handoff fault:
 
@@ -193,19 +208,84 @@ For CI-style coverage, `tests/review-runner.e2e.test.js` uses a fake Codex comma
 
 For Phase 4, Phase 5A, and Phase 5B CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer, worker, and reviewer runner paths, including `--execute`, child dispatch, and command blocking.
 
-For Phase 5C, Phase 6A, Phase 6B, Phase 6C, Phase 6D, Phase 6E, Phase 7A, and Phase 7B-1 CI-style coverage, `tests/live-agent-runner.e2e.test.js` uses fake Codex while exercising the real live runner and real `--driver codex` overseer/worker/reviewer/recovery paths. It proves the loop reaches deterministic acceptance after review, source mutation stops before hidden agent work, reviewer repair blocks once before recovering to acceptance, stale-run recovery marks, restarts, clears, reviews, and verifies, context handoff regenerates role packets before continuing to acceptance, low-signal warnings stay visible without bypassing gates, every run writes a classified artifact index, and archived runs can be compared across resets.
+For Phase 5C, Phase 6A, Phase 6B, Phase 6C, Phase 6D, Phase 6E, Phase 6F, Phase 7A, and Phase 7B-1 CI-style coverage, `tests/live-agent-runner.e2e.test.js` uses fake Codex while exercising the real live runner and real `--driver codex` overseer/worker/reviewer/recovery paths. It proves the loop reaches deterministic acceptance after review, source mutation stops before hidden agent work, reviewer repair blocks once before recovering to acceptance, stale-run recovery marks, restarts, clears, reviews, and verifies, context handoff regenerates role packets before continuing to acceptance, low-signal warnings stay visible without bypassing gates, supervised revive kills and resumes a stalled worker session before restart fallback, every run writes a classified artifact index, and archived runs can be compared across resets.
 
 For Phase 7B-2 CI-style coverage, `tests/web-viewer.e2e.test.js` starts `swarm serve` with an isolated run-history fixture and confirms the History tab, history APIs, latest-run comparison, and artifact index details are browser/API-visible.
 
-Future full-product mode:
+Run Phase 8 full-product mode:
 
 ```powershell
 npm run demo:live-agent:full
 ```
 
-Full-product mode should start from an incomplete target workspace and end with a locally runnable invoice dashboard, or with exact blockers explaining why the product did not complete.
+Run the resettable real-agent full-product calibration command:
 
-`demo:live-agent:full` is not implemented yet.
+```powershell
+npm run smoke:live-agent:full
+```
+
+Full-product mode starts from an incomplete target workspace and uses broader scenario limits. It must not claim success after the first accepted backend slice. Phase 8B continues into the dashboard lane, runs dashboard worker/reviewer/verification, runs dashboard `npm test`, starts the local dashboard, and probes the browser/API surface before final product acceptance. Phase 8C-1 adds structured probe artifacts so the final readiness claim has durable HTML/API evidence.
+
+Bounded runs can still stop with `product_not_ready` when limits expire before the dashboard is accepted and probed. That is intentional: the run should either produce a working local invoice dashboard or exact blockers explaining what remains.
+
+Latest real-agent calibration attempts:
+
+- Run id: `LAR-20260611T065131-live-agent-smoke-none-25232`
+- Outcome: `blocked`
+- Classification: `product_not_ready`
+- Main blocker: reviewers blocked because read-only command policy rejected `npm test` / `node --test`
+- Fix applied: reviewer dispatch now uses normal project protocol tool access, and reviewer prompts still separate independent review from deterministic `swarm verify`
+- Run id: `LAR-20260611T073238-live-agent-smoke-none-33448`
+- Outcome: `blocked`
+- Classification: `product_not_ready`
+- Main positive signal: two backend slices reached accepted status and deterministic verification ran successfully
+- Main blocker: overseer prompt/state drift caused repeated artifact/prompt inspection instead of dispatching the active third backend slice
+- Fix applied: overseer prompt now includes compact top-level `slices`, `actionableState.activeSliceQueue`, and exact active-slice `nextCommand` values; prompt artifact is audit-only
+- Run id: `LAR-20260611T082909-live-agent-smoke-none-47084`
+- Outcome: `blocked`
+- Classification: `product_not_ready`
+- Main positive signal: compact state worked and four backend slices reached accepted status
+- Main blocker: calibrated budget/dependency visibility; dashboard dependencies still missed `AC-INV-002.2` and `AC-INV-003.1`
+- Fix applied: full-product budget increased and product readiness now lists declared/accepted/missing dashboard dependency refs
+- Run id: `LAR-20260611T091057-live-agent-smoke-none-10516`
+- Outcome: `blocked`
+- Classification: `product_not_ready`
+- Main positive signal: backend reached accepted status through `AC-INV-002.2`
+- Main blocker: overseer attempted dashboard pull while `AC-INV-003.1` was still missing; lower-level planner rejected it
+- Fix applied: compact state now includes `actionableState.nextSourcePullQueue` and `actionableState.blockedSourceQueue`; overseer execution preflights dependency-blocked `slices pull`
+- Run id: `LAR-20260611T103236-live-agent-smoke-none-43640`
+- Outcome: `blocked`
+- Classification: `product_not_ready`
+- Main positive signal: backend dependency work completed, dashboard work unlocked, `SLICE-cd4193e4` reached accepted status, and deterministic dashboard `npm test` passed
+- Main blocker: product readiness requires dashboard `npm start` and a local URL probe; the target still has only `npm test`
+- Fix applied during this cycle: overseer launches now use short artifact-backed prompts instead of passing the full prompt through Windows argv; compact prompt state exposes `sliceSummary` and `agentRunSummary`
+- Fix applied after this run: product-readiness blockers now create a visible dashboard-target slice titled `Resolve invoice dashboard product readiness`, tied to `AC-PROD-001.1` through `AC-PROD-001.4`; fake full-product E2E proves this follow-up slice can repair missing `npm start` and pass final probes
+- Latest accepted run: `LAR-20260611T181720-live-agent-smoke-none-42040`
+- Outcome: `accepted`
+- Main positive signal: real agents completed backend-before-dashboard sequencing, served dashboard work only after accepted backend capabilities, implemented/reviewed/verified product readiness, passed final product probes, and cleared all stale dashboard dependency warnings from active escalations
+- Final summary: 40 turns, 5 slices, 24 agent runs, 5 verification runs, `productReadiness.passed === true`, failed assertions `[]`, `dependencyWarningClearances: 6`, and `counts.activeEscalations: 0`
+- Latest hardening answer: reset-first runs can stop related viewer/product processes before reset, child prompts use normalized Git safe-directory paths, and repeated non-blocking warning restatements are suppressed/cleaned up
+- Next: verify Phase 8C-18 hardening, then rerun the real full-product smoke to confirm the final accepted snapshot is free of stale active warning noise
+
+Full-product artifacts:
+
+```text
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-readiness.json
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-readiness.md
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-dashboard-test-output.txt
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-dashboard-start-output.txt
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-dashboard-probe.json
+.swarm-demo/live-agent-smoke/live-agent-run-artifacts/product-dashboard-probe.md
+```
+
+The full-product summary includes:
+
+- `mode: "full-product"`
+- `phase: "phase-8-full-product-execution"`
+- `productReadiness`
+- `outcomeClassification.code: "accepted"` when dashboard verification, tests, and start/API probes pass
+- `outcomeClassification.code: "product_not_ready"` when bounded execution stops before the dashboard can be opened/probed
+- final commands and manual inspection URL
 
 The UI should show progress while the overseer:
 
@@ -223,6 +303,7 @@ In full-product mode, the UI and final summary should also show:
 - final product commands
 - local inspection URL
 - final product run/check status
+- product-readiness follow-up slices when final runtime blockers remain
 - accepted and blocked FR/ACs by product area
 
 ## Expected Workspace
@@ -261,11 +342,13 @@ The scripted rehearsal is useful when:
 
 The ultimate full-product run is useful when:
 
+- backend-only acceptance does not count as product acceptance
 - the final dashboard can be opened locally
 - summary cards, filters, invoice detail, and mark-paid flow work
 - the browser UI uses the backend API
 - all accepted product FR/ACs have evidence
 - any incomplete product work is blocked with exact reasons
+- accepted final summaries do not retain stale dependency warnings as active escalation noise
 
 ## Non-Goals
 

@@ -63,6 +63,9 @@ test("web viewer serves read-only observability HTML and APIs", async () => {
     assert.match(html, /Latest Comparison/);
     assert.match(html, /Artifact Index/);
     assert.match(html, /assets\/app\.js/);
+    const appJs = await text(`http://127.0.0.1:${port}/assets/app.js`);
+    assert.match(appJs, /Last Signal/);
+    assert.match(appJs, /no recent signal/);
 
     const snapshot = await json(`http://127.0.0.1:${port}/api/snapshot?events=5`);
     assert.equal(snapshot.runMode, "scripted-codex");

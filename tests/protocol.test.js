@@ -11,6 +11,7 @@ test("loads default protocol when target has no override", () => {
   assert.equal(protocol.protocol.planning.heartbeat.defaultStaleAfterSeconds, 300);
   assert.equal(protocol.protocol.recovery.reviveRetries, 2);
   assert.equal(protocol.protocol.recovery.highlightFinalAttempt, true);
+  assert.equal(protocol.protocol.recovery.childIdleTimeoutSeconds, 0);
 });
 
 test("merges target protocol override without dropping defaults", () => {
@@ -34,6 +35,7 @@ test("merges target protocol override without dropping defaults", () => {
   assert.equal(protocol.protocol.planning.heartbeat.inferFromEvents, true);
   assert.equal(protocol.protocol.recovery.reviveRetries, 4);
   assert.equal(protocol.protocol.recovery.highlightFinalAttempt, true);
+  assert.equal(protocol.protocol.recovery.childIdleTimeoutSeconds, 0);
   assert.equal(protocol.protocol.verification?.behaviorFirst, true);
 });
 
