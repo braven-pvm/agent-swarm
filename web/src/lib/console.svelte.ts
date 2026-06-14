@@ -11,6 +11,7 @@ export interface AgentRosterRow {
   now: string;            // latest activity label
   next?: string;          // next intended action (from checkpoint, matched by createdBy === actor)
   stallMs?: number;       // ms since last heartbeat when stale (> 5m), else undefined
+  runtimeMs?: number;     // duration of the latest agent run for this actor
   latest: string;         // heartbeat timestamp
   runStatus?: string;
 }
@@ -65,6 +66,14 @@ export function createConsoleStore() {
       if (cp) row.next = (cp.payload as Record<string, unknown>).nextIntendedAction as string | undefined;
       const ageMs = nowMs - Date.parse(row.latest);
       if (Number.isFinite(ageMs) && ageMs > 5 * 60 * 1000) row.stallMs = ageMs;
+      // per-actor runtime: latest run by startedAt
+      const actorRuns = snapshot.agentRuns.filter((r) => r.actor === row.actor);
+      if (actorRuns.length > 0) {
+        const latest = actorRuns.reduce((a, b) => (a.startedAt >= b.startedAt ? a : b));
+        const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
+        const rt = endMs - Date.parse(latest.startedAt);
+        if (Number.isFinite(rt)) row.runtimeMs = rt;
+      }
     }
     return Array.from(byActor.values()).sort((a, b) => a.actor.localeCompare(b.actor));
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -66,6 +66,22 @@ describe("tokenizeCommand", () => {
     const tokens = tokenizeCommand("vitest --files src/foo.test.ts");
     const flag = tokens.find((t) => t.text === "--files");
     expect(flag?.kind).toBe("flag");
+  });
+});
+
+describe("formatDuration", () => {
+  it("formats seconds", () => {
+    expect(formatDuration(45_000)).toBe("45s");
+  });
+  it("formats minutes", () => {
+    expect(formatDuration(600_000)).toBe("10m");
+  });
+  it("formats hours and minutes", () => {
+    expect(formatDuration(3_720_000)).toBe("1h 2m");
+  });
+  it("returns empty string for negative or NaN", () => {
+    expect(formatDuration(-1)).toBe("");
+    expect(formatDuration(NaN)).toBe("");
   });
 });
 

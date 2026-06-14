@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
-  import { activityVerb, prettifyTarget, tokenizeCommand } from "~/lib/format";
+  import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration } from "~/lib/format";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
@@ -45,7 +45,7 @@
     </div>
 
     {#if sel.kind === "slice" && slice}
-      <h4>{slice.title} · {slice.status}</h4>
+      <h4>{slice.title} · {slice.status}<span class="muted"> · {formatDuration((["accepted","closed"].includes(slice.status) ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt))}</span></h4>
       <div class="proof">
         {#each chain as row (row.ref)}
           <div class="proof-ref">

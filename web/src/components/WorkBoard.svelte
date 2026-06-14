@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { SliceStatus } from "~/lib/types";
+  import { formatDuration } from "~/lib/format";
   let { store, onSelect }: { store: ConsoleStore; onSelect: (sliceId: string) => void } = $props();
   const COLUMNS: { key: SliceStatus[]; label: string }[] = [
     { key: ["candidate", "ready", "claimed"], label: "Queued" },
@@ -12,6 +13,10 @@
   const slices = $derived(store.snapshot?.slices ?? []);
   function inColumn(statuses: SliceStatus[]) { return slices.filter((s) => statuses.includes(s.status)); }
   function agentActors(slice: (typeof slices)[number]): string[] { return [...new Set(slice.agentRuns.map((r) => r.actor.split("-")[0]))]; }
+  function sliceDur(slice: (typeof slices)[number]): string {
+    const terminal = ["accepted", "closed"].includes(slice.status);
+    return formatDuration((terminal ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt));
+  }
 </script>
 
 <section class="board">
@@ -28,6 +33,7 @@
           <div class="card-meta">
             <span class="evidence">evidence: {slice.evidence.length}</span>
             {#each agentActors(slice) as a}<span class="agent-chip">{a}</span>{/each}
+            <span class="slice-dur" title={["accepted","closed"].includes(slice.status) ? "total time" : "open for"}>{sliceDur(slice)}</span>
           </div>
         </button>
       {/each}

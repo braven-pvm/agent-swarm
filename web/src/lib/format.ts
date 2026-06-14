@@ -1,5 +1,16 @@
 import type { EscalationRecord } from "~/lib/types";
 
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
 export interface CmdToken { text: string; kind: "exe" | "flag" | "arg"; }
 // Split a (already prettified) command into styled tokens: first token = executable/subject,
 // tokens starting with - or -- (after any leading quote) = flags, everything else = args.

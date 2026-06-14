@@ -23,8 +23,12 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 ui-mo
 .agent, .slice-card, .esc, .turn { display: block; width: 100%; text-align: left; background: #20262c; border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; color: var(--ink); cursor: pointer; }
 .agent-head { display: flex; gap: 6px; align-items: center; }
 .agent-name { font-weight: 600; } .agent-role, .muted { color: var(--muted); }
-.agent-now { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.agent-next { color: var(--blue); font-size: 11px; margin-top: 1px; }
+.agent-now { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.agent-next { color: var(--blue); font-size: 11px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.agent.active { box-shadow: inset 2px 0 0 var(--blue); background: rgba(88,166,255,.06); }
+.agent.blocked { box-shadow: inset 2px 0 0 var(--red); background: rgba(248,81,73,.06); }
+.runtime { font-size: 9px; color: var(--muted); margin-left: 6px; }
+.slice-dur { color: var(--muted); font-size: 10px; }
 .stall { color: var(--amber); font-size: 11px; margin-top: 1px; }
 .card-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px; }
 .agent-chip { background: #2c3238; color: var(--muted); border-radius: 8px; padding: 0 5px; font-size: 10px; }
