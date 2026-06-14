@@ -46,12 +46,17 @@ export function createConsoleStore() {
       byActor.set(hb.actor, row);
     }
     // newest agent_event per actor refines the "now:" narrative
+    const seenActor = new Set<string>();
     for (let i = snapshot.recentEvents.length - 1; i >= 0; i -= 1) {
       const ev = snapshot.recentEvents[i];
-      if (!ev.type.endsWith("agent_event")) continue;
+      if (!ev.type.endsWith("agent_event") || seenActor.has(ev.actor)) continue;
+      seenActor.add(ev.actor); // first hit per actor = newest agent_event for that actor
       const activity = ev.payload?.activity as AgentActivity | undefined;
       const row = byActor.get(ev.actor);
-      if (row && activity && ev.timestamp >= row.latest) { row.now = activity.label; row.state = activity.state; }
+      if (row && activity && ev.timestamp >= row.latest) {
+        row.now = activity.label;
+        row.state = activity.state;
+      }
     }
     // enrich: next-action from checkpoint (matched by createdBy), stall if heartbeat is old
     const nowMs = Date.now();

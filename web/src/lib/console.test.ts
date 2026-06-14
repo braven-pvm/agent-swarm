@@ -33,6 +33,10 @@ describe("console store", () => {
     const hb: HeartbeatRecord = { id: "heartbeat:backend-worker", actor: "backend-worker", state: "editing", detail: "Editing a.ts", timestamp: "2026-06-14T08:01:00Z" };
     s.applyHeartbeat(hb);
     expect(s.agents.find((a) => a.actor === "backend-worker")!.state).toBe("editing");
+    // applying an older heartbeat must NOT overwrite
+    const older: HeartbeatRecord = { id: "heartbeat:backend-worker", actor: "backend-worker", state: "reading", detail: "Reading b.ts", timestamp: "2026-06-14T08:00:30Z" };
+    s.applyHeartbeat(older);
+    expect(s.agents.find((a) => a.actor === "backend-worker")!.state).toBe("editing");
   });
 
   it("applyEvent caps recentEvents and updates the agent narrative", () => {
@@ -53,5 +57,42 @@ describe("console store", () => {
     expect(chain[0].leaseStatus).toBe("completed");
     expect(chain[0].reviewFinding?.status).toBe("passed");
     expect(chain[0].citations).toContain("test passes");
+  });
+
+  it("applyEvent caps recentEvents at 200, keeping newest", () => {
+    const s = createConsoleStore();
+    s.hydrate(baseSnapshot());
+    for (let n = 1; n <= 250; n += 1) {
+      const ts = new Date(Date.UTC(2026, 5, 14, 8, 0, n)).toISOString();
+      const ev: HarnessEvent = {
+        id: `E${n}`, timestamp: ts, actor: "backend-worker",
+        type: "worker.agent_event", entityType: "slice", entityId: "SLICE-1",
+        payload: { activity: { state: "testing", target: "npm test", label: `Step ${n}` } },
+      };
+      s.applyEvent(ev);
+    }
+    expect(s.snapshot!.recentEvents.length).toBe(200);
+    // newest event (n=250) must be the last element
+    expect(s.snapshot!.recentEvents[199].id).toBe("E250");
+  });
+
+  it("agents roster uses only the newest agent_event per actor", () => {
+    const s = createConsoleStore();
+    s.hydrate(baseSnapshot());
+    // actor starts with heartbeat at 08:00 (state "idle")
+    const ev1: HarnessEvent = {
+      id: "AE1", timestamp: "2026-06-14T08:03:00Z", actor: "backend-worker",
+      type: "worker.agent_event", entityType: "slice", entityId: "SLICE-1",
+      payload: { activity: { state: "editing", target: "a.ts", label: "Editing a.ts" } },
+    };
+    const ev2: HarnessEvent = {
+      id: "AE2", timestamp: "2026-06-14T08:05:00Z", actor: "backend-worker",
+      type: "worker.agent_event", entityType: "slice", entityId: "SLICE-1",
+      payload: { activity: { state: "testing", target: "npm test", label: "Running npm test" } },
+    };
+    s.applyEvent(ev1);
+    s.applyEvent(ev2);
+    const row = s.agents.find((a) => a.actor === "backend-worker")!;
+    expect(row.now).toBe("Running npm test"); // newest wins, not "Editing a.ts"
   });
 });
