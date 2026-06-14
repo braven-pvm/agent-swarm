@@ -5,6 +5,7 @@ import { URL } from "node:url";
 import { artifactsDir } from "./paths.js";
 import { readSourceText } from "./source-adapter.js";
 import { sourceDomain, sourcePriority, sourceTags } from "./source-index.js";
+import { EventTailer } from "./event-tailer.js";
 import { SwarmStore } from "./storage.js";
 import {
   buildObservabilitySnapshot,
@@ -70,6 +71,37 @@ export function createWebViewerServer(input: {
           return;
         }
         sendJson(response, comparison);
+        return;
+      }
+
+      // NOTE: /api/stream is handled here with an early return so the long-lived SSE
+      // connection does NOT fall into the per-request SwarmStore block below, which
+      // opens and closes a store in a finally — incompatible with a persistent SSE stream.
+      if (requestUrl.pathname === "/api/stream") {
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        });
+        response.write("retry: 3000\n\n");
+        const streamStore = new SwarmStore(input.workspace);
+        const send = (eventName: string, data: unknown) => {
+          response.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+        const tailer = new EventTailer(streamStore, {
+          intervalMs: 400,
+          onEvent: (event) => send("event.appended", event),
+          onHeartbeat: (heartbeat) => send("heartbeat.changed", heartbeat),
+        });
+        tailer.start();
+        const keepAlive = setInterval(() => response.write(": keep-alive\n\n"), 15000);
+        const cleanup = () => {
+          clearInterval(keepAlive);
+          tailer.stop();
+          streamStore.close();
+        };
+        request.on("close", cleanup);
+        response.on("close", cleanup);
         return;
       }
 
