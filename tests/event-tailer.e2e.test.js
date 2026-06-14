@@ -24,6 +24,7 @@ test("tailer emits new events and changed heartbeats, not duplicates", async () 
   store.upsertHeartbeat({ actor: "w", state: "thinking" });
   await new Promise((r) => setTimeout(r, 80));
   store.upsertHeartbeat({ actor: "w", state: "thinking" }); // unchanged → no new emit
+  await new Promise((r) => setTimeout(r, 40));              // let a poll tick observe the unchanged thinking
   store.upsertHeartbeat({ actor: "w", state: "editing" });  // changed → emit
   await new Promise((r) => setTimeout(r, 80));
   tailer.stop();
