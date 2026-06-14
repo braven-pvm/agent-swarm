@@ -24,7 +24,7 @@ import { loadProtocol } from "./protocol.js";
 import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
-import { extractMarkdownSections, sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags, type SourceIndexMetadata } from "./source-index.js";
+import { sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags, type SourceIndexMetadata } from "./source-index.js";
 import {
   RUN_MODE_META_KEY,
   DEFAULT_RUN_MODE,
@@ -44,7 +44,7 @@ import {
   loadLiveRunHistoryDetail,
   compareLiveRunHistory,
 } from "./observability.js";
-import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, HeartbeatState, RunMode, SliceRecord, SourceRecord } from "./types.js";
+import type { CheckpointRecord, CheckpointRole, EntityType, FrAcVerificationResult, HeartbeatState, SliceRecord, SourceRecord } from "./types.js";
 
 const program = new Command();
 

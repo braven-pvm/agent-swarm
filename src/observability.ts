@@ -290,10 +290,17 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
   const slices = store.listSlices();
   const leases = store.listLeases();
   const evidence = store.listEvidence();
+  const heartbeats = store.listHeartbeats();
+  const activeEscalations = store.listEscalations("active");
+  const scenario = [...heartbeats, ...activeEscalations]
+    .map((x) => x.entityId)
+    .find((id) => typeof id === "string" && id.startsWith("scenario:"))
+    ?.slice("scenario:".length);
   return {
     workspace,
     runMode: currentRunMode(store),
     generatedAt: new Date().toISOString(),
+    scenario,
     targets: store.listTargets(),
     sources: store.listSources(),
     domains: buildDomainSummaries(store),
@@ -314,8 +321,8 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
       status: currentDependencyStatus(store, dependency),
     })),
     agentRuns: store.listAgentRuns(),
-    heartbeats: store.listHeartbeats(),
-    activeEscalations: store.listEscalations("active"),
+    heartbeats,
+    activeEscalations,
     checkpoints: store.listCheckpoints(),
     recentEvents: store.recentEvents(eventCount),
   };
