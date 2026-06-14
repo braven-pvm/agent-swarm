@@ -37,11 +37,19 @@ test("codex regex fallback for unstructured apply_patch → editing", () => {
   assert.equal(interpretAgentEvent({ type: "apply_patch", detail: "x" }).state, "editing");
 });
 
-test("claude tool_use is honored via driverClassify", () => {
-  const driverClassify = (e) => (e.type === "assistant" ? "editing" : undefined);
+test("driverClassify takes precedence over structured/regex classification", () => {
+  // structuredState would classify this command_execution as "testing"; driverClassify overrides
+  const a = interpretAgentEvent(
+    { type: "item.completed", item: { type: "command_execution", command: "npm test", status: "completed", exit_code: 0 } },
+    { driver: "claude", driverClassify: () => "waiting" },
+  );
+  assert.equal(a.state, "waiting");
+});
+
+test("claude tool_use target extraction (file_path)", () => {
   const a = interpretAgentEvent(
     { type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "a.ts" } }] } },
-    { driver: "claude", driverClassify },
+    { driver: "claude", driverClassify: (e) => (e.type === "assistant" ? "editing" : undefined) },
   );
   assert.equal(a.state, "editing");
   assert.equal(a.target, "a.ts");
@@ -51,4 +59,10 @@ test("unknown event defaults to thinking with a generic label", () => {
   const a = interpretAgentEvent({ type: "mystery" });
   assert.equal(a.state, "thinking");
   assert.ok(a.label.length > 0);
+});
+
+test("target-less event yields a '<Verb> (<type>)' label", () => {
+  const a = interpretAgentEvent({ type: "thread.started" });
+  assert.equal(a.state, "thinking");
+  assert.match(a.label, /Thinking \(thread\.started\)/);
 });
