@@ -59,12 +59,20 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 ui-mo
 .route { padding: 12px; overflow: auto; } .search { background: #0e1114; border: 1px solid var(--line); color: var(--ink); border-radius: 6px; padding: 4px 8px; }
 .runs { width: 100%; border-collapse: collapse; } .runs th, .runs td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
 .snippet, .json { white-space: pre-wrap; }
-.activity-line { display: flex; gap: 6px; align-items: baseline; margin: 2px 0; font-size: 12px; }
-.activity-line .verb { font-size: 10px; text-transform: uppercase; letter-spacing: .03em; opacity: .85; flex: none; }
+.activity-line { display: flex; gap: 6px; align-items: baseline; margin: 3px 0; font-size: 12px; line-height: 1.4; }
+.activity-line .verb { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; opacity: .8; flex: none; padding-top: 1px; }
 .activity-line .verb-testing, .activity-line .verb-verifying { color: var(--green); }
 .activity-line .verb-editing { color: var(--amber); }
 .activity-line .verb-reading { color: var(--blue); }
 .activity-line .verb-thinking { color: var(--violet); }
 .activity-line .verb-blocked { color: var(--red); }
 .activity-line .verb-idle, .activity-line .verb-waiting { color: var(--muted); }
-.activity-line .target { background: #0e1114; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 11px; color: var(--ink); overflow-wrap: anywhere; }
+.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.cmd .tok-exe { font-weight: 700; color: var(--ink); }
+.cmd .tok-flag { font-style: italic; color: var(--blue); opacity: .9; }
+.cmd .tok-arg { color: var(--muted); }
+.activity-idle { display: flex; gap: 6px; align-items: center; margin: 2px 0; font-size: 11px; color: var(--muted); font-style: italic; }
+.activity-idle .idle-word { opacity: .8; }
+.spinner { display: inline-block; width: 8px; height: 8px; border: 1.5px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: cb-spin .8s linear infinite; flex: none; }
+.dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); opacity: .5; flex: none; }
+@keyframes cb-spin { to { transform: rotate(360deg); } }

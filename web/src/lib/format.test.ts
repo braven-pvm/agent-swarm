@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -45,6 +45,27 @@ describe("activityVerb", () => {
   it("returns Active for unknown/undefined", () => {
     expect(activityVerb(undefined)).toBe("Active");
     expect(activityVerb("unknown-state")).toBe("Active");
+  });
+});
+
+describe("tokenizeCommand", () => {
+  it("classifies first token as exe, -Flag tokens as flag, rest as arg", () => {
+    const tokens = tokenizeCommand(`"pwsh.exe" -Command 'npm test'`);
+    expect(tokens[0]).toEqual({ text: "pwsh.exe", kind: "exe" });
+    const flag = tokens.find((t) => t.text === "-Command");
+    expect(flag?.kind).toBe("flag");
+    const arg1 = tokens.find((t) => t.text === "'npm");
+    expect(arg1?.kind).toBe("arg");
+    const arg2 = tokens.find((t) => t.text === "test'");
+    expect(arg2?.kind).toBe("arg");
+  });
+  it("handles a single-token command", () => {
+    expect(tokenizeCommand("dashboard.js")).toEqual([{ text: "dashboard.js", kind: "exe" }]);
+  });
+  it("classifies --files as flag", () => {
+    const tokens = tokenizeCommand("vitest --files src/foo.test.ts");
+    const flag = tokens.find((t) => t.text === "--files");
+    expect(flag?.kind).toBe("flag");
   });
 });
 

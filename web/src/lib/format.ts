@@ -1,5 +1,18 @@
 import type { EscalationRecord } from "~/lib/types";
 
+export interface CmdToken { text: string; kind: "exe" | "flag" | "arg"; }
+// Split a (already prettified) command into styled tokens: first token = executable/subject,
+// tokens starting with - or -- (after any leading quote) = flags, everything else = args.
+export function tokenizeCommand(s: string): CmdToken[] {
+  const parts = s.split(/\s+/).filter(Boolean);
+  return parts.map((p, i) => {
+    if (i === 0) return { text: p.replace(/^["']|["']$/g, ""), kind: "exe" as const };
+    const bare = p.replace(/^["']+/, "");
+    if (/^-{1,2}[A-Za-z]/.test(bare)) return { text: p, kind: "flag" as const };
+    return { text: p, kind: "arg" as const };
+  });
+}
+
 const VERB: Record<string, string> = {
   idle: "Idle", thinking: "Thinking", reading: "Reading", editing: "Editing",
   testing: "Running", verifying: "Verifying", waiting: "Waiting", blocked: "Blocked",
