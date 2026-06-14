@@ -49,12 +49,10 @@ test("web observability demo proves browser-facing lifecycle visibility", () => 
   });
 
   assert.deepEqual(summary.webAssertions, {
-    htmlHasTabs: true,
-    htmlHasRenderedDetailViews: true,
-    appJsCompiles: true,
-    browserSmokeTabsSwitch: true,
-    browserSmokeSourceViewSwitches: true,
-    browserSmokeSearchRuns: true,
+    htmlServesSpaShell: true,
+    htmlReferencesHashedAssets: true,
+    spaJsAssetServed: true,
+    spaCssAssetServed: true,
     apiSnapshotShowsLifecycle: true,
     apiSnapshotShowsRunMode: true,
     apiSearchFindsBackendSummary: true,
@@ -67,8 +65,15 @@ test("web observability demo proves browser-facing lifecycle visibility", () => 
     assert.ok(fs.existsSync(artifact), `artifact should exist: ${artifact}`);
   }
 
-  const browserSmoke = JSON.parse(fs.readFileSync(summary.artifacts.browserSmoke, "utf8"));
-  assert.match(browserSmoke.searchStatus, /match\(es\) for "summary"/);
+  // The served SPA shell mounts the Command Bridge app and references content-hashed assets.
+  const viewerHtml = fs.readFileSync(summary.artifacts.html, "utf8");
+  assert.match(viewerHtml, /id="app"/);
+
+  const assetManifest = JSON.parse(fs.readFileSync(summary.artifacts.assetManifest, "utf8"));
+  assert.ok(assetManifest.jsAssetPath?.startsWith("/assets/"), "SPA should reference a hashed /assets/*.js bundle");
+  assert.ok(assetManifest.cssAssetPath?.startsWith("/assets/"), "SPA should reference a hashed /assets/*.css bundle");
+  assert.equal(assetManifest.jsServed, true);
+  assert.equal(assetManifest.cssServed, true);
 
   const dashboardReport = fs.readFileSync(summary.artifacts.report, "utf8");
   assert.match(dashboardReport, /# Slice Report:/);

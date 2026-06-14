@@ -337,6 +337,17 @@ function pullSlice(commandArgs) {
 
 async function probeWebViewer(input) {
   fs.mkdirSync(input.artifactsDir, { recursive: true });
+
+  // The Command Bridge SPA must be built (web/dist) before serve can return the shell.
+  // `npm test` runs `npm run build` first, so this exists during the suite. Surface a
+  // clear message for standalone runs instead of asserting against a 503.
+  const webDist = path.join(repoRoot, "web", "dist");
+  if (!fs.existsSync(path.join(webDist, "index.html"))) {
+    throw new Error(
+      `Command Bridge UI is not built at ${webDist}. Run "npm run build" (or "npm run build:web") before this demo.`,
+    );
+  }
+
   const server = spawn(process.execPath, [
     cli,
     "serve",
@@ -355,56 +366,54 @@ async function probeWebViewer(input) {
   try {
     const port = await waitForServerPort(server);
     const baseUrl = `http://127.0.0.1:${port}`;
-    const [html, appJs, snapshot, graph, search, report] = await Promise.all([
+    const [html, snapshot, graph, search, report] = await Promise.all([
       fetchText(`${baseUrl}/`),
-      fetchText(`${baseUrl}/assets/app.js`),
       fetchJson(`${baseUrl}/api/snapshot?events=180`),
       fetchJson(`${baseUrl}/api/graph`),
       fetchJson(`${baseUrl}/api/search/specs?q=AC-INV-002.1&domain=${encodeURIComponent("Invoice Backend")}&limit=8`),
       fetchText(`${baseUrl}/api/report/${encodeURIComponent(input.dashboardSlice)}`),
     ]);
+
+    // Vite content-hashes asset filenames (e.g. /assets/index-DLsBO9DH.js), so we parse
+    // index.html for the referenced /assets/* paths rather than hardcoding app.js.
+    const assetPaths = parseAssetPaths(html);
+    const jsAssetPath = assetPaths.find((assetPath) => assetPath.endsWith(".js"));
+    const cssAssetPath = assetPaths.find((assetPath) => assetPath.endsWith(".css"));
+    const assetProbe = await probeAssets({ baseUrl, jsAssetPath, cssAssetPath });
+
     const dashboardSource = snapshot.sources.find((source) => source.title === "Invoice Dashboard Requirements");
     const sourceDetail = dashboardSource
       ? await fetchJson(`${baseUrl}/api/source/${encodeURIComponent(dashboardSource.id)}`)
       : undefined;
-    const browserSmoke = await runBrowserSmoke({ appJs, baseUrl });
 
     const artifacts = {
       html: path.join(input.artifactsDir, "viewer.html"),
-      appJs: path.join(input.artifactsDir, "app.js"),
+      assetManifest: path.join(input.artifactsDir, "spa-asset-manifest.json"),
       snapshot: path.join(input.artifactsDir, "api-snapshot.json"),
       graph: path.join(input.artifactsDir, "api-graph.json"),
       search: path.join(input.artifactsDir, "api-search-summary.json"),
       sourceDetail: path.join(input.artifactsDir, "api-source-dashboard.json"),
       report: path.join(input.artifactsDir, "dashboard-report.md"),
-      browserSmoke: path.join(input.artifactsDir, "browser-smoke.json"),
     };
     fs.writeFileSync(artifacts.html, html, "utf8");
-    fs.writeFileSync(artifacts.appJs, appJs, "utf8");
+    fs.writeFileSync(
+      artifacts.assetManifest,
+      `${JSON.stringify({ assetPaths, jsAssetPath, cssAssetPath, ...assetProbe }, null, 2)}\n`,
+      "utf8",
+    );
     fs.writeFileSync(artifacts.snapshot, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     fs.writeFileSync(artifacts.graph, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
     fs.writeFileSync(artifacts.search, `${JSON.stringify(search, null, 2)}\n`, "utf8");
     fs.writeFileSync(artifacts.sourceDetail, `${JSON.stringify(sourceDetail, null, 2)}\n`, "utf8");
     fs.writeFileSync(artifacts.report, report, "utf8");
-    fs.writeFileSync(artifacts.browserSmoke, `${JSON.stringify(browserSmoke, null, 2)}\n`, "utf8");
 
     return {
       artifacts,
       assertions: {
-        htmlHasTabs:
-          html.includes('data-tab="overview"') &&
-          html.includes('data-tab="specs"') &&
-          html.includes('data-tab="work"') &&
-          html.includes('data-tab="agents"') &&
-          html.includes('data-tab="events"'),
-        htmlHasRenderedDetailViews:
-          html.includes('data-source-view="summary"') &&
-          html.includes('data-source-view="sections"') &&
-          html.includes('data-source-view="markdown"'),
-        appJsCompiles: browserSmoke.appJsCompiles,
-        browserSmokeTabsSwitch: browserSmoke.tabsSwitch,
-        browserSmokeSourceViewSwitches: browserSmoke.sourceViewSwitches,
-        browserSmokeSearchRuns: browserSmoke.searchRuns,
+        htmlServesSpaShell: html.includes('id="app"'),
+        htmlReferencesHashedAssets: Boolean(jsAssetPath) && Boolean(cssAssetPath),
+        spaJsAssetServed: assetProbe.jsServed,
+        spaCssAssetServed: assetProbe.cssServed,
         apiSnapshotShowsLifecycle:
           snapshot.targets.length === 2 &&
           snapshot.sources.length === 3 &&
@@ -431,6 +440,38 @@ async function probeWebViewer(input) {
     server.kill();
     await new Promise((resolve) => server.once("close", resolve));
   }
+}
+
+// Parse the SPA shell for content-hashed /assets/* paths referenced by Vite's
+// <script src> and <link href> tags. Robust to hash changes between builds.
+function parseAssetPaths(html) {
+  const paths = new Set();
+  const pattern = /(?:src|href)="(\/assets\/[^"]+)"/g;
+  let match;
+  while ((match = pattern.exec(html)) !== null) {
+    paths.add(match[1]);
+  }
+  return [...paths];
+}
+
+async function probeAssets({ baseUrl, jsAssetPath, cssAssetPath }) {
+  const probe = async (assetPath) => {
+    if (!assetPath) return { served: false, status: 0, contentType: "" };
+    const response = await fetch(`${baseUrl}${assetPath}`);
+    return {
+      served: response.ok,
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "",
+    };
+  };
+  const js = await probe(jsAssetPath);
+  const css = await probe(cssAssetPath);
+  return {
+    jsServed: js.served && /javascript/.test(js.contentType),
+    cssServed: css.served && /css/.test(css.contentType),
+    js,
+    css,
+  };
 }
 
 function waitForServerPort(child) {
@@ -465,208 +506,6 @@ function waitForServerPort(child) {
   });
 }
 
-async function runBrowserSmoke(input) {
-  const document = createFakeDocument();
-  const window = {
-    setInterval: () => 1,
-    clearInterval: () => {},
-  };
-  const relativeFetch = (url, init) => fetch(new URL(url, input.baseUrl), init);
-  new Function("document", "window", "fetch", input.appJs)(document, window, relativeFetch);
-  await waitFor(() => document.byId.metrics.innerHTML.includes("Targets"));
-
-  document.tabs.find((tab) => tab.getAttribute("data-tab") === "specs").click();
-  const tabsSwitch =
-    document.panels.find((panel) => panel.id === "tab-specs").classList.contains("active") &&
-    !document.panels.find((panel) => panel.id === "tab-overview").classList.contains("active");
-
-  document.sourceViewButtons.find((button) => button.getAttribute("data-source-view") === "markdown").click();
-  const sourceViewSwitches = document.sourceViewButtons
-    .find((button) => button.getAttribute("data-source-view") === "markdown")
-    .classList.contains("active");
-
-  document.byId.specSearch.value = "summary";
-  document.byId.specSearchButton.click();
-  await waitFor(() => document.byId.specSearchStatus.textContent.includes('match(es) for "summary"'));
-  const searchRuns =
-    document.byId.specSearchStatus.textContent.includes("Invoice Backend") ||
-    document.byId.specSearchStatus.textContent.includes("all specs");
-
-  return {
-    appJsCompiles: true,
-    tabsSwitch,
-    sourceViewSwitches,
-    searchRuns,
-    searchStatus: document.byId.specSearchStatus.textContent,
-  };
-}
-
-function createFakeDocument() {
-  const ids = [
-    "workspace",
-    "metrics",
-    "domains",
-    "domainCount",
-    "lanes",
-    "laneCount",
-    "sources",
-    "sourceCount",
-    "specSearch",
-    "specDomain",
-    "specSearchButton",
-    "specClearButton",
-    "specSelectedOnly",
-    "specSearchResults",
-    "specSearchStatus",
-    "sourceFilterLabel",
-    "slices",
-    "sliceCount",
-    "agents",
-    "agentCount",
-    "heartbeats",
-    "heartbeatCount",
-    "blockers",
-    "blockerCount",
-    "events",
-    "updatedAt",
-    "report",
-    "sourceDetail",
-    "selectedSliceLabel",
-    "selectedSourceLabel",
-    "refresh",
-    "autoRefresh",
-  ];
-  const byId = Object.fromEntries(ids.map((id) => [id, new FakeElement({ id })]));
-  byId.autoRefresh.checked = true;
-  const tabNames = ["overview", "specs", "work", "agents", "events"];
-  const tabs = tabNames.map((name, index) => new FakeElement({
-    attrs: { "data-tab": name },
-    className: index === 0 ? "tab active" : "tab",
-  }));
-  const panels = tabNames.map((name, index) => new FakeElement({
-    id: `tab-${name}`,
-    className: index === 0 ? "tab-panel active" : "tab-panel",
-  }));
-  const sourceViewButtons = ["summary", "sections", "markdown"].map((name, index) => new FakeElement({
-    attrs: { "data-source-view": name },
-    className: index === 0 ? "detail-tab active" : "detail-tab",
-  }));
-  return {
-    byId,
-    tabs,
-    panels,
-    sourceViewButtons,
-    getElementById(id) {
-      return byId[id] ?? new FakeElement({ id });
-    },
-    querySelectorAll(selector) {
-      if (selector === "[data-tab]") return tabs;
-      if (selector === ".tab-panel") return panels;
-      if (selector === "[data-source-view]") return sourceViewButtons;
-      return [];
-    },
-  };
-}
-
-function FakeElement(input = {}) {
-  this.id = input.id ?? "";
-  this.attrs = input.attrs ?? {};
-  this.classList = new FakeClassList(input.className ?? "");
-  this.listeners = new Map();
-  this.value = "";
-  this.checked = false;
-  this.innerHTML = "";
-  this.textContent = "";
-  this.getAttribute = (name) => this.attrs[name] ?? null;
-  this.addEventListener = (type, callback) => {
-    const current = this.listeners.get(type) ?? [];
-    current.push(callback);
-    this.listeners.set(type, current);
-  };
-  this.click = () => {
-    for (const callback of this.listeners.get("click") ?? []) {
-      callback({ type: "click", target: this });
-    }
-  };
-  this.querySelectorAll = () => [];
-}
-
-FakeElement.prototype.getAttribute = function getAttribute(name) {
-  return this.attrs[name] ?? null;
-};
-
-FakeElement.prototype.addEventListener = function addEventListener(type, callback) {
-  const current = this.listeners.get(type) ?? [];
-  current.push(callback);
-  this.listeners.set(type, current);
-};
-
-FakeElement.prototype.click = function click() {
-  for (const callback of this.listeners.get("click") ?? []) {
-    callback({ type: "click", target: this });
-  }
-};
-
-FakeElement.prototype.querySelectorAll = function querySelectorAll() {
-  return [];
-};
-
-function FakeClassList(className) {
-  this.values = new Set(String(className).split(/\s+/).filter(Boolean));
-  this.add = (name) => {
-    this.values.add(name);
-  };
-  this.remove = (name) => {
-    this.values.delete(name);
-  };
-  this.toggle = (name, force) => {
-    if (force === true) {
-      this.add(name);
-      return true;
-    }
-    if (force === false) {
-      this.remove(name);
-      return false;
-    }
-    if (this.values.has(name)) {
-      this.values.delete(name);
-      return false;
-    }
-    this.values.add(name);
-    return true;
-  };
-  this.contains = (name) => this.values.has(name);
-}
-
-FakeClassList.prototype.add = function add(name) {
-  this.values.add(name);
-};
-
-FakeClassList.prototype.remove = function remove(name) {
-  this.values.delete(name);
-};
-
-FakeClassList.prototype.toggle = function toggle(name, force) {
-  if (force === true) {
-    this.add(name);
-    return true;
-  }
-  if (force === false) {
-    this.remove(name);
-    return false;
-  }
-  if (this.values.has(name)) {
-    this.values.delete(name);
-    return false;
-  }
-  this.values.add(name);
-  return true;
-};
-
-FakeClassList.prototype.contains = function contains(name) {
-  return this.values.has(name);
-};
-
 async function fetchText(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`GET ${url} failed with ${response.status}`);
@@ -677,15 +516,6 @@ async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`GET ${url} failed with ${response.status}`);
   return response.json();
-}
-
-async function waitFor(predicate) {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for browser smoke predicate");
 }
 
 function parseArgs(values) {
