@@ -142,12 +142,15 @@ function writeFakeReviewCodex() {
     scriptPath,
     `import fs from "node:fs";
 const args = process.argv.slice(2);
+function readStdin() {
+  try { return fs.readFileSync(0, "utf8"); } catch { return ""; }
+}
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const status = process.env.FAKE_REVIEW_STATUS || "accepted";
 const refs = JSON.parse(process.env.FAKE_REVIEW_REFS || "[]");
 const accepted = status === "accepted";
-const prompt = args.at(-1) || "";
+const prompt = readStdin() || args.at(-1) || "";
 const sandboxIndex = args.indexOf("--sandbox");
 if (sandboxIndex >= 0 && args[sandboxIndex + 1] === "read-only") {
   console.error("reviewer should use normal configured command/tool access, not forced read-only sandbox");

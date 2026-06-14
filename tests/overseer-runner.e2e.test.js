@@ -549,10 +549,11 @@ test("overseer launches from a short prompt after dashboard worker evidence", ()
   assert.equal(state.actionableState.activeSliceQueue[0].agentRunCount, 1);
   assert.equal(state.sliceSummary.active[0].id, dashboardSliceId);
 
-  const fakeArgs = JSON.parse(fs.readFileSync(fakeArgsPath, "utf8"));
-  const launchPrompt = fakeArgs.at(-1);
+  // The overseer launch prompt is now fed via stdin (Windows-safe), pointing at the
+  // full prompt artifact on disk; it stays short regardless of transport.
+  const launchPrompt = fs.readFileSync(`${fakeArgsPath}.stdin`, "utf8");
   assert.equal(typeof launchPrompt, "string");
-  assert.ok(launchPrompt.length < 800, `expected short OS argv launch prompt, got ${launchPrompt.length}`);
+  assert.ok(launchPrompt.length < 800, `expected short launch prompt, got ${launchPrompt.length}`);
   assert.match(launchPrompt, /Read the overseer prompt artifact/);
   assert.match(launchPrompt, /overseer-prompt-RUN-/);
 });
@@ -724,6 +725,9 @@ import path from "node:path";
 const args = process.argv.slice(2);
 if (process.env.FAKE_CODEX_ARGS_PATH) {
   fs.writeFileSync(process.env.FAKE_CODEX_ARGS_PATH, JSON.stringify(args, null, 2), "utf8");
+  let stdinText = "";
+  try { stdinText = fs.readFileSync(0, "utf8"); } catch {}
+  fs.writeFileSync(process.env.FAKE_CODEX_ARGS_PATH + ".stdin", stdinText, "utf8");
 }
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;

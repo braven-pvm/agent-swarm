@@ -18,6 +18,7 @@ export interface WorkerRunSpec {
 export interface WorkerInvocation {
   command: string;
   args: string[];
+  stdin?: string;
 }
 
 export interface WorkerFinalization {
@@ -72,8 +73,8 @@ const codexDriver: WorkerDriverAdapter = {
         spec.resultPath,
       );
       if (spec.model) args.push("--model", spec.model);
-      args.push(spec.resumeSessionId, spec.prompt);
-      return { command, args };
+      args.push(spec.resumeSessionId);
+      return { command, args, stdin: spec.prompt };
     }
     const sandbox = spec.readOnly
       ? "read-only"
@@ -93,8 +94,7 @@ const codexDriver: WorkerDriverAdapter = {
       spec.resultPath,
     );
     if (spec.model) args.push("--model", spec.model);
-    args.push(spec.prompt);
-    return { command, args };
+    return { command, args, stdin: spec.prompt };
   },
   finalize({ exitCode, spec }) {
     return { ok: exitCode === 0, structuredResultWritten: fs.existsSync(spec.resultPath) };
@@ -144,7 +144,8 @@ const claudeDriver: WorkerDriverAdapter = {
       args.push("--permission-mode", typeof config.permissionMode === "string" ? config.permissionMode : "acceptEdits");
     }
     if (config.settingSources !== false) {
-      args.push("--setting-sources", typeof config.settingSources === "string" ? config.settingSources : "");
+      const settingSources = typeof config.settingSources === "string" ? config.settingSources : "";
+      args.push(`--setting-sources=${settingSources}`);
     }
     if (!spec.readOnly && typeof config.allowedTools === "string" && config.allowedTools.trim()) {
       args.push("--allowedTools", config.allowedTools);
@@ -152,8 +153,7 @@ const claudeDriver: WorkerDriverAdapter = {
     if (typeof config.maxBudgetUsd === "number") args.push("--max-budget-usd", String(config.maxBudgetUsd));
     if (spec.model) args.push("--model", spec.model);
     if (spec.resumeSessionId) args.push("--resume", spec.resumeSessionId);
-    args.push(spec.prompt);
-    return { command, args };
+    return { command, args, stdin: spec.prompt };
   },
   classifyHeartbeat(event) {
     if (event.type === "result") return event.is_error === true ? "blocked" : "idle";

@@ -1098,6 +1098,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 const args = process.argv.slice(2);
+function readStdin() {
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
 const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const schemaIndex = args.indexOf("--output-schema");
@@ -1108,7 +1115,7 @@ const delayDashboardStart = process.env.SWARM_FAKE_DELAY_DASHBOARD_START === "tr
 const isResumeInvocation = args.includes("resume");
 const workerCountPath = ${JSON.stringify(workerCountPath)};
 const reviewCountPath = ${JSON.stringify(reviewCountPath)};
-const rawPrompt = args.at(-1) ?? "";
+const rawPrompt = readStdin() || (args.at(-1) ?? "");
 const promptPath = parsePromptPath(rawPrompt);
 const prompt = rawPrompt.includes("Current harness snapshot:")
   ? rawPrompt
