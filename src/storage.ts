@@ -585,6 +585,30 @@ export class SwarmStore {
       .map((row) => mapEvent(row as Row));
   }
 
+  eventsSince(cursor: { lastRowid: number }, limit = 200): Array<HarnessEvent & { rowid: number }> {
+    // rowid is SQLite's implicit monotonic key; it is the sole cursor of truth (timestamps collide at ms resolution).
+    const rows = this.db
+      .prepare(
+        `select rowid as rowid, id, timestamp, actor, type, entity_type, entity_id, payload_json
+         from events
+         where rowid > @rowid
+         order by rowid asc
+         limit @limit`,
+      )
+      .all({ rowid: cursor.lastRowid, limit }) as Array<Row>;
+    return rows.map((row) => ({
+      rowid: row.rowid as number,
+      ...mapEvent(row),
+    }));
+  }
+
+  heartbeatsSince(timestamp: string): HeartbeatRecord[] {
+    return this.db
+      .prepare(`select * from heartbeats where timestamp > ? order by timestamp asc`)
+      .all(timestamp)
+      .map((row) => mapHeartbeat(row as Row));
+  }
+
   listEvents(): HarnessEvent[] {
     return this.db
       .prepare("select * from events order by timestamp asc")
