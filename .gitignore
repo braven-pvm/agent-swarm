@@ -6,4 +6,5 @@ dist/
 .swarm/
 .swarm-demo/
 .claude/worktrees/
+.superpowers/
 *.log
