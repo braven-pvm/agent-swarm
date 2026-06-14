@@ -8,7 +8,7 @@
   },
   "workspaces": ["web"],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:web",
     "build:web": "npm -w web run build",
     "dev:web": "npm -w web run dev",
     "test:web": "npm -w web run test",
