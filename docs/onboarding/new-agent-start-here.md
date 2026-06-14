@@ -46,6 +46,8 @@ The harness is not a spec authoring system. Implementation agents may interpret 
 - `src/checkpoints.ts`: checkpoint refresh and resume packet generation.
 - `src/worker-driver.ts`: worker driver adapter registry (codex, claude).
 - `src/worker-events.ts`: streaming Codex JSONL ingestion into events/heartbeats.
+- `src/onboard.ts`: one-command in-repo setup helpers (`ensureGitignoreBlock`, `scaffoldSampleSpec`, `runOnboard`).
+- `src/provider-check.ts`: per-driver readiness probe (`checkProvider` — resolve + spawn `--version`, optional `--live` auth ping).
 - `fixtures/`: disposable target apps and specs for demos/tests.
 - `scripts/`: repeatable demo runners.
 - `tests/`: E2E and focused tests.
@@ -58,6 +60,8 @@ The harness is not a spec authoring system. Implementation agents may interpret 
 The current prototype supports:
 
 - `swarm init`
+- `swarm onboard` — one-command in-repo setup: init + target + gitignore split (runtime state ignored, config files committable) + sample spec registered; idempotent and safe to re-run; does not run a worker
+- `swarm check <provider>` — per-driver readiness probe: resolves the driver command, spawns `--version` via cross-spawn (same launch path as workers), exit 0 if launchable; `--live` adds an auth ping (off by default)
 - target registration with `.swarm/target.yaml` and `.swarm/protocol.yaml`
 - file source registration through `sources add-file` and `sources add-dir`
 - source/domain metadata: `Domain:`, `Tags:`, `Priority:`
@@ -133,10 +137,10 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 65/65 passing
+npm test -> 75/75 passing
 ```
 
-Note: `tests/spawn-shim.e2e.test.js` is Windows-gated (skips on POSIX), so POSIX reports 64/64.
+Note: `tests/spawn-shim.e2e.test.js` is Windows-gated (skips on POSIX), so POSIX reports 74/74.
 
 ## Useful Demo Commands
 

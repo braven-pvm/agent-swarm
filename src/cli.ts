@@ -9,6 +9,8 @@ import { URL } from "node:url";
 import { Command } from "commander";
 import YAML from "yaml";
 import { createEvent } from "./events.js";
+import { runOnboard } from "./onboard.js";
+import { checkProvider } from "./provider-check.js";
 import { runFixtureWorker } from "./fixture-worker.js";
 import { makeId } from "./ids.js";
 import { artifactsDir, resolveWorkspace, swarmDir } from "./paths.js";
@@ -1571,6 +1573,54 @@ program
       console.log(`Initialized harness at ${swarmDir(workspace)}`);
     } finally {
       store.close();
+    }
+  });
+
+program
+  .command("onboard")
+  .description("Set up agent-swarm in the current repo: init, target, gitignore, and a sample spec")
+  .option("--source <path>", "register this existing spec file instead of scaffolding a sample")
+  .option("--name <name>", "target name (default: repo directory name)")
+  .action((options: { source?: string; name?: string }) => {
+    const workspace = resolveWorkspace();
+    const result = runOnboard({ workspace, source: options.source, name: options.name });
+    const relSource = path.relative(workspace, result.sourceUri) || result.sourceUri;
+    console.log(`Onboarded agent-swarm in ${workspace}`);
+    if (!result.isGitRepo) console.log("  warning: not a git repo — lanes/worktrees and real runs expect git; setup continued.");
+    console.log(`  state: ${swarmDir(workspace)}/state.db`);
+    console.log(`  target: ${result.targetName} (${result.wroteTargetConfig ? "configured" : "already configured"})`);
+    console.log(`  gitignore: ${result.gitignoreAdded ? "managed block added" : "already present"}`);
+    console.log(`  source: ${result.sourceTitle} (${result.refsIndexed} refs)${result.scaffoldedSample ? " [sample scaffolded]" : ""}`);
+    console.log("");
+    console.log("Next steps:");
+    console.log(`  swarm slices pull --target ${result.targetName} --source ${relSource}   # form your first slice`);
+    console.log("  swarm check claude        # confirm your provider is installed and launchable");
+    console.log("  swarm run --driver claude <slice-id>   # your first real worker run");
+    console.log("  swarm serve               # open the read-only viewer");
+    if (result.scaffoldedSample) console.log(`  (replace ${relSource} with your real specs)`);
+  });
+
+program
+  .command("check")
+  .description("Check that a worker driver is installed and launchable")
+  .argument("[provider]", "driver to check (e.g. claude, codex); defaults to the protocol default driver")
+  .option("--live", "additionally do a tiny real call to confirm auth (spends a small amount)")
+  .action(async (provider: string | undefined, options: { live?: boolean }) => {
+    const driver = provider ?? loadProtocol(resolveWorkspace()).protocol.workers.defaultDriver;
+    if (driver === "fixture") {
+      console.log("fixture is an in-process driver — no external command to check.");
+      return;
+    }
+    const result = await checkProvider({ driver, live: options.live });
+    console.log(`driver: ${result.driver}`);
+    console.log(`  command: ${result.command}${result.prefixArgs.length ? ` ${result.prefixArgs.join(" ")}` : ""}`);
+    if (result.launchable) {
+      console.log(`  launchable: yes${result.version ? ` (${result.version})` : ""}`);
+      if (result.live) console.log(`  live auth: ${result.live.ok ? "ok" : "failed"} — ${result.live.detail}`);
+    } else {
+      console.log(`  launchable: no — ${result.error}`);
+      console.log(`  fix: install the ${driver} CLI and ensure it is on PATH, or set SWARM_${driver.toUpperCase()}_COMMAND.`);
+      process.exitCode = 1;
     }
   });
 

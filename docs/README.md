@@ -22,6 +22,7 @@ Start here:
 - [Live Agent Smoke Test Harness](architecture/live-agent-smoke-test.md) — design for the missing resettable real-agent rehearsal with a real overseer, real workers, real verifiers, and live UI observability.
 - [Live Agent Smoke Implementation Plan](architecture/live-agent-smoke-implementation-plan.md) — phased implementation plan for the make-or-break real-agent smoke harness.
 - [Model-Agnostic Worker Drivers Implementation Plan](architecture/model-agnostic-worker-drivers-implementation-plan.md) — task-by-task TDD plan for the `WorkerDriverAdapter` registry with codex and claude drivers.
+- [Onboarding](architecture/onboarding.md) — swarm onboard one-command setup and swarm check provider readiness.
 - [Worker Driver Adapters](architecture/worker-drivers.md) — model-agnostic worker dispatch contract (codex, claude, fixture) and per-driver protocol configuration.
 - [Codex CLI and SDK Research](research/codex-cli-sdk-agent-swarm.md) — research notes on Codex CLI, Agents SDK, workers, and verification strategy.
 - [Claude Code and Model-Agnostic Workers](research/claude-code-and-model-agnostic-workers.md) — verified Claude Code headless feasibility and the `WorkerDriverAdapter` design for vendor-neutral worker dispatch.
@@ -42,8 +43,9 @@ Current implementation snapshot:
 - bounded overseer command execution, command artifacts, command events, Phase 5A state-command allowlist, Phase 5B worker/reviewer child dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
 - local read-only `swarm serve` web viewer is implemented with tabs for Overview, Specs, Work, Agents, Events, and History
 - web-observability E2E harness is implemented and writes browser/API artifacts
+- `swarm onboard` provides one-command in-repo setup (init + target + gitignore split + sample spec, no worker run) and `swarm check <provider>` probes driver readiness via `--version` (same cross-spawn launch path workers use; `--live` adds an auth ping)
 - live real-agent smoke harness is designed; Phase 1 reset/run-mode setup, Phase 2 reviewer runner, Phase 3 scripted worker+reviewer rehearsal, Phase 4 visible overseer runner, Phase 5A bounded command execution, Phase 5B bounded worker/reviewer dispatch, Phase 5C autonomous acceptance loop, Phase 6A source-mutation fault injection, Phase 6B reviewer-repair fault injection, Phase 6C stale-run recovery fault injection, Phase 6D context-handoff fault injection, Phase 6E low-signal/proof-churn fault injection, Phase 7A live-run artifact index/outcome classification, Phase 7B-1 run history/comparison, and Phase 7B-2 web history/artifact detail are implemented
-- latest known verification: `npm test` passes 65/65 and `git diff --check` is clean (64 on POSIX where the Windows-only `.cmd` shim test skips)
+- latest known verification: `npm test` passes 75/75 and `git diff --check` is clean (74 on POSIX where the Windows-only `.cmd` shim test skips)
 
 Current thesis:
 
