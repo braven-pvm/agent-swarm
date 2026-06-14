@@ -6,8 +6,12 @@
   "bin": {
     "swarm": "./dist/cli.js"
   },
+  "workspaces": ["web"],
   "scripts": {
     "build": "tsc",
+    "build:web": "npm -w web run build",
+    "dev:web": "npm -w web run dev",
+    "test:web": "npm -w web run test",
     "demo:invoice": "node scripts/run-invoice-demo.mjs --driver fixture",
     "demo:invoice:codex": "node scripts/run-invoice-demo.mjs --driver codex",
     "demo:observability": "npm run build && node scripts/run-observability-demo.mjs --driver fixture",

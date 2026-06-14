@@ -8,3 +8,5 @@ dist/
 .claude/worktrees/
 .superpowers/
 *.log
+web/dist/
+web/node_modules/
