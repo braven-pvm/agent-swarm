@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
+  import { activityVerb, prettifyTarget } from "~/lib/format";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
@@ -49,7 +50,11 @@
       {/if}
       <h4>Recent activity</h4>
       {#each agentActivity as ev (ev.id)}
-        <div class="citation">▸ {(ev.payload?.activity as any)?.label ?? (ev.payload?.agentEventType ?? "event")}</div>
+        {@const act = ev.payload?.activity as import("~/lib/types").AgentActivity | undefined}
+        <div class="activity-line">
+          <span class="verb verb-{act?.state ?? 'idle'}">{activityVerb(act?.state)}</span>
+          {#if act?.target}<code class="target" title={act.target}>{prettifyTarget(act.target)}</code>{/if}
+        </div>
       {/each}
     {:else if sel.kind === "escalation" && escalation}
       <div class="esc-level esc-{escalation.level}">{escalation.level}</div>

@@ -19,8 +19,9 @@
 
   onMount(() => {
     refresh();
+    const poll = setInterval(refresh, 2500);
     const handle = connectStream({
-      onOpen: () => store.setConnected(true),
+      onOpen: () => { store.setConnected(true); refresh(); },
       onError: () => store.setConnected(false),
       onFrame: (frame) => {
         if (frame.type === "event.appended") store.applyEvent(frame.data);
@@ -28,7 +29,7 @@
         else if (frame.type === "snapshot.invalidated") refresh();
       },
     });
-    return () => handle.close();
+    return () => { clearInterval(poll); handle.close(); };
   });
 </script>
 

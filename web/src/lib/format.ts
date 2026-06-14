@@ -1,5 +1,31 @@
 import type { EscalationRecord } from "~/lib/types";
 
+const VERB: Record<string, string> = {
+  idle: "Idle", thinking: "Thinking", reading: "Reading", editing: "Editing",
+  testing: "Running", verifying: "Verifying", waiting: "Waiting", blocked: "Blocked",
+};
+export function activityVerb(state: string | undefined): string {
+  return (state && VERB[state]) || "Active";
+}
+
+// Collapse any path-like token to its basename (handles quoted paths with spaces, drive letters, relative, posix).
+export function prettifyTarget(target: string): string {
+  if (!target) return target;
+  let out = target;
+  // quoted paths (may contain spaces): "C:\Program Files\...\x.exe", '.\a\b.md', "/a/b.md", 'C:\Users\..\SKILL.md'
+  out = out.replace(/(["'])((?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])[^"']*)\1/g, (_m, q, p) => {
+    const base = String(p).split(/[\\/]/).filter(Boolean).pop() || p;
+    return q + base + q;
+  });
+  // unquoted path tokens (no spaces): C:\a\b\x.exe, ./a/b, /a/b/c.md, .\a\b
+  // Use lookbehind to ensure lone / or \ only matches when at word boundary (not mid-token like src/x.ts)
+  out = out.replace(/(?:(?<=[^A-Za-z0-9_]|^)[\\/]|[A-Za-z]:[\\/]|\.{1,2}[\\/])[^\s"']+/g, (m) => {
+    const base = m.split(/[\\/]/).filter(Boolean).pop() || m;
+    return base;
+  });
+  return out;
+}
+
 export interface EscalationGroup {
   key: string;
   level: EscalationRecord["level"];

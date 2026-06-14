@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -33,5 +33,42 @@ describe("formatAge", () => {
   it("returns a compact age string", () => {
     const now = Date.parse("2026-06-14T08:05:00.000Z");
     expect(formatAge("2026-06-14T08:00:00.000Z", now)).toMatch(/5m/);
+  });
+});
+
+describe("activityVerb", () => {
+  it("maps known states to labels", () => {
+    expect(activityVerb("testing")).toBe("Running");
+    expect(activityVerb("thinking")).toBe("Thinking");
+    expect(activityVerb("editing")).toBe("Editing");
+  });
+  it("returns Active for unknown/undefined", () => {
+    expect(activityVerb(undefined)).toBe("Active");
+    expect(activityVerb("unknown-state")).toBe("Active");
+  });
+});
+
+describe("prettifyTarget", () => {
+  it("collapses quoted windows paths to basenames", () => {
+    const input = "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command \"Get-Content -Raw '.\\..swarm\\artifacts\\scenario-live-agent-smoke\\overseer-prompt-RUN-1c751f2d.md'\"";
+    // The double-quoted exe path collapses; the single-quoted .swarm path inside is also handled
+    const result = prettifyTarget(input);
+    expect(result).toContain("\"pwsh.exe\"");
+    expect(result).toContain("'overseer-prompt-RUN-1c751f2d.md'");
+    expect(result).not.toContain("Program Files");
+    expect(result).not.toContain("scenario-live-agent-smoke");
+  });
+  it("collapses quoted literal test case 1", () => {
+    const input = "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command \"Get-Content -Raw '.\\.swarm\\artifacts\\scenario-live-agent-smoke\\overseer-prompt-RUN-1c751f2d.md'\"";
+    const expected = "\"pwsh.exe\" -Command \"Get-Content -Raw 'overseer-prompt-RUN-1c751f2d.md'\"";
+    expect(prettifyTarget(input)).toBe(expected);
+  });
+  it("collapses quoted literal test case 2", () => {
+    const input = "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command \"Get-Content -LiteralPath 'C:\\Users\\Marius\\.codex\\skills\\project-overseer\\SKILL.md'\"";
+    const expected = "\"pwsh.exe\" -Command \"Get-Content -LiteralPath 'SKILL.md'\"";
+    expect(prettifyTarget(input)).toBe(expected);
+  });
+  it("leaves plain commands unchanged", () => {
+    expect(prettifyTarget("npm test")).toBe("npm test");
   });
 });

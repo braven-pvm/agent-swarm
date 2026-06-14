@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
+  import { prettifyTarget } from "~/lib/format";
   let { store, onSelect }: { store: ConsoleStore; onSelect: (actor: string) => void } = $props();
   const rows = $derived(store.agents);
 </script>
@@ -13,7 +14,7 @@
         {#if row.role}<span class="agent-role">{row.role}</span>{/if}
         <span class="state state-{row.state}">{row.state}</span>
       </div>
-      <div class="agent-now">{row.now}</div>
+      <div class="agent-now" title={row.now}>{prettifyTarget(row.now)}</div>
       {#if row.next}<div class="agent-next">next: {row.next}</div>{/if}
       {#if row.stallMs}<div class="stall">⚠ idle {Math.round(row.stallMs / 60000)}m</div>{/if}
     </button>
