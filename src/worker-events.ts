@@ -1,4 +1,5 @@
 import { createEvent } from "./events.js";
+import { interpretAgentEvent } from "./activity-interpreter.js";
 import type { SwarmStore } from "./storage.js";
 import type { EntityType, HeartbeatState } from "./types.js";
 
@@ -115,7 +116,8 @@ function ingestLine(
   const entityType = input.entityType ?? "slice";
   const entityId = input.entityId ?? input.sliceId;
   state.sessionId ??= findSessionId(payload);
-  const heartbeatState = input.classify?.(payload) ?? inferHeartbeatState(payload);
+  const activity = interpretAgentEvent(payload, { driver: input.driver, driverClassify: input.classify });
+  const heartbeatState = activity.state;
   state.inferredStates.push(heartbeatState);
   state.eventCount += 1;
   input.store.addEvent(
@@ -128,6 +130,7 @@ function ingestLine(
         lineNumber: state.lineNumber,
         driver: input.driver,
         agentEventType: typeof payload.type === "string" ? payload.type : undefined,
+        activity,
         event: payload,
       },
     }),
@@ -136,7 +139,7 @@ function ingestLine(
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
     state: heartbeatState,
-    detail: heartbeatDetail(payload),
+    detail: activity.label,
     entityType,
     entityId,
   });
