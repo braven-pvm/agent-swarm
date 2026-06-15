@@ -245,6 +245,13 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
     const graphRes = await get(port, "/api/graph");
     assert.equal(graphRes.status, 200, "/api/graph should be 200");
 
+    const coverageRes = await get(port, "/api/coverage");
+    assert.equal(coverageRes.status, 200, "/api/coverage should be 200");
+    const coverage = JSON.parse(coverageRes.body);
+    assert.ok(coverage.totals && typeof coverage.totals.total === "number", "/api/coverage should have totals.total");
+    assert.ok(Array.isArray(coverage.byDomain), "/api/coverage should have byDomain array");
+    assert.ok(Array.isArray(coverage.refs), "/api/coverage should have refs array");
+
     const sourceRes = await get(port, `/api/source/${encodeURIComponent(sourceId)}`);
     assert.equal(sourceRes.status, 200, `/api/source/${sourceId} should be 200`);
 

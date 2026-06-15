@@ -13,7 +13,7 @@ import {
   sourceTags,
 } from "./source-index.js";
 import { SwarmStore } from "./storage.js";
-import type { FrAcVerificationResult, RunMode } from "./types.js";
+import type { FrAcVerificationResult, RunMode, SliceRecord } from "./types.js";
 
 export const RUN_MODE_META_KEY = "run_mode";
 export const DEFAULT_RUN_MODE: RunMode = "unspecified";
@@ -284,6 +284,156 @@ export function latestFrAcResults(evidence: Array<ReturnType<SwarmStore["listEvi
     .at(-1);
   if (!commandEvidence) return [];
   return commandEvidence.payload.frAcResults as unknown as FrAcVerificationResult[];
+}
+
+export interface CoverageRef {
+  ref: string;
+  domain: string;
+  sourceId: string;
+  status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  sliceId?: string;
+  sliceStatus?: string;
+  verification?: "passed" | "failed" | "missing_evidence" | "overridden";
+  reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
+  proof?: string;
+  evidenceIds?: string[];
+}
+
+export interface CoverageDomain {
+  domain: string;
+  total: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  failed: number;
+  notStarted: number;
+}
+
+export interface CoverageSummary {
+  generatedAt: string;
+  totals: { total: number; done: number; inProgress: number; blocked: number; failed: number; notStarted: number };
+  byDomain: CoverageDomain[];
+  refs: CoverageRef[];
+}
+
+/**
+ * Authoritative FR/AC requirement-coverage rollup.
+ *
+ * The denominator is every FR/AC ref indexed across all registered sources (incl.
+ * requirements not yet pulled into any slice). Per-ref status is derived from the
+ * owning slice's lease, verification (frAcResults) and review (frAcFindings) evidence.
+ */
+export function buildCoverage(store: SwarmStore): CoverageSummary {
+  const slices = store.listSlices();
+  const leases = store.listLeases();
+
+  // 1. Inventory (denominator): de-duplicated map of every indexed FR/AC ref.
+  //    First occurrence wins for domain/sourceId attribution — matches the
+  //    `refsForSources` de-dupe semantics used by buildDomainSummaries.
+  const inventory = new Map<string, { domain: string; sourceId: string }>();
+  for (const source of store.listSources()) {
+    const domain = sourceDomain(source);
+    for (const ref of sourceFrAcRefs(source)) {
+      if (!inventory.has(ref)) inventory.set(ref, { domain, sourceId: source.id });
+    }
+  }
+
+  // Cache the most-advanced owning slice per ref, plus that slice's evidence-derived
+  // verification/review results (loaded once per slice, not once per ref).
+  const evidenceCache = new Map<string, { frAcResults: FrAcVerificationResult[]; reviewResult: ReviewResult | undefined }>();
+  const sliceEvidence = (sliceId: string) => {
+    let cached = evidenceCache.get(sliceId);
+    if (!cached) {
+      const evidence = store.listEvidence(sliceId);
+      cached = { frAcResults: latestFrAcResults(evidence), reviewResult: latestReviewResult(evidence) };
+      evidenceCache.set(sliceId, cached);
+    }
+    return cached;
+  };
+
+  const refs: CoverageRef[] = [...inventory.entries()].map(([ref, attribution]) => {
+    const owning = owningSliceForRef(slices, ref);
+    if (!owning) {
+      return { ref, domain: attribution.domain, sourceId: attribution.sourceId, status: "not_started" as const };
+    }
+    const lease = leases
+      .filter((item) => item.sliceId === owning.id && item.frAcRef === ref)
+      .at(-1);
+    const { frAcResults, reviewResult } = sliceEvidence(owning.id);
+    const frAcResult = frAcResults.find((item) => item.ref === ref);
+    const reviewFinding = reviewResult?.frAcFindings.find((item) => item.ref === ref);
+
+    let status: CoverageRef["status"];
+    if (frAcResult?.status === "passed" || (lease?.status === "completed" && owning.status === "accepted")) {
+      status = "done";
+    } else if (frAcResult?.status === "failed" || reviewFinding?.status === "failed") {
+      status = "failed";
+    } else if (owning.status === "blocked") {
+      status = "blocked";
+    } else {
+      status = "in_progress";
+    }
+
+    const coverageRef: CoverageRef = {
+      ref,
+      domain: attribution.domain,
+      sourceId: attribution.sourceId,
+      status,
+      sliceId: owning.id,
+      sliceStatus: owning.status,
+    };
+    if (frAcResult) {
+      coverageRef.verification = frAcResult.status;
+      coverageRef.proof = frAcResult.proof;
+      coverageRef.evidenceIds = frAcResult.evidenceIds;
+    }
+    if (reviewFinding) {
+      coverageRef.reviewStatus = reviewFinding.status;
+      if (!coverageRef.proof && reviewFinding.finding) coverageRef.proof = reviewFinding.finding;
+      if (!coverageRef.evidenceIds && reviewFinding.evidence.length > 0) coverageRef.evidenceIds = reviewFinding.evidence;
+    }
+    return coverageRef;
+  });
+
+  refs.sort((a, b) => a.domain.localeCompare(b.domain) || a.ref.localeCompare(b.ref));
+
+  // 3. Aggregate totals + byDomain from the deduped refs.
+  const totals = { total: refs.length, done: 0, inProgress: 0, blocked: 0, failed: 0, notStarted: 0 };
+  const domains = new Map<string, CoverageDomain>();
+  for (const ref of refs) {
+    countCoverage(totals, ref.status);
+    let domain = domains.get(ref.domain);
+    if (!domain) {
+      domain = { domain: ref.domain, total: 0, done: 0, inProgress: 0, blocked: 0, failed: 0, notStarted: 0 };
+      domains.set(ref.domain, domain);
+    }
+    domain.total += 1;
+    countCoverage(domain, ref.status);
+  }
+  const byDomain = [...domains.values()].sort((a, b) => b.total - a.total || a.domain.localeCompare(b.domain));
+
+  return { generatedAt: new Date().toISOString(), totals, byDomain, refs };
+}
+
+function owningSliceForRef(slices: SliceRecord[], ref: string): SliceRecord | undefined {
+  const owners = slices.filter((slice) => slice.frAcRefs.includes(ref));
+  if (owners.length === 0) return undefined;
+  // Most-advanced wins: accepted slices first, otherwise most recently updated.
+  return owners.sort((a, b) => {
+    const acceptedDiff = (b.status === "accepted" ? 1 : 0) - (a.status === "accepted" ? 1 : 0);
+    return acceptedDiff || b.updatedAt.localeCompare(a.updatedAt);
+  })[0];
+}
+
+function countCoverage(
+  bucket: { done: number; inProgress: number; blocked: number; failed: number; notStarted: number },
+  status: CoverageRef["status"],
+): void {
+  if (status === "done") bucket.done += 1;
+  else if (status === "in_progress") bucket.inProgress += 1;
+  else if (status === "blocked") bucket.blocked += 1;
+  else if (status === "failed") bucket.failed += 1;
+  else bucket.notStarted += 1;
 }
 
 export function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {

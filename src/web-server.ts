@@ -9,6 +9,7 @@ import { EventTailer } from "./event-tailer.js";
 import { SwarmStore } from "./storage.js";
 import {
   buildObservabilitySnapshot,
+  buildCoverage,
   buildSliceReport,
   buildTimeline,
   buildGraph,
@@ -119,6 +120,10 @@ export function createWebViewerServer(input: {
             return;
           }
           sendJson(response, buildTimeline(store, entityId));
+          return;
+        }
+        if (requestUrl.pathname === "/api/coverage") {
+          sendJson(response, buildCoverage(store));
           return;
         }
         if (requestUrl.pathname === "/api/graph") {
