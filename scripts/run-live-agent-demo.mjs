@@ -77,6 +77,7 @@ const historyEnabled = args.history !== "false";
 const scenarioEntityId = `scenario:${scenario}`;
 const runStartedAt = new Date().toISOString();
 const runId = sanitizeRunId(args["run-id"] ?? `LAR-${compactTimestamp(runStartedAt)}-${scenario}-${faultMode}-${process.pid}`);
+const SWARM_CLI_MAX_BUFFER = 50 * 1024 * 1024;
 const productReadinessRefs = ["AC-PROD-001.1", "AC-PROD-001.2", "AC-PROD-001.3", "AC-PROD-001.4"];
 const productReadinessBlockerIds = new Set([
   "dashboard-test-script",
@@ -1658,14 +1659,19 @@ function clearSatisfiedDashboardDependencyWarnings(readiness, snapshot, turn) {
 
 function isDashboardDependencyPlanningMessage(message) {
   return (
-    /Invoice Dashboard source/i.test(message) &&
+    /Invoice Dashboard (?:source|Requirements)/i.test(message) &&
     /blocked/i.test(message) &&
     /(backend|accepted|prerequisite refs|missing accepted refs|missing accepted backend prerequisite refs)/i.test(message)
   );
 }
 
 function isDashboardPullPlanningWarning(message) {
-  return /Do not pull .*Dashboard/i.test(message) || /Do not pull dashboard work/i.test(message);
+  return (
+    /Do not pull .*Dashboard/i.test(message) ||
+    /Do not pull dashboard work/i.test(message) ||
+    /dashboard source .*pullable/i.test(message) ||
+    /actionableState.*dashboard source.*pullable/i.test(message)
+  );
 }
 
 function isAcceptedSlicePlanningBlocker(message, acceptedSliceIds, activeSliceIds) {
@@ -1684,6 +1690,11 @@ function isHistoricalPlanningNoise(message) {
     /existing warning escalations?/i.test(message) ||
     /authoritative snapshot .*not mark.*blocking/i.test(message) ||
     /does not block .*dispatch/i.test(message) ||
+    /claims dashboard prerequisites are missing/i.test(message) ||
+    /claims missing dashboard prerequisites/i.test(message) ||
+    /mark(?:s|ed)? (?:that )?blocker stale/i.test(message) ||
+    /mark(?:s|ed)? it stale/i.test(message) ||
+    /do not treat it as blocking/i.test(message) ||
     /git permission warnings?|untracked \.swarm|modified implementation\/test files/i.test(message)
   );
 }
@@ -1739,6 +1750,7 @@ function runSwarm(commandArgs) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, SWARM_LIVE_FAULT: faultMode, SWARM_WORKSPACE: workspace },
+    maxBuffer: SWARM_CLI_MAX_BUFFER,
   });
 }
 
@@ -1749,7 +1761,7 @@ function runSwarmCapture(commandArgs) {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, SWARM_LIVE_FAULT: faultMode, SWARM_WORKSPACE: workspace },
     windowsHide: true,
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: SWARM_CLI_MAX_BUFFER,
   });
   return {
     ok: result.status === 0 && !result.error,

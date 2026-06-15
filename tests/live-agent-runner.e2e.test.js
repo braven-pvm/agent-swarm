@@ -10,6 +10,14 @@ const liveDemo = path.join(repoRoot, "scripts", "run-live-agent-demo.mjs");
 const compareLiveRuns = path.join(repoRoot, "scripts", "compare-live-agent-runs.mjs");
 const cli = path.join(repoRoot, "dist", "cli.js");
 
+test("live agent runner gives internal swarm CLI calls enough output buffer for large observe snapshots", () => {
+  const source = fs.readFileSync(liveDemo, "utf8");
+  const runSwarmBody = /function runSwarm\(commandArgs\) \{([\s\S]*?)\n\}/.exec(source)?.[1] ?? "";
+
+  assert.match(source, /const SWARM_CLI_MAX_BUFFER = 50 \* 1024 \* 1024;/);
+  assert.match(runSwarmBody, /maxBuffer:\s*SWARM_CLI_MAX_BUFFER/);
+});
+
 test("live agent runner loops overseer child dispatch through deterministic acceptance", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-runner-${process.pid}-${Date.now()}`);
   const fakeCodexScript = writeFakeLiveCodex();
@@ -971,6 +979,14 @@ test("full-product mode turns runtime readiness blockers into visible follow-up 
     ).length,
     0,
   );
+  assert.equal(
+    snapshot.activeEscalations.filter((item) =>
+      /Invoice Dashboard Requirements are blocked|claims dashboard prerequisites are missing|claims missing dashboard prerequisites|do not treat it as blocking/i.test(
+        item.message,
+      ),
+    ).length,
+    0,
+  );
   assert.ok(readinessSlice.evidence.some((item) => item.kind === "worker_result"));
   assert.ok(readinessSlice.evidence.some((item) => item.kind === "review_result"));
   assert.ok(readinessSlice.evidence.some((item) => item.kind === "command" && item.payload.passed === true));
@@ -1548,11 +1564,20 @@ function dashboardDependencyWarningRealWording() {
   };
 }
 
+function dashboardDependencyBlockerRealWording() {
+  return {
+    level: "blocker",
+    message:
+      "Invoice Dashboard Requirements are blocked by missing accepted prerequisite refs: AC-INV-002.1, AC-INV-002.2, AC-INV-003.1.",
+    scope: "harness:scenario:live-agent-smoke"
+  };
+}
+
 function dashboardHistoricalDependencyWarning() {
   return {
     level: "warning",
     message:
-      "Historical dashboard prerequisite warnings appear stale because actionableState.nextSourcePullQueue reports dashboard dependencies accepted and blockedSourceQueue is empty.",
+      "Active escalation ESC-45c29d9f claims dashboard prerequisites are missing, but actionableState lists dashboard source as pullable and later warnings mark that blocker stale for current dispatch decisions.",
     scope: "harness:scenario:live-agent-smoke"
   };
 }
@@ -1608,7 +1633,12 @@ function chooseOverseerCommand(snapshot, fullProductMode) {
       summary: "Fake live overseer creates the backend capability slice.",
       currentPriority: "Create accepted backend invoice capability before dashboard work.",
       blockers: fullProductMode
-        ? [dashboardDependencyWarning(), dashboardDependencyWarningRealWording(), dashboardHistoricalDependencyWarning()]
+        ? [
+          dashboardDependencyWarning(),
+          dashboardDependencyWarningRealWording(),
+          dashboardDependencyBlockerRealWording(),
+          dashboardHistoricalDependencyWarning()
+        ]
         : [],
       command: {
         command: \`node "\${cli}" slices pull --target invoice-api --source invoice-api.md --new-lane --lane-name "Backend Lane: Invoice Query Core" --lane-purpose "Implement accepted invoice backend capabilities before dashboard slices" --lane-labels backend,invoice-api,live-smoke --orchestrator live-overseer --batch-size \${fullProductMode ? 7 : 3}\`,
