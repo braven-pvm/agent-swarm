@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration } from "~/lib/format";
+  import Markdown from "~/components/Markdown.svelte";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
@@ -39,6 +40,12 @@
   const overseerEvent = $derived(
     sel?.kind === "overseerTurn" ? store.snapshot?.recentEvents.find((e) => e.id === sel.eventId) : undefined,
   );
+  let expandedCmds = $state(new Set<string>());
+  function toggleCmd(id: string) {
+    const n = new Set(expandedCmds);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    expandedCmds = n;
+  }
 </script>
 
 {#if sel}
@@ -58,7 +65,7 @@
               <span class="muted">lease: {row.leaseStatus ?? "—"}</span>
               {#if row.reviewFinding}<span class="muted">review: {row.reviewFinding.status}</span>{/if}
             </div>
-            {#each row.citations as c}<div class="citation">▸ {c}</div>{/each}
+            {#each row.citations as c}<div class="citation">▸ <Markdown md={c} inline /></div>{/each}
           </div>
         {/each}
       </div>
@@ -78,7 +85,7 @@
       {#each agentActions as item (item.id)}
         <div class="activity-line">
           <span class="verb verb-{item.state ?? 'idle'}">{activityVerb(item.state)}</span>
-          <span class="cmd" title={item.target}>{#each tokenizeCommand(prettifyTarget(item.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}</span>
+          <button class="cmd" class:cmd-expanded={expandedCmds.has(item.id)} title="click to expand/collapse" onclick={() => toggleCmd(item.id)}>{#each tokenizeCommand(prettifyTarget(item.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}</button>
         </div>
       {/each}
     {:else if sel.kind === "escalation" && escalation}

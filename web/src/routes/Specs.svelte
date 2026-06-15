@@ -3,6 +3,7 @@
   import { api } from "~/lib/api";
   import { prettifyTarget, extractFrAcRefs } from "~/lib/format";
   import type { SourceRecord } from "~/lib/types";
+  import Markdown from "~/components/Markdown.svelte";
 
   let sources = $state<SourceRecord[]>([]);
   let loading = $state(true);
@@ -121,7 +122,7 @@
               {/each}
             </div>
           {/if}
-          <pre class="spec-md">{detailMarkdown}</pre>
+          <div class="spec-md"><Markdown md={detailMarkdown} /></div>
         {/if}
       </div>
     {/if}
