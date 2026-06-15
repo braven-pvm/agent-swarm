@@ -200,25 +200,138 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .cov-table td { border-bottom: 1px solid var(--line); padding: 5px 8px; text-align: left; }
 .cov-row:hover td { background: var(--surface-2); }
 .cov-table .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.cov-badge { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; text-transform: capitalize; white-space: nowrap; }
+.cov-badge { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; text-transform: none; white-space: nowrap; }
 .cov-badge-done { background: rgba(92,184,122,.14); color: var(--green); }
 .cov-badge-in_progress { background: rgba(91,157,255,.14); color: var(--blue); }
 .cov-badge-blocked, .cov-badge-failed { background: rgba(239,107,97,.14); color: var(--red); }
 .cov-badge-not_started { background: rgba(255,255,255,.06); color: var(--muted); }
 .coverage select, .coverage .search { background: var(--bg); border: 1px solid var(--line-2); color: var(--ink); border-radius: 6px; padding: 4px 8px; }
+/* ── Specs — "Spec Build Map" ────────────────────────────────────────────
+   Coverage-joined: same status colors reused in the card bar, the ledger, and
+   inline in the prose. All scoped under .specs-route. Reuses cov-badge-*,
+   cov-domain-bar, slice-title, .agent.active vocabulary — no new color tokens. */
 .specs-route { display: flex; flex-direction: column; height: 100%; }
+.spec-page-title { font-size: var(--fs-h); font-weight: 600; margin: 0; }
 .specs-layout { display: flex; gap: 12px; flex: 1; overflow: hidden; margin-top: 8px; }
-.specs-sidebar { display: flex; flex-direction: column; gap: 6px; width: 280px; flex: none; overflow-y: auto; }
-.spec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.spec-row { display: flex; flex-direction: column; align-items: flex-start; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; cursor: pointer; color: var(--ink); text-align: left; }
-.spec-row:hover { background: var(--surface-2); }
-.spec-row.selected { box-shadow: inset 2px 0 0 var(--accent); background: rgba(91,157,255,.06); border-color: var(--line-2); }
-.spec-title { font-weight: 600; font-size: var(--fs-body); }
-.spec-meta { font-size: var(--fs-meta); margin-top: 2px; }
-.spec-detail { flex: 1; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.spec-detail-meta { display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
-.spec-refs { margin-top: 0; }
-.spec-md { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow: auto; font-size: var(--fs-meta); flex: 1; margin: 0; }
+.specs-sidebar { display: flex; flex-direction: column; gap: 6px; width: 320px; flex: none; overflow-y: auto; min-height: 0; }
+
+/* Status quick-filter (segmented control) */
+.spec-facets { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 2px; }
+.spec-facet { flex: 1; background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-eyebrow); padding: 3px 4px; border-radius: 5px; cursor: pointer; }
+.spec-facet:hover { color: var(--ink); }
+.spec-facet.active { background: var(--surface-2); color: var(--ink); }
+
+.spec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* Skeleton loading rows (reserve height to avoid hydrate layout shift) */
+.spec-skeleton { display: flex; flex-direction: column; gap: 4px; }
+.spec-skel-row { height: 74px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); opacity: .5; animation: cb-pulse 1.4s ease-in-out infinite; }
+
+/* The card — reuses .slice-card base feel; full-width button + left spine */
+.spec-card { position: relative; display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s2) var(--s2) 12px; color: var(--ink); cursor: pointer; overflow: hidden; }
+.spec-card:hover { background: var(--surface-2); }
+.spec-card.selected { background: rgba(91,157,255,0.14); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), 0 2px 10px rgba(91,157,255,0.18); }
+.spec-spine { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 3px 0 0 3px; }
+
+.spec-card-head { display: flex; align-items: flex-start; gap: 6px; }
+.spec-card-head .slice-title { flex: 1; margin: 0; }
+.spec-prio { flex: none; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; background: rgba(255,255,255,.06); color: var(--muted); align-self: flex-start; }
+.spec-prio.high { background: rgba(214,161,60,.16); color: var(--amber); font-weight: 600; }
+
+.spec-card-meta { display: flex; align-items: center; gap: 5px; font-size: var(--fs-meta); color: var(--muted); white-space: nowrap; overflow: hidden; }
+.spec-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.spec-domain { flex: none; }
+.spec-uri { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.faint { color: var(--faint); }
+.spec-tag { flex: none; font-size: var(--fs-eyebrow); border: 1px solid var(--line-2); border-radius: 8px; padding: 0 5px; color: var(--muted); }
+.spec-tag-more { border-style: dashed; color: var(--faint); }
+
+/* Card coverage row — segmented bar + count + worst-status pill */
+.spec-cov { display: flex; align-items: center; gap: 6px; }
+.spec-cov-bar { flex: 1; height: 5px; min-height: 5px; background: rgba(255,255,255,.10); }
+.spec-seg { height: 100%; }
+.seg-done { background: var(--green); }
+.seg-inprog { background: var(--blue); }
+.seg-bad { background: var(--red); }
+.seg-none { background: rgba(255,255,255,.10); }
+.spec-cov .cov-count { flex: none; font-size: var(--fs-eyebrow); }
+.cov-count.cov-ok { color: var(--green); }
+.cov-count.cov-muted { color: var(--faint); }
+.spec-worst { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+.spec-ref-unindexed { background: rgba(255,255,255,.04); color: var(--faint); border: 1px dashed var(--line-2); }
+
+/* ── Detail pane ─────────────────────────────────────────────────────── */
+.spec-detail { flex: 1; min-width: 0; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; }
+.spec-detail-hint { display: flex; align-items: center; justify-content: center; height: 100%; }
+.spec-detail-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+
+/* Zone 1 — sticky masthead */
+.spec-masthead { position: sticky; top: 0; z-index: 3; display: flex; align-items: flex-start; gap: 10px; background: var(--panel); border-bottom: 1px solid var(--line); padding: var(--s3) var(--s4); }
+.spec-masthead .spec-spine { position: static; width: 3px; align-self: stretch; border-radius: 3px; flex: none; }
+.spec-masthead-main { flex: 1; min-width: 0; }
+.spec-masthead-title { font-size: var(--fs-h); font-weight: 600; margin: 0 0 4px; color: var(--ink); }
+.spec-masthead-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-meta); color: var(--muted); }
+.spec-masthead-meta .spec-uri { max-width: 100%; }
+.spec-masthead-readout { flex: none; font-size: var(--fs-meta); color: var(--muted); white-space: nowrap; }
+
+/* Zone 2 — coverage band */
+.spec-band { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); background: var(--panel); }
+.spec-band-bar { height: 8px; background: rgba(255,255,255,.10); }
+.spec-band-row { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.spec-band-caption { font-size: var(--fs-meta); color: var(--muted); }
+.spec-legend { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+.spec-legend-chip { display: inline-flex; align-items: center; gap: 3px; border: 1px solid transparent; cursor: pointer; font: inherit; font-size: var(--fs-eyebrow); }
+.spec-legend-chip:hover { filter: brightness(1.15); }
+.spec-legend-chip.active { border-color: currentColor; }
+.spec-legend-clear { background: none; border: none; color: var(--faint); font: inherit; font-size: var(--fs-eyebrow); cursor: pointer; padding: 0 2px; }
+.spec-legend-clear:hover { color: var(--ink); }
+
+.spec-band-tools { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.spec-find { display: flex; align-items: center; gap: 4px; flex: none; }
+.spec-find-input { width: 180px; }
+.spec-find-count { font-size: var(--fs-eyebrow); color: var(--muted); min-width: 40px; text-align: right; }
+.spec-find-nav { background: var(--bg); border: 1px solid var(--line-2); color: var(--ink); border-radius: 5px; cursor: pointer; font: inherit; line-height: 1; padding: 2px 6px; }
+.spec-find-nav:disabled { opacity: .4; cursor: default; }
+.spec-find-nav:not(:disabled):hover { background: var(--surface-2); }
+
+/* TOC strip */
+.spec-toc { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.spec-toc-chip { background: var(--bg); border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 1px 8px; font-size: var(--fs-eyebrow); cursor: pointer; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spec-toc-chip:hover { color: var(--ink); border-color: var(--line-2); }
+.spec-toc-chip.lvl3 { opacity: .82; }
+.spec-toc-chip.active { color: var(--ink); border-color: var(--accent); background: rgba(91,157,255,.10); }
+.spec-toc-chip.dim { opacity: .35; }
+
+/* Zone 3 — requirement ledger */
+.spec-ledger { padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.spec-ledger-head { margin: 0; }
+.spec-family { display: flex; flex-direction: column; gap: 5px; }
+.spec-family-head { display: flex; align-items: center; gap: var(--s2); }
+.spec-family-name { margin: 0; flex: none; }
+.spec-family-bar { flex: 1; height: 4px; min-height: 4px; max-width: 160px; background: rgba(255,255,255,.10); }
+.spec-family-count { flex: none; font-size: var(--fs-eyebrow); }
+.spec-family-refs { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Reference chip — reuses cov-badge-* tones; clickable; glyph + mono ref */
+.spec-ref { display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; border: 1px solid transparent; cursor: pointer; line-height: 1.5; vertical-align: baseline; }
+.spec-ref:not(:disabled):hover { filter: brightness(1.2); text-decoration: none; box-shadow: inset 0 0 0 1px currentColor; }
+.spec-ref:disabled { cursor: default; }
+.spec-ref.dim { opacity: .3; }
+.spec-ref-glyph { font-size: .9em; opacity: .85; }
+.spec-ref.spec-ref-unindexed { background: rgba(255,255,255,.04); color: var(--faint); border: 1px dashed var(--line-2); }
+/* inline-in-prose chips sit on the text baseline */
+.spec-md .spec-ref { margin: 0 1px; }
+
+.spec-body-divider { display: flex; align-items: center; padding: var(--s2) var(--s4) 0; border-top: 1px solid var(--line); margin-top: var(--s1); }
+.spec-body-divider .run-subhead { margin: var(--s2) 0 0; }
+
+.spec-md { padding: var(--s2) var(--s4) var(--s4); overflow-wrap: anywhere; }
+
+/* Find highlight — amber family throughout so find never reads as a status color */
+mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radius: 2px; padding: 0 1px; }
+.find-hit-current { background: rgba(214,161,60,.55); outline: 2px solid var(--amber); outline-offset: 1px; }
+/* Ledger RefChip find-hit: ring only — keep the chip's status color, never paint amber bg over it */
+.spec-ref.find-hit { outline: 2px solid var(--amber); outline-offset: 1px; }
 .md { color: var(--ink); line-height: 1.5; overflow-wrap: anywhere; font-size: var(--fs-title); }
 .md h1, .md h2, .md h3, .md h4 { margin: .8em 0 .3em; line-height: 1.25; color: var(--ink); }
 .md h1 { font-size: 18px; } .md h2 { font-size: 15px; } .md h3 { font-size: 13px; }

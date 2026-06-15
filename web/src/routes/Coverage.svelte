@@ -1,7 +1,12 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
-  let { store }: { store: ConsoleStore } = $props();
+  import { statusLabel } from "~/lib/format";
+  let { store, seed = "" }: { store: ConsoleStore; seed?: string } = $props();
   let q = $state(""); let statusFilter = $state("all");
+  // Reactive seed: follows `seed` on every navigation change (App sets it; manual
+  // typing changes `q` not `seed`, so this never clobbers user input). An empty
+  // seed (top-nav Coverage click) now correctly clears q even without a remount.
+  $effect(() => { q = seed ?? ""; });
   const cov = $derived(store.coverage);
   const ro = $derived(store.snapshot?.runObservability);
   const pct = (n: number, d: number) => (d ? Math.round((100 * n) / d) : 0);
@@ -138,7 +143,7 @@
     <div class="cov-panel cov-table-panel">
       <div class="cov-filters">
         <input class="search" placeholder="Filter refs / domain / slice…" bind:value={q} />
-        <select bind:value={statusFilter}>{#each STATUSES as s}<option value={s}>{s.replace("_"," ")}</option>{/each}</select>
+        <select bind:value={statusFilter}>{#each STATUSES as s}<option value={s}>{s === "all" ? "All" : statusLabel(s)}</option>{/each}</select>
         <span class="muted cov-count-shown">{rows.length} shown</span>
       </div>
       <div class="cov-table-scroll">
@@ -149,7 +154,7 @@
               <tr class="cov-row cov-{r.status}">
                 <td class="mono">{r.ref}</td>
                 <td>{r.domain}</td>
-                <td><span class="cov-badge cov-badge-{r.status}">{r.status.replace("_"," ")}</span></td>
+                <td><span class="cov-badge cov-badge-{r.status}">{statusLabel(r.status)}</span></td>
                 <td class="mono muted" title={r.sliceId ?? ""}>{r.sliceId ? r.sliceId.slice(-8) : "—"}</td>
                 <td class="muted">{r.verification ?? r.reviewStatus ?? "—"}</td>
               </tr>

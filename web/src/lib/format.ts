@@ -191,12 +191,207 @@ export function groupEscalations(list: EscalationRecord[]): EscalationGroup[] {
   return Array.from(map.values()).sort((a, b) => order[a.level] - order[b.level] || (a.latest < b.latest ? 1 : -1));
 }
 
-const FRAC_RE = /\b(?:FR|AC)-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:\.[0-9]+)?\b/gi;
+export const FRAC_RE = /\b(?:FR|AC)-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:\.[0-9]+)?\b/gi;
 
 /** Extract and deduplicate FR/AC reference identifiers from a markdown string. */
 export function extractFrAcRefs(text: string): string[] {
   const matches = text.match(FRAC_RE) ?? [];
   return [...new Set(matches.map((m) => m.toUpperCase()))].sort();
+}
+
+/** Sentence-case display label for a coverage status string. First word capitalized only. */
+export function statusLabel(status: string): string {
+  switch (status) {
+    case "done": return "Done";
+    case "in_progress": return "In progress";
+    case "blocked": return "Blocked";
+    case "failed": return "Failed";
+    case "not_started": return "Not started";
+    default: return "Not indexed";
+  }
+}
+
+// ── Spec Build Map helpers ──────────────────────────────────────────────
+// A single shared status vocabulary joined to the existing Coverage tone classes
+// (cov-badge-*) so the Specs screen introduces zero new color decisions. Every
+// status is paired with a glyph so color is never the sole signal.
+
+export type RefStatus = "done" | "in_progress" | "blocked" | "failed" | "not_started";
+
+export interface RefTone {
+  /** Existing cov-badge-* suffix (or "unindexed" for a neutral, non-clickable chip). */
+  cls: string;
+  /** Glyph paired with the color so the state reads without relying on hue. */
+  glyph: string;
+  /** Sentence-case label for legends / tooltips. */
+  label: string;
+}
+
+const TONES: Record<string, RefTone> = {
+  done: { cls: "cov-badge-done", glyph: "✓", label: "Done" },
+  in_progress: { cls: "cov-badge-in_progress", glyph: "◐", label: "In progress" },
+  blocked: { cls: "cov-badge-blocked", glyph: "✕", label: "Blocked" },
+  failed: { cls: "cov-badge-failed", glyph: "✕", label: "Failed" },
+  not_started: { cls: "cov-badge-not_started", glyph: "○", label: "Not started" },
+};
+
+const UNINDEXED_TONE: RefTone = { cls: "spec-ref-unindexed", glyph: "◌", label: "Not indexed" };
+
+/** Map a coverage status (or undefined → unindexed) to its reused tone class + glyph + label. */
+export function refTone(status?: string): RefTone {
+  if (!status) return UNINDEXED_TONE;
+  return TONES[status] ?? UNINDEXED_TONE;
+}
+
+// Severity precedence for the worst-status roll-up: a present failure/blocker
+// dominates, then in-progress, then not-started, and only all-done reads green.
+const SEVERITY: Record<RefStatus, number> = {
+  failed: 5,
+  blocked: 4,
+  in_progress: 3,
+  not_started: 2,
+  done: 1,
+};
+
+/** Most severe status present among a set of statuses (undefined → no indexed refs). */
+export function worstStatus(statuses: Array<string | undefined>): RefStatus | undefined {
+  let worst: RefStatus | undefined;
+  for (const s of statuses) {
+    if (!s || !(s in SEVERITY)) continue;
+    const st = s as RefStatus;
+    if (worst === undefined || SEVERITY[st] > SEVERITY[worst]) worst = st;
+  }
+  return worst;
+}
+
+export interface RefCounts {
+  total: number;
+  done: number;
+  inProgress: number;
+  blockedFailed: number;
+  notStarted: number;
+  indexed: number;
+}
+
+/** Tally per-status counts for a list of refs against a coverage refMap. */
+export function countRefStatuses(refs: string[], refMap: Map<string, { status: string }>): RefCounts {
+  const c: RefCounts = { total: refs.length, done: 0, inProgress: 0, blockedFailed: 0, notStarted: 0, indexed: 0 };
+  for (const ref of refs) {
+    const r = refMap.get(ref.toUpperCase());
+    if (!r) continue;
+    c.indexed += 1;
+    if (r.status === "done") c.done += 1;
+    else if (r.status === "in_progress") c.inProgress += 1;
+    else if (r.status === "blocked" || r.status === "failed") c.blockedFailed += 1;
+    else if (r.status === "not_started") c.notStarted += 1;
+  }
+  return c;
+}
+
+// Family ordering for the requirement ledger — domain-ish prefixes first in a
+// stable, meaningful order, everything else alphabetical, "Other" last.
+const FAMILY_ORDER = ["API", "UI", "DATA", "NFR", "QA", "SMOKE", "PROD"];
+
+/** The family segment of a ref: the token immediately after FR-/AC- (else "Other"). */
+export function refFamily(ref: string): string {
+  const m = /^(?:FR|AC)-([A-Za-z]+)/i.exec(ref);
+  return m ? m[1].toUpperCase() : "Other";
+}
+
+export interface RefFamilyGroup {
+  family: string;
+  refs: string[];
+}
+
+/** Group extracted refs by family, ordered per FAMILY_ORDER then alphabetical, "Other" last. */
+export function groupRefsByFamily(refs: string[]): RefFamilyGroup[] {
+  const map = new Map<string, string[]>();
+  for (const ref of refs) {
+    const fam = refFamily(ref);
+    const list = map.get(fam);
+    if (list) list.push(ref);
+    else map.set(fam, [ref]);
+  }
+  const rank = (fam: string) => {
+    if (fam === "Other") return 1e6;
+    const i = FAMILY_ORDER.indexOf(fam);
+    return i === -1 ? 1000 : i;
+  };
+  return Array.from(map.entries())
+    .map(([family, list]) => ({ family, refs: [...list].sort() }))
+    .sort((a, b) => {
+      const ra = rank(a.family);
+      const rb = rank(b.family);
+      if (ra !== rb) return ra - rb;
+      return a.family.localeCompare(b.family);
+    });
+}
+
+// Deterministic category tint for a card spine — a CATEGORY signal (never status).
+// Cycles the existing accent/semantic hues at a calm alpha. Same domain → same tint.
+const SPINE_TINTS = [
+  "rgba(91,157,255,0.7)", // --blue / --accent
+  "rgba(167,139,250,0.7)", // --violet
+  "rgba(92,184,122,0.7)", // --green
+  "rgba(214,161,60,0.7)", // --amber
+  "rgba(91,157,255,0.5)", // --accent (lighter)
+];
+
+/** Stable per-domain spine tint (category color, not status). Empty/undefined → faint line. */
+export function domainTint(domain: string | undefined): string {
+  if (!domain) return "rgba(255,255,255,0.18)";
+  let h = 0;
+  for (let i = 0; i < domain.length; i += 1) h = (h * 31 + domain.charCodeAt(i)) >>> 0;
+  return SPINE_TINTS[h % SPINE_TINTS.length];
+}
+
+/** Slugify a heading into a URL-safe id (caller de-dupes with a counter). */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "section";
+}
+
+export interface TocEntry {
+  text: string;
+  slug: string;
+  level: number; // 2 = ##, 3 = ###
+}
+
+/** Parse ## / ### headings from markdown into TOC entries with de-duplicated slugs. */
+export function parseHeadings(md: string): TocEntry[] {
+  const entries: TocEntry[] = [];
+  const seen = new Map<string, number>();
+  const lines = md.split("\n");
+  let inFence = false;
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = /^(#{2,3})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (!m) continue;
+    const level = m[1].length;
+    // strip inline markdown emphasis/code/link syntax for a clean label + slug base
+    const text = m[2]
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .trim();
+    let slug = slugify(text);
+    const n = seen.get(slug) ?? 0;
+    seen.set(slug, n + 1);
+    if (n > 0) slug = `${slug}-${n}`;
+    entries.push({ text, slug, level });
+  }
+  return entries;
 }
 
 export function formatAge(iso: string, now: number = Date.now()): string {

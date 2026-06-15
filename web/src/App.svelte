@@ -14,6 +14,18 @@
 
   const store = createConsoleStore();
   let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
+  // Cross-link seed: a requirement ref clicked in Specs opens Coverage filtered to it.
+  // The top Coverage nav button resets this to "" so it always opens unfiltered.
+  let coverageSeed = $state<string>("");
+
+  function openCoverageFiltered(ref: string) {
+    coverageSeed = ref;
+    route = "coverage";
+  }
+  function openCoverageNav() {
+    coverageSeed = "";
+    route = "coverage";
+  }
 
   const clamp = (n: number) => Math.max(180, Math.min(560, Number.isFinite(n) ? n : 240));
   let agentsW = $state(240);
@@ -70,7 +82,7 @@
   <StatusBar {store} />
   <nav class="routes">
     <button class:active={route === "bridge"} onclick={() => (route = "bridge")}>Bridge</button>
-    <button class:active={route === "coverage"} onclick={() => (route = "coverage")}>Coverage</button>
+    <button class:active={route === "coverage"} onclick={openCoverageNav}>Coverage</button>
     <button class:active={route === "specs"} onclick={() => (route = "specs")}>Specs</button>
     <button class:active={route === "history"} onclick={() => (route = "history")}>History</button>
   </nav>
@@ -110,10 +122,10 @@
       <InspectorDrawer {store} />
     </main>
   {:else if route === "specs"}
-    {#await import("~/routes/Specs.svelte") then m}<m.default />{:catch}<div class="error">Route failed to load.</div>{/await}
+    {#await import("~/routes/Specs.svelte") then m}<m.default {store} onOpenRef={openCoverageFiltered} />{:catch}<div class="error">Route failed to load.</div>{/await}
   {:else if route === "history"}
     {#await import("~/routes/History.svelte") then m}<m.default />{:catch}<div class="error">Route failed to load.</div>{/await}
   {:else if route === "coverage"}
-    {#await import("~/routes/Coverage.svelte") then m}<m.default {store} />{:catch}<div class="error">Route failed to load.</div>{/await}
+    {#await import("~/routes/Coverage.svelte") then m}<m.default {store} seed={coverageSeed} />{:catch}<div class="error">Route failed to load.</div>{/await}
   {/if}
 </div>
