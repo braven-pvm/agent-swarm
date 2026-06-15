@@ -68,15 +68,18 @@ export function createConsoleStore() {
       const cp = snapshot.checkpoints.find((c) => c.createdBy === row.actor);
       if (cp) row.next = (cp.payload as Record<string, unknown>).nextIntendedAction as string | undefined;
       const ageMs = nowMs - Date.parse(row.latest);
-      if (Number.isFinite(ageMs) && ageMs > 5 * 60 * 1000) row.stallMs = ageMs;
-      // per-actor runtime: latest run by startedAt
+      // per-actor runtime + canonical status: the LATEST run by startedAt (not the first seen).
       const actorRuns = snapshot.agentRuns.filter((r) => r.actor === row.actor);
       if (actorRuns.length > 0) {
         const latest = actorRuns.reduce((a, b) => (a.startedAt >= b.startedAt ? a : b));
+        row.runStatus = latest.status;
         const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
         const rt = endMs - Date.parse(latest.startedAt);
         if (Number.isFinite(rt)) row.runtimeMs = rt;
       }
+      // Stall only matters for a live run that has gone silent — a finished/absent run that hasn't
+      // signalled in a while is idle, not stalled.
+      if (Number.isFinite(ageMs) && ageMs > 5 * 60 * 1000 && row.runStatus === "running") row.stallMs = ageMs;
     }
     return Array.from(byActor.values()).sort((a, b) => a.actor.localeCompare(b.actor));
   });

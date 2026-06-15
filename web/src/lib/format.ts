@@ -126,12 +126,29 @@ export function shortAge(ms: number): string {
 
 export type LivenessLevel = "alive" | "quiet" | "stale" | "dead" | "done";
 // Classify per-agent liveness from run status + last-signal age.
+//
+// A stall alarm ("dead") is only meaningful when the agent is EXPECTED to be signaling — i.e. it
+// has a live (running) run. A finished run (completed/released/failed) or no run at all — e.g. a
+// deterministic verify step that emits heartbeats but spawns no agent process — is idle, NOT
+// stalled: "no signal" is expected and irrelevant there, so it maps to "done". Only a running run
+// gone silent, or a run the harness itself flagged `stale`, counts as a genuine stall.
 export function livenessLevel(runStatus: string | undefined, ageMs: number): LivenessLevel {
-  if (runStatus === "completed" || runStatus === "released") return "done";
-  if (ageMs < 15_000) return "alive";
-  if (ageMs < 60_000) return "quiet";
-  if (ageMs < 300_000) return "stale";
-  return "dead";
+  if (runStatus === "running") {
+    if (ageMs < 15_000) return "alive";
+    if (ageMs < 60_000) return "quiet";
+    if (ageMs < 300_000) return "stale";
+    return "dead";
+  }
+  if (runStatus === "stale") return "dead"; // harness already marked the run stalled
+  return "done"; // completed | released | failed | undefined (no live run) → idle, not expected to signal
+}
+
+// Operator-facing one-word state derived from a liveness level: active (live & signaling),
+// stalled (live but no signal), or idle (no live run — finished or never started).
+export function livenessLabel(level: LivenessLevel): "active" | "idle" | "stalled" {
+  if (level === "dead") return "stalled";
+  if (level === "done") return "idle";
+  return "active";
 }
 
 export interface EscalationGroup {

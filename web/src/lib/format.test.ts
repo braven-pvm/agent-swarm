@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, shortAge, fmtClock, groupRunActivity } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -152,11 +152,17 @@ describe("livenessLevel", () => {
   it("running + 5s → alive", () => {
     expect(livenessLevel("running", 5_000)).toBe("alive");
   });
+  it("running + 30s → quiet", () => {
+    expect(livenessLevel("running", 30_000)).toBe("quiet");
+  });
   it("running + 2m → stale", () => {
     expect(livenessLevel("running", 120_000)).toBe("stale");
   });
-  it("running + 20m → dead", () => {
+  it("running + 20m → dead (live run gone silent = genuinely stalled)", () => {
     expect(livenessLevel("running", 1_200_000)).toBe("dead");
+  });
+  it("harness-flagged stale run → dead regardless of age", () => {
+    expect(livenessLevel("stale", 1_000)).toBe("dead");
   });
   it("completed + 20m → done", () => {
     expect(livenessLevel("completed", 1_200_000)).toBe("done");
@@ -164,8 +170,24 @@ describe("livenessLevel", () => {
   it("released → done regardless of age", () => {
     expect(livenessLevel("released", 1_000)).toBe("done");
   });
-  it("undefined run status defaults to active classification", () => {
-    expect(livenessLevel(undefined, 30_000)).toBe("quiet");
+  it("failed run → done (finished, not stalled)", () => {
+    expect(livenessLevel("failed", 1_200_000)).toBe("done");
+  });
+  it("no run status (heartbeat-only step) → done, never a false stall", () => {
+    expect(livenessLevel(undefined, 30_000)).toBe("done");
+    expect(livenessLevel(undefined, 1_200_000)).toBe("done");
+  });
+});
+
+describe("livenessLabel", () => {
+  it("running levels → active", () => {
+    expect(livenessLabel("alive")).toBe("active");
+    expect(livenessLabel("quiet")).toBe("active");
+    expect(livenessLabel("stale")).toBe("active");
+  });
+  it("dead → stalled, done → idle", () => {
+    expect(livenessLabel("dead")).toBe("stalled");
+    expect(livenessLabel("done")).toBe("idle");
   });
 });
 
