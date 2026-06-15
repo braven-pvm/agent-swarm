@@ -74,7 +74,9 @@
     <button class:active={route === "specs"} onclick={() => (route = "specs")}>Specs</button>
     <button class:active={route === "history"} onclick={() => (route = "history")}>History</button>
   </nav>
-  <ObservabilityCallout {store} onGoCoverage={() => (route = "coverage")} />
+  {#if route !== "coverage"}
+    <ObservabilityCallout {store} onGoCoverage={() => (route = "coverage")} />
+  {/if}
 
   {#if route === "bridge"}
     <main
