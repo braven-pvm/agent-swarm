@@ -192,3 +192,30 @@ export function formatAge(iso: string, now: number = Date.now()): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+// One raw activity entry pulled from an agent_event (state + target + the event timestamp).
+export interface ActivityEntry { state?: string; target?: string; ts: string; }
+// A compacted line: a run of consecutive same-verb actions collapsed into one row.
+export interface ActivityGroup { verb: string; targets: string[]; startTs: string; endTs: string; count: number; }
+
+// Collapse a (chronological) list of activity entries into compact lines: CONSECUTIVE entries that
+// share the same past-tense verb (per describeActivity) become one group; their cleaned targets are
+// deduped and collected. Entries are expected ASC by timestamp; the result preserves that order.
+export function groupRunActivity(entries: ActivityEntry[]): ActivityGroup[] {
+  const sorted = [...entries].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+  const groups: ActivityGroup[] = [];
+  for (const e of sorted) {
+    const d = describeActivity({ state: e.state, target: e.target });
+    const verb = d.past;
+    const target = d.target;
+    const last = groups[groups.length - 1];
+    if (last && last.verb === verb) {
+      last.endTs = e.ts;
+      last.count += 1;
+      if (target && !last.targets.includes(target)) last.targets.push(target);
+      continue;
+    }
+    groups.push({ verb, targets: target ? [target] : [], startTs: e.ts, endTs: e.ts, count: 1 });
+  }
+  return groups;
+}

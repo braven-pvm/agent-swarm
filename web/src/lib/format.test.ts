@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, shortAge, fmtClock } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, shortAge, fmtClock, groupRunActivity } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -190,6 +190,40 @@ describe("fmtClock", () => {
   });
   it("formats a valid ISO timestamp as 24h time", () => {
     expect(fmtClock("2026-06-14T08:05:09.000Z")).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+});
+
+describe("groupRunActivity", () => {
+  const ts = (n: number) => `2026-06-14T08:00:0${n}.000Z`;
+  it("collapses consecutive same-verb actions into one group with deduped targets", () => {
+    const groups = groupRunActivity([
+      { state: "reading", target: "a.ts", ts: ts(0) },
+      { state: "reading", target: "b.ts", ts: ts(1) },
+      { state: "reading", target: "a.ts", ts: ts(2) }, // repeat target deduped
+      { state: "testing", target: '"pwsh.exe" -Command "npm test"', ts: ts(3) },
+      { state: "reading", target: '"pwsh.exe" -Command "git diff"', ts: ts(4) },
+    ]);
+    // reads(a,b) | tests | git diff  → 3 groups
+    expect(groups.length).toBe(3);
+    expect(groups[0].verb).toBe("read");
+    expect(groups[0].targets).toEqual(["a.ts", "b.ts"]);
+    expect(groups[0].count).toBe(3);
+    expect(groups[0].startTs).toBe(ts(0));
+    expect(groups[0].endTs).toBe(ts(2));
+    expect(groups[1].verb).toBe("ran tests");
+    expect(groups[2].verb).toBe("git diff");
+  });
+  it("sorts ascending by timestamp before grouping", () => {
+    const groups = groupRunActivity([
+      { state: "reading", target: "b.ts", ts: ts(2) },
+      { state: "reading", target: "a.ts", ts: ts(1) },
+    ]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].targets).toEqual(["a.ts", "b.ts"]);
+    expect(groups[0].startTs).toBe(ts(1));
+  });
+  it("returns an empty array for no entries", () => {
+    expect(groupRunActivity([])).toEqual([]);
   });
 });
 
