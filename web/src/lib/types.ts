@@ -41,6 +41,36 @@ export interface SnapshotResponse {
   activeEscalations: EscalationRecord[]; checkpoints: CheckpointRecord[]; recentEvents: HarnessEvent[];
 }
 
+export interface CoverageRef {
+  ref: string;
+  domain: string;
+  sourceId: string;
+  status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  sliceId?: string;
+  sliceStatus?: string;
+  verification?: "passed" | "failed" | "missing_evidence" | "overridden";
+  reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
+  proof?: string;
+  evidenceIds?: string[];
+}
+
+export interface CoverageDomain {
+  domain: string;
+  total: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  failed: number;
+  notStarted: number;
+}
+
+export interface CoverageSummary {
+  generatedAt: string;
+  totals: { total: number; done: number; inProgress: number; blocked: number; failed: number; notStarted: number };
+  byDomain: CoverageDomain[];
+  refs: CoverageRef[];
+}
+
 export type SSEFrame =
   | { type: "event.appended"; data: HarnessEvent }
   | { type: "heartbeat.changed"; data: HeartbeatRecord }

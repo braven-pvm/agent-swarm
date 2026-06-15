@@ -1,5 +1,5 @@
 import type {
-  SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity,
+  SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity, CoverageSummary,
 } from "~/lib/types";
 import { groupEscalations, type EscalationGroup } from "~/lib/format";
 
@@ -30,6 +30,7 @@ export function createConsoleStore() {
   let snapshot = $state<SnapshotResponse | null>(null);
   let connected = $state(false);
   let selected = $state<SelectedEntity | null>(null);
+  let coverage = $state<CoverageSummary | null>(null);
 
   const escalationGroups = $derived<EscalationGroup[]>(snapshot ? groupEscalations(snapshot.activeEscalations) : []);
 
@@ -84,9 +85,11 @@ export function createConsoleStore() {
     get selected() { return selected; },
     get escalationGroups() { return escalationGroups; },
     get agents() { return agents; },
+    get coverage() { return coverage; },
     hydrate(s: SnapshotResponse) { snapshot = s; },
     setConnected(v: boolean) { connected = v; },
     select(entity: SelectedEntity | null) { selected = entity; },
+    setCoverage(c: CoverageSummary) { coverage = c; },
     invalidate() { /* App re-fetches snapshot and calls hydrate(); see App.svelte */ },
     applyEvent(event: HarnessEvent) {
       if (!snapshot) return;

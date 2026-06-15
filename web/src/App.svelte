@@ -11,10 +11,14 @@
   import InspectorDrawer from "~/components/InspectorDrawer.svelte";
 
   const store = createConsoleStore();
-  let route = $state<"bridge" | "specs" | "history">("bridge");
+  let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
 
   async function refresh() {
-    try { store.hydrate(await api.snapshot(200)); } catch (e) { console.error("snapshot failed", e); }
+    try {
+      const [snap, cov] = await Promise.all([api.snapshot(200), api.coverage().catch(() => null)]);
+      store.hydrate(snap);
+      if (cov) store.setCoverage(cov);
+    } catch (e) { console.error("snapshot failed", e); }
   }
 
   onMount(() => {
@@ -37,6 +41,7 @@
   <StatusBar {store} />
   <nav class="routes">
     <button class:active={route === "bridge"} onclick={() => (route = "bridge")}>Bridge</button>
+    <button class:active={route === "coverage"} onclick={() => (route = "coverage")}>Coverage</button>
     <button class:active={route === "specs"} onclick={() => (route = "specs")}>Specs</button>
     <button class:active={route === "history"} onclick={() => (route = "history")}>History</button>
   </nav>
@@ -55,5 +60,7 @@
     {#await import("~/routes/Specs.svelte") then m}<m.default />{:catch}<div class="error">Route failed to load.</div>{/await}
   {:else if route === "history"}
     {#await import("~/routes/History.svelte") then m}<m.default />{:catch}<div class="error">Route failed to load.</div>{/await}
+  {:else if route === "coverage"}
+    {#await import("~/routes/Coverage.svelte") then m}<m.default {store} />{:catch}<div class="error">Route failed to load.</div>{/await}
   {/if}
 </div>

@@ -1,4 +1,4 @@
-import type { SnapshotResponse } from "~/lib/types";
+import type { SnapshotResponse, CoverageSummary } from "~/lib/types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -21,4 +21,5 @@ export const api = {
   historyRun: (id: string) => getJson<Record<string, unknown>>(`/api/history/run/${encodeURIComponent(id)}`),
   historyCompare: (left?: string, right?: string) =>
     getJson<Record<string, unknown>>(`/api/history/compare${left && right ? `?left=${left}&right=${right}` : ""}`),
+  coverage: () => getJson<CoverageSummary>("/api/coverage"),
 };

@@ -81,6 +81,23 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 ui-mo
 .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); opacity: .5; flex: none; }
 @keyframes cb-spin { to { transform: rotate(360deg); } }
 .activity-idle.current { margin-bottom: 6px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.coverage .cov-head { display: flex; align-items: baseline; gap: 12px; }
+.cov-overall { color: var(--muted); } .cov-overall strong { color: var(--ink); }
+.cov-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #20262c; margin: 8px 0; }
+.cov-bar .seg { height: 100%; }
+.seg-done { background: var(--green); } .seg-inprog { background: var(--blue); } .seg-blocked { background: var(--red); } .seg-failed { background: #7a2820; } .seg-notstarted { background: #2c3238; }
+.cov-domains { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.cov-domain-head { display: flex; justify-content: space-between; font-size: 12px; }
+.cov-filters { display: flex; gap: 8px; align-items: center; margin: 12px 0 6px; }
+.cov-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cov-table th, .cov-table td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+.cov-table .mono { font-family: ui-monospace, Menlo, monospace; }
+.cov-badge { font-size: 10px; border-radius: 8px; padding: 0 6px; }
+.cov-badge-done { background: rgba(63,185,80,.18); color: var(--green); }
+.cov-badge-in_progress { background: rgba(88,166,255,.18); color: var(--blue); }
+.cov-badge-blocked, .cov-badge-failed { background: rgba(248,81,73,.18); color: var(--red); }
+.cov-badge-not_started { background: #2c3238; color: var(--muted); }
+.coverage select, .coverage .search { background: #0e1114; border: 1px solid var(--line); color: var(--ink); border-radius: 6px; padding: 4px 8px; }
 .specs-route { display: flex; flex-direction: column; height: 100%; }
 .specs-layout { display: flex; gap: 12px; flex: 1; overflow: hidden; margin-top: 8px; }
 .specs-sidebar { display: flex; flex-direction: column; gap: 6px; width: 280px; flex: none; overflow-y: auto; }

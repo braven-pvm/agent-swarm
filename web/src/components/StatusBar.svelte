@@ -21,6 +21,10 @@
   <span class="chip">phase: {snap?.phase ?? "—"}</span>
   <span class="chip">turn {snap?.turnCount ?? "—"}</span>
   <span class="chip">slices ▮ {accepted}/{total}</span>
+  {#if store.coverage}
+    {@const c = store.coverage.totals}
+    <span class="chip cov" title="FR/AC requirements implemented">reqs ▮ {c.done}/{c.total} · {c.total ? Math.round(100 * c.done / c.total) : 0}%</span>
+  {/if}
   <span class="chip">uptime {uptime}</span>
   <span class="spacer"></span>
   <span class="chip conn" class:on={store.connected} class:off={!store.connected}>
