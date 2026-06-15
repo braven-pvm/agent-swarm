@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { SwarmStore } from "../dist/storage.js";
+import { createEvent } from "../dist/events.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -147,6 +148,86 @@ test("codex overseer execute mode runs allowlisted harness commands and records 
   const watch = runSwarm(workspace, ["watch", "--once", "--view", "lanes"]);
   assert.match(watch, /Backend Lane: Invoice Query Core/);
   assert.match(watch, new RegExp(slice.id));
+});
+
+test("codex overseer focus queue can execute bounded inspect commands", () => {
+  const workspace = setupWorkspace("test-overseer-focus-inspect");
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--new-lane",
+    "--lane-name",
+    "Backend Lane: Focus Diagnostics",
+    "--lane-purpose",
+    "Diagnose a failed worker before retrying the slice",
+    "--lane-labels",
+    "backend,diagnostics,live-smoke",
+    "--orchestrator",
+    "live-overseer",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = pullOutput.match(/Created slice (SLICE-[a-z0-9]+)/)?.[1];
+  assert.ok(sliceId);
+  seedFailedWorkerRun(workspace, sliceId);
+
+  const fakeCodexScript = writeFakeOverseerCodex([
+    {
+      command: `node "${cli}" inspect run RUN-overseer-focus --json`,
+      purpose: "Zoom into the failed worker before deciding whether to revive or restart.",
+      expectedStateChange: "Run focus packet is recorded as command evidence for overseer diagnosis.",
+      requiresHuman: false,
+    },
+    {
+      command: `node "${cli}" inspect slice ${sliceId} --json`,
+      purpose: "Zoom into the affected slice, retry pressure, and blockers.",
+      expectedStateChange: "Slice focus packet is recorded as command evidence for overseer diagnosis.",
+      requiresHuman: false,
+    },
+  ]);
+
+  const output = runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke", "--execute", "--execute-limit", "2"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    },
+  );
+
+  assert.match(output, /command execution: executed 2, blocked 0, failed 0/);
+
+  const prompt = readLatestOverseerPrompt(workspace);
+  assert.match(prompt, /"focusQueue"/);
+  const state = extractPromptJsonAfter(prompt, "Current harness snapshot:");
+  assert.equal(state.actionableState.focusQueue[0].sliceId, sliceId);
+  assert.equal(state.actionableState.focusQueue[0].latestRun.id, "RUN-overseer-focus");
+  assert.match(state.actionableState.focusQueue[0].inspectRunCommand, /inspect run RUN-overseer-focus/);
+  assert.match(state.actionableState.focusQueue[0].reason, /command_failed/);
+  assert.match(prompt, /required senior-developer zoom-in/);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "120"]));
+  const inspectRunEvent = snapshot.recentEvents.find(
+    (event) => event.type === "overseer.command_completed" && event.payload.commandKey === "inspect run",
+  );
+  const inspectSliceEvent = snapshot.recentEvents.find(
+    (event) => event.type === "overseer.command_completed" && event.payload.commandKey === "inspect slice",
+  );
+  assert.ok(inspectRunEvent);
+  assert.ok(inspectSliceEvent);
+  assert.ok(fs.existsSync(inspectRunEvent.payload.stdoutPath));
+  assert.ok(fs.existsSync(inspectSliceEvent.payload.stdoutPath));
+  const runFocus = JSON.parse(fs.readFileSync(inspectRunEvent.payload.stdoutPath, "utf8"));
+  const sliceFocus = JSON.parse(fs.readFileSync(inspectSliceEvent.payload.stdoutPath, "utf8"));
+  assert.equal(runFocus.kind, "run_focus");
+  assert.equal(runFocus.run.id, "RUN-overseer-focus");
+  assert.ok(runFocus.diagnosis.failureClasses.includes("command_failed"));
+  assert.equal(sliceFocus.kind, "slice_focus");
+  assert.equal(sliceFocus.latestRunFocus.run.id, "RUN-overseer-focus");
 });
 
 test("codex overseer execute mode dispatches worker and reviewer child agents", () => {
@@ -651,6 +732,70 @@ function setupWorkspace(name) {
   );
 
   return workspace;
+}
+
+function seedFailedWorkerRun(workspace, sliceId) {
+  const store = new SwarmStore(workspace);
+  try {
+    const now = new Date().toISOString();
+    const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const promptPath = path.join(artifactDir, "worker-prompt-RUN-overseer-focus.md");
+    const eventsPath = path.join(artifactDir, "worker-events-RUN-overseer-focus.jsonl");
+    fs.writeFileSync(promptPath, "Prompt used for overseer focus queue regression.\n", "utf8");
+    fs.writeFileSync(
+      eventsPath,
+      [
+        JSON.stringify({ type: "turn.started" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "item_focus",
+            type: "command_execution",
+            status: "failed",
+            command: "node --input-type=module fragile-product-probe",
+            exit_code: 1,
+            aggregated_output: "Error: spawn EINVAL",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    store.insertAgentRun({
+      id: "RUN-overseer-focus",
+      sliceId,
+      role: "worker",
+      entityType: "slice",
+      entityId: sliceId,
+      actor: "backend-worker",
+      driver: "codex",
+      status: "failed",
+      sessionId: "session-overseer-focus",
+      attempt: 5,
+      eventsPath,
+      startedAt: now,
+      updatedAt: now,
+    });
+    store.upsertHeartbeat({
+      actor: "backend-worker",
+      state: "blocked",
+      detail: "Failed fragile product probe",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: now,
+    });
+    store.addEvent(
+      createEvent({
+        actor: "backend-worker",
+        type: "worker.started",
+        entityType: "slice",
+        entityId: sliceId,
+        payload: { runId: "RUN-overseer-focus", promptPath },
+      }),
+    );
+  } finally {
+    store.close();
+  }
 }
 
 function runSwarm(workspace, args, env = {}) {

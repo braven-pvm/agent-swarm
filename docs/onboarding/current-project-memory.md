@@ -80,7 +80,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 87/87 passing (86 on POSIX where the Windows-only spawn-shim.e2e.test.js skips)
+npm test -> 103/103 passing
 git diff --check -> clean
 ```
 
@@ -742,6 +742,29 @@ Phase 9 real-run rebaseline attempt on 2026-06-15:
   - live-smoke reset now writes `recovery.childIdleTimeoutSeconds: 300` into both disposable target `protocol.yaml` files and records it in the manifest/summary
   - `/api/coverage` now has additive operational fields: source title/URI/section, status reason, next action, last changed, lane/target/worktree, actors, active escalations, dependencies, and evidence summaries
 
+Phase 10B Super Overseer focus-packet foundation:
+
+- Triggered by the product-readiness stall where a human could diagnose the likely quoting/probe failure from JSONL command output, prompt context, heartbeat state, and artifacts, but the overseer did not yet have a first-class way to zoom in.
+- Worker, reviewer, and revive prompts are now durable artifacts:
+  - `worker-prompt-<run-id>.md`
+  - `review-prompt-<run-id>.md`
+  - `worker-revive-prompt-<run-id>.md`
+- Run/review/revive started/completed events include `promptPath`.
+- New inspection commands:
+  - `swarm inspect run <run-id>`
+  - `swarm inspect run <run-id> --json`
+  - `swarm inspect slice <slice-id>`
+  - `swarm inspect slice <slice-id> --json`
+- Run focus packets summarize prompt/result/stderr artifacts, JSONL event tail, last command, last agent message, file changes, target git status, heartbeat, related evidence, active escalations, recent harness events, failure classes, and recommended interventions.
+- Slice focus packets summarize slice/lane/target state, leases, evidence, active escalations, recent runs, latest run focus, retry pressure, and recommended interventions.
+- Same-session attempt numbers now count as retry pressure for high-retry slice diagnosis; a single run at attempt 5 is no longer hidden as one harmless run record.
+- Focused E2E coverage now proves a successful fixture worker focus packet and a failed command/missing-result focus packet.
+- Compact overseer state now includes `actionableState.focusQueue` when an active slice has blocked/failed/stale/quiet/high-retry diagnostic signals.
+- Focus queue items include exact `inspect run` and `inspect slice` commands plus latest run status, attempt, session presence, failure classes, last command summary, artifact pointers, active escalations, and recommended interventions.
+- Overseer prompt discipline now tells the overseer to treat focusQueue as required senior-developer zoom-in work before ordinary dispatch/revive/restart/escalation.
+- Bounded overseer command execution now allowlists validated `inspect run <run-id>` and `inspect slice <slice-id>` commands with optional `--json`.
+- Supervised recovery now captures `recoveryRunFocus` and `recoverySliceFocus` JSON artifacts before attempting same-session revive or restart fallback.
+
 Tracked improvement backlog from the last run:
 
 | Item | Status | Discussion needed? | Notes |
@@ -751,16 +774,17 @@ Tracked improvement backlog from the last run:
 | Clean final warning state | needs more hardening | no | Phase 9 accumulated repeated non-blocking warning restatements; suppression is not complete. |
 | Browser-level product proof | planned | yes | Decide whether proof should be DOM-only, screenshot artifact, or Playwright-style interaction. Current proof covers HTML, API summary, and mark-paid workflow but not actual browser interaction. |
 | Warning history vs active concern UX | planned | yes | Decide how the UI should separate resolved warning history from active escalations so visibility does not become noise. |
-| Quiet-but-alive agent state | planned | yes | Need explicit UI/state model for process alive, event stream quiet, current command, elapsed time, and last JSONL write. Avoid false stuck alarms. |
+| Quiet-but-alive agent state | partially addressed | yes | Focus packets expose heartbeat age and JSONL/event tails; UI still needs a clearer distinction between quiet alive, blocked, stale, and complete. |
+| Super Overseer focus packets | engine-wired | no | `swarm inspect run/slice` now provides human/JSON zoom-in packets, overseer state exposes focusQueue, bounded overseer execution can inspect, and supervised recovery archives focus artifacts before intervention. |
 | Child idle timeout defaults | implemented for live smoke | no | Reset writes `recovery.childIdleTimeoutSeconds: 300` for both disposable targets; global default stays off. |
 | Fresh seeded product state | implemented | no | Readiness commands run from an isolated copied product target and record the probe workspace in readiness/probe artifacts. |
 | Reset process cleanup audit | implemented, needs real confirmation | maybe | Reset can stop related processes automatically. Confirm whether this remains automatic for trusted local smoke only or becomes a general harness option. |
 
 ## Next Slice To Implement
 
-Name: Phase 9 Clean Real-Run Rebaseline + Phase 10A Operational Requirements Coverage
+Name: Phase 10B Verification, then Phase 9 Clean Real-Run Rebaseline
 
-Goal: first rerun the real full-product smoke after the mark-paid probe was hardened for wrapped API payloads, then harden requirements coverage so every FR/AC can explain status, evidence, blockers, owner, and next action.
+Goal: verify the new Super Overseer focus path across the broader suite, then rerun the real full-product smoke with child idle timeout and focus inspection available.
 
 Next practical slices:
 
@@ -786,7 +810,17 @@ Phase 10A:
 - move product-readiness self-probing toward harness-owned canonical probes instead of agent-authored inline shell probes
 - preserve all Phase 5C and Phase 6A-6F live scenarios plus Phase 7A/7B/8A/8B diagnostics
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Do Phase 9 before Phase 10A code changes when a fresh real-run baseline is needed; if Phase 9 blocks on a new harness issue, fix that issue first and document the lesson. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.
+Phase 10B:
+
+- persist worker/reviewer/revive prompt artifacts [implemented]
+- add `swarm inspect run/slice` human and JSON focus packets [implemented]
+- classify missing result, failed command, quiet running agent, stale run, active blocker, and high-retry states [foundation implemented]
+- route focus packets into the real overseer prompt automatically for failed/stale/blocked/quiet/high-retry work [implemented as `actionableState.focusQueue`]
+- allow bounded overseer `inspect run/slice` commands so the overseer can request zoom-in packets without shell spelunking [implemented]
+- make recovery/revive use the focus diagnosis before restart [implemented by capturing focus artifacts before intervention]
+- later expose focus summaries in the web UI agent/slice detail panels
+
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Phase 10A coverage enrichment is partially implemented. Phase 10B focus-packet foundation and overseer/recovery wiring are implemented. The next useful checkpoint is broad verification, then a fresh real full-product calibration run. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.
 
 Do not lose the full-product target while implementing fault injection. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 

@@ -123,6 +123,8 @@ const supervisedRecovery = {
   detectedAtTurn: undefined,
   revivedAtTurn: undefined,
   restartedAtTurn: undefined,
+  focusRunOutputPath: undefined,
+  focusSliceOutputPath: undefined,
   reviveOutputPath: undefined,
   restartOutputPath: undefined,
   reviveActor: "live-recovery-agent",
@@ -500,6 +502,8 @@ const artifactPaths = {
   recoveryScan: staleRecovery.scanOutputPath,
   recoveryMark: staleRecovery.markOutputPath,
   recoveryRestart: staleRecovery.restartOutputPath,
+  recoveryRunFocus: supervisedRecovery.focusRunOutputPath,
+  recoverySliceFocus: supervisedRecovery.focusSliceOutputPath,
   recoveryRevive: supervisedRecovery.reviveOutputPath,
   recoveryRestartAfterRevive: supervisedRecovery.restartOutputPath,
   contextWorkerPacket: contextHandoff.packetPaths.worker,
@@ -1160,6 +1164,8 @@ function artifactDescription(key) {
     recoveryScan: "Recovery scan output.",
     recoveryMark: "Recovery mark-stale output.",
     recoveryRestart: "Recovery restart output.",
+    recoveryRunFocus: "Run focus packet captured before supervised recovery intervention.",
+    recoverySliceFocus: "Slice focus packet captured before supervised recovery intervention.",
     recoveryRevive: "Supervised recovery same-session revive output.",
     recoveryRestartAfterRevive: "Supervised recovery restart fallback output.",
     contextWorkerPacket: "Worker resume packet generated at context handoff.",
@@ -1726,6 +1732,22 @@ function writeCommandCapture(outputPath, capture) {
   );
 }
 
+function writeJsonCommandCapture(outputPath, capture) {
+  let payload;
+  try {
+    payload = JSON.parse(capture.stdout);
+  } catch {
+    payload = {
+      ok: capture.ok,
+      status: capture.status,
+      error: capture.error,
+      stdout: capture.stdout,
+      stderr: capture.stderr,
+    };
+  }
+  fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
 function handleSupervisedRecovery(turn, snapshot) {
   const candidate = findSupervisedRecoveryCandidate(snapshot);
   if (!candidate) return undefined;
@@ -1744,6 +1766,8 @@ function handleSupervisedRecovery(turn, snapshot) {
     recoveredRunStatus: run.status,
     detectedReason: reason,
     sessionId: run.sessionId,
+    focusRunOutputPath: undefined,
+    focusSliceOutputPath: undefined,
     reviveOutputPath: undefined,
     restartOutputPath: undefined,
     revivedRunId: undefined,
@@ -1751,6 +1775,18 @@ function handleSupervisedRecovery(turn, snapshot) {
     restartedRunId: undefined,
     restartedRunStatus: undefined,
   };
+
+  const runFocusCapture = runSwarmCapture(["inspect", "run", run.id, "--json"]);
+  supervisedRecovery.focusRunOutputPath = path.join(artifactsPath, `turn-${turn}-recovery-run-focus.json`);
+  writeJsonCommandCapture(supervisedRecovery.focusRunOutputPath, runFocusCapture);
+  turnRecord.focusRunOutputPath = supervisedRecovery.focusRunOutputPath;
+  turnRecord.focusRunCommandOk = runFocusCapture.ok;
+
+  const sliceFocusCapture = runSwarmCapture(["inspect", "slice", slice.id, "--json"]);
+  supervisedRecovery.focusSliceOutputPath = path.join(artifactsPath, `turn-${turn}-recovery-slice-focus.json`);
+  writeJsonCommandCapture(supervisedRecovery.focusSliceOutputPath, sliceFocusCapture);
+  turnRecord.focusSliceOutputPath = supervisedRecovery.focusSliceOutputPath;
+  turnRecord.focusSliceCommandOk = sliceFocusCapture.ok;
 
   let after = snapshot;
   if (run.sessionId && !supervisedRecovery.revivedAtTurn) {

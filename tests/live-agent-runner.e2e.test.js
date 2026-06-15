@@ -383,8 +383,25 @@ test("live agent runner revives a stalled worker session before restart fallback
   assert.ok(summary.supervisedRecovery.detectedAtTurn >= 1);
   assert.ok(summary.supervisedRecovery.revivedAtTurn >= summary.supervisedRecovery.detectedAtTurn);
   assert.ok(summary.verifyRuns.some((run) => run.turn > summary.supervisedRecovery.detectedAtTurn && run.accepted));
+  assert.ok(fs.existsSync(summary.artifacts.recoveryRunFocus));
+  assert.ok(fs.existsSync(summary.artifacts.recoverySliceFocus));
   assert.ok(fs.existsSync(summary.artifacts.recoveryRevive));
-  assertArtifactIndex(summary, "accepted", ["recoveryRevive", "workerResult", "reviewerResult", "verificationOutput"]);
+  assertArtifactIndex(summary, "accepted", [
+    "recoveryRunFocus",
+    "recoverySliceFocus",
+    "recoveryRevive",
+    "workerResult",
+    "reviewerResult",
+    "verificationOutput",
+  ]);
+
+  const recoveryRunFocus = JSON.parse(fs.readFileSync(summary.artifacts.recoveryRunFocus, "utf8"));
+  const recoverySliceFocus = JSON.parse(fs.readFileSync(summary.artifacts.recoverySliceFocus, "utf8"));
+  assert.equal(recoveryRunFocus.kind, "run_focus");
+  assert.equal(recoveryRunFocus.run.id, summary.supervisedRecovery.recoveredRunId);
+  assert.ok(recoveryRunFocus.diagnosis.failureClasses.includes("missing_structured_result"));
+  assert.equal(recoverySliceFocus.kind, "slice_focus");
+  assert.equal(recoverySliceFocus.latestRunFocus.run.id, summary.supervisedRecovery.recoveredRunId);
 
   const reviveTranscript = fs.readFileSync(summary.artifacts.recoveryRevive, "utf8");
   assert.match(reviveTranscript, /Revived for RUN-/);

@@ -99,6 +99,7 @@ The current prototype supports:
 - full-product escalation reconciliation so accepted runs clear stale dependency/planning blockers, cover real-overseer warning wording, and fail assertions if active blocker/human/critical escalations remain
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, same-session revive, restart fallback, and configurable child idle timeout supervision
+- durable worker/reviewer/revive prompt artifacts, `swarm inspect run/slice` focus packets, overseer `actionableState.focusQueue`, bounded overseer inspect commands, and supervised-recovery focus artifacts for stalled, failed, blocked, or high-retry diagnosis
 - latest-only role/entity checkpoints
 - role-specific resume packets
 - local read-only web viewer served by `swarm serve`
@@ -140,11 +141,11 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 87/87 passing
+npm test -> 103/103 passing
 git diff --check -> clean
 ```
 
-Note: `tests/spawn-shim.e2e.test.js` is Windows-gated (skips on POSIX), so POSIX reports 86/86.
+Note: `tests/spawn-shim.e2e.test.js` is Windows-gated and skips on POSIX.
 
 ## Useful Demo Commands
 
@@ -272,9 +273,10 @@ Run-mode boundary:
 - live smoke Phase 8C-18 real-agent rerun and immediate hardening: real run `LAR-20260612T110407-live-agent-smoke-none-26068` accepted and produced a runnable Invoice Operations Dashboard. Product readiness passed with HTML, `/api/summary`, and mark-paid workflow probes; source specs remained unchanged and final target snapshots were archived. The run exposed reset/UI file-lock handling, Git `safe.directory` path normalization, non-blocking warning amplification, and premature intermediate structured agent messages. Hardening now adds reset `--stop-related-processes`, normalized forward-slash safe-directory prompt guidance, overseer warning-restatement suppression, broader final accepted-warning cleanup, isolated product-readiness probe workspaces, and tests for those contracts.
 - live smoke Phase 8C-19 real rerun/probe-shape hardening: real run `LAR-20260614T143508-live-agent-smoke-none-41428` accepted all implementation slices but blocked final product readiness because the mark-paid probe expected a raw invoice array. Artifact inspection showed the product had overdue invoices; the real API returned `{ invoices: [...] }` and `{ invoice: ... }`. The harness probe now accepts wrapped list/status payloads, and fake full-product E2E covers that shape. Verification passed with `npm test` 99/99 and `git diff --check` clean.
 - Phase 9 real-run rebaseline attempt on 2026-06-15: backend-first orchestration worked and coverage moved from `0/83` to `11/83`, but product-readiness exposed a real stalled-worker failure. The first product-readiness worker stopped emitting JSONL after editing `package.json`; manual child termination caused same-slice restart; the restarted worker surfaced a malformed inline PowerShell/Node `npm start` self-probe and went quiet after a blocked command. The run was intentionally stopped before outer max-runtime, so no final run summary exists. Immediate hardening now sets live-smoke target protocol `recovery.childIdleTimeoutSeconds: 300` during reset and enriches `/api/coverage` with status reason, next action, owner/actors, evidence, dependencies, escalations, and last-changed data.
+- Phase 10B Super Overseer focus-packet wiring: worker/reviewer/revive prompts are now persisted as artifacts and referenced from events. `swarm inspect run <run-id>` and `swarm inspect slice <slice-id>` produce human-readable focus packets; `--json` produces machine-readable packets for overseer use. Packets include prompt/result/stderr artifacts, JSONL event tail, last command, last agent message, file changes, git status, heartbeat, related evidence/escalations/events, failure classes, retry pressure, and recommended interventions. Compact overseer state now exposes `actionableState.focusQueue`; bounded overseer execution can run validated `inspect run/slice` commands; supervised recovery archives `recoveryRunFocus` and `recoverySliceFocus` before revive/restart. Focused E2E coverage proves successful packets, failed-command packets, focusQueue, bounded inspect, and recovery focus artifacts.
 
 ## Next Coherent Slice
 
-Next slice: finish Phase 10A hardening, then rerun Phase 9 with the live-smoke child idle timeout armed.
+Next slice: broad verification of Phase 10B, then rerun Phase 9 with live-smoke child idle timeout armed.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 through Phase 8C-19 plus probe-isolation and response-shape hardening are implemented or attempted as documented. Phase 9 attempted a real full-product rebaseline and exposed stalled product-readiness worker/probe-quoting behavior. Phase 10A is now in progress: `/api/coverage` has additive operational fields, live-smoke reset arms child idle timeout for disposable targets, and focused tests cover the new contracts. Next useful work is to finish verification, harden warning restatement suppression/canonical product probes, then rerun the real full-product smoke. The full-product destination remains `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 through Phase 8C-19 plus probe-isolation and response-shape hardening are implemented or attempted as documented. Phase 9 attempted a real full-product rebaseline and exposed stalled product-readiness worker/probe-quoting behavior. Phase 10A is partially implemented with richer `/api/coverage`; Phase 10B now has durable prompt artifacts, `inspect run/slice` focus packets, overseer `focusQueue`, bounded inspect execution, and recovery focus artifacts. Next useful work is broad verification, then warning-restatement/canonical-probe hardening and another real full-product smoke. The full-product destination remains `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
