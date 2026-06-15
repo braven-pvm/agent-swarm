@@ -20,6 +20,7 @@ import {
   loadLiveRunHistoryDetail,
   compareLiveRunHistory,
 } from "./observability.js";
+import { buildRunFocusPacket, buildSliceFocusPacket } from "./focus.js";
 
 export function createWebViewerServer(input: {
   workspace: string;
@@ -185,6 +186,42 @@ export function createWebViewerServer(input: {
             return;
           }
           sendText(response, 200, buildSliceReport(store, sliceId), "text/markdown; charset=utf-8");
+          return;
+        }
+        if (requestUrl.pathname.startsWith("/api/focus/run/")) {
+          const runId = decodeURIComponent(requestUrl.pathname.slice("/api/focus/run/".length));
+          if (!runId) {
+            sendJson(response, { error: "Missing focus run id" }, 400);
+            return;
+          }
+          try {
+            sendJson(response, buildRunFocusPacket(store, input.workspace, runId, { eventLimit: 16 }));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/not found/i.test(message)) {
+              sendJson(response, { error: message }, 404);
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+        if (requestUrl.pathname.startsWith("/api/focus/slice/")) {
+          const sliceId = decodeURIComponent(requestUrl.pathname.slice("/api/focus/slice/".length));
+          if (!sliceId) {
+            sendJson(response, { error: "Missing focus slice id" }, 400);
+            return;
+          }
+          try {
+            sendJson(response, buildSliceFocusPacket(store, input.workspace, sliceId, { runLimit: 8, eventLimit: 16 }));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/not found/i.test(message)) {
+              sendJson(response, { error: message }, 404);
+              return;
+            }
+            throw error;
+          }
           return;
         }
         if (requestUrl.pathname.startsWith("/api/artifacts/")) {

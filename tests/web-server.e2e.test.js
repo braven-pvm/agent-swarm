@@ -116,6 +116,23 @@ async function seedWorkspace() {
     updatedAt: new Date().toISOString(),
   });
 
+  // Seed an agent run on the slice so the run-focus endpoint has data to return
+  const focusRunId = "RUN-web-e2e-focus-01";
+  store.insertAgentRun({
+    id: focusRunId,
+    sliceId,
+    role: "worker",
+    entityType: "slice",
+    entityId: sliceId,
+    actor: "backend-worker",
+    driver: "codex",
+    status: "running",
+    sessionId: "session-web-e2e",
+    attempt: 1,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
   // Seed one event so recentEvents is non-empty
   store.addEvent(
     createEvent({ actor: "seeder", type: "harness.init", entityType: "harness", entityId: "h" }),
@@ -203,14 +220,14 @@ async function seedWorkspace() {
     "utf8",
   );
 
-  return { workspace, historyRoot, sliceId, sourceId };
+  return { workspace, historyRoot, sliceId, sourceId, focusRunId };
 }
 
 // ---------------------------------------------------------------------------
 // Main test
 // ---------------------------------------------------------------------------
 test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
-  const { workspace, historyRoot, sliceId, sourceId } = await seedWorkspace();
+  const { workspace, historyRoot, sliceId, sourceId, focusRunId } = await seedWorkspace();
   const webDistPath = fixtureWebDist();
   const server = createWebViewerServer({ workspace, defaultEventCount: 20, historyRoot, webDistPath });
   const port = await listen(server);
@@ -237,6 +254,26 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
       assert.ok(key in snapshot, `snapshot missing key: ${key}`);
     }
     assert.equal(snapshot.runMode, "scripted-codex", "runMode should match seeded value");
+    assert.ok(Array.isArray(snapshot.focusQueue), "snapshot should include a focusQueue array");
+
+    // --- Focus endpoints ---
+    const sliceFocusRes = await get(port, `/api/focus/slice/${encodeURIComponent(sliceId)}`);
+    assert.equal(sliceFocusRes.status, 200, `/api/focus/slice/${sliceId} should be 200`);
+    const sliceFocus = JSON.parse(sliceFocusRes.body);
+    assert.equal(sliceFocus.kind, "slice_focus", "slice focus packet should have kind slice_focus");
+    assert.ok(sliceFocus.slice && sliceFocus.slice.id === sliceId, "slice focus packet should describe the seeded slice");
+
+    const runFocusRes = await get(port, `/api/focus/run/${encodeURIComponent(focusRunId)}`);
+    assert.equal(runFocusRes.status, 200, `/api/focus/run/${focusRunId} should be 200`);
+    const runFocus = JSON.parse(runFocusRes.body);
+    assert.equal(runFocus.kind, "run_focus", "run focus packet should have kind run_focus");
+    assert.equal(runFocus.run.id, focusRunId, "run focus packet should describe the seeded run");
+
+    const runFocusMissing = await get(port, "/api/focus/run/RUN-does-not-exist");
+    assert.equal(runFocusMissing.status, 404, "/api/focus/run/<unknown> should be 404");
+
+    const sliceFocusMissing = await get(port, "/api/focus/slice/SLICE-does-not-exist");
+    assert.equal(sliceFocusMissing.status, 404, "/api/focus/slice/<unknown> should be 404");
 
     // --- Other read endpoints ---
     const reportRes = await get(port, `/api/report/${encodeURIComponent(sliceId)}`);

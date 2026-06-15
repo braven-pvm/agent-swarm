@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildDomainSummaries } from "./domains.js";
+import { buildOverseerFocusQueue } from "./focus.js";
 import { swarmDir } from "./paths.js";
 import { reviewResultSchema, type ReviewResult } from "./schemas.js";
 import { readSourceText } from "./source-adapter.js";
@@ -675,7 +676,7 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
     .map((x) => x.entityId)
     .find((id) => typeof id === "string" && id.startsWith("scenario:"))
     ?.slice("scenario:".length);
-  return {
+  const snapshot = {
     workspace,
     runMode: currentRunMode(store),
     generatedAt: new Date().toISOString(),
@@ -705,6 +706,25 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
     checkpoints: store.listCheckpoints(),
     recentEvents: store.recentEvents(eventCount),
   };
+  // Focus queue (triage) — computed from the assembled snapshot's active slices.
+  // Runs buildSliceFocusPacket for each active slice with the overseer's modest
+  // limits; a focus failure must never break the snapshot, so default to [].
+  let focusQueue: ReturnType<typeof buildOverseerFocusQueue> = [];
+  try {
+    focusQueue = buildOverseerFocusQueue({
+      store,
+      workspace,
+      snapshot: { slices: snapshot.slices },
+      cli: focusCli(),
+    });
+  } catch {
+    focusQueue = [];
+  }
+  return { ...snapshot, focusQueue };
+}
+
+function focusCli(): string {
+  return `node "${process.argv[1] ?? "dist/cli.js"}"`;
 }
 
 export function findSource(store: SwarmStore, selector: string) {
