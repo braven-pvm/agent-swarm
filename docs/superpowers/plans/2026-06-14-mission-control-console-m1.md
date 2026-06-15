@@ -86,7 +86,9 @@ interface ConsoleStore {
 **Backend — test files:**
 - `tests/activity-interpreter.test.js` — new.
 - `tests/event-tailer.e2e.test.js` — new.
+- `tests/storage-tailing.test.js` — new.
 - `tests/web-server.e2e.test.js` — replaces `tests/web-viewer.e2e.test.js` (delete the old one).
+- `tests/web-observability-demo.e2e.test.js` + `scripts/run-web-observability-demo.mjs` — updated for the SPA in Task 24 (drop embedded-UI assertions; keep API/artifact/lifecycle).
 
 **Frontend — new project `web/`:**
 - `web/package.json`, `web/vite.config.ts`, `web/svelte.config.js`, `web/tsconfig.json`, `web/vitest.config.ts`, `web/index.html`
@@ -918,7 +920,7 @@ git rm tests/web-viewer.e2e.test.js
 - [ ] **Step 3: Run it**
 
 Run: `npm run build` (still just `tsc` — `build` is unchanged until Task 10) then `node --test tests/web-server.e2e.test.js`
-Expected: PASS. The full `npm test` is also green here: `build` is still `tsc`, and the old `web-viewer.e2e.test.js` (which asserted the removed embedded HTML) is deleted in Step 2.
+Expected: PASS. NOTE: the full `npm test` is NOT fully green yet. Besides the now-deleted `web-viewer.e2e.test.js`, a SECOND legacy test — `tests/web-observability-demo.e2e.test.js` (driven by `scripts/run-web-observability-demo.mjs`) — also asserts the removed embedded UI (it fetches `/` + `/assets/app.js` and checks embedded markers), so it will FAIL once T6 lands. It is migrated to the SPA in Task 24 (it needs a real built `web/dist`, which doesn't exist until Task 10). Until then treat `web-observability-demo.e2e.test.js` as a KNOWN expected failure; every other test passes.
 
 - [ ] **Step 4: Commit**
 ```bash
@@ -2063,7 +2065,9 @@ Ensure `web/index.html` has `<div id="app"></div>` and imports `/src/main.ts` (t
 
 - [ ] **Step 1: Full build** — `npm run build` (root). Expected: `tsc` clean + `build:web` produces `web/dist`.
 
-- [ ] **Step 2: Full test suite green** — `npm test`. Expected: backend `node --test` all pass (the migrated `web-server.e2e.test.js` included), and `build` step also built the web app. Run `npm -w web run test` for the Vitest suite. Both green.
+- [ ] **Step 1.5: Migrate the web-observability demo to the SPA** — `tests/web-observability-demo.e2e.test.js` + `scripts/run-web-observability-demo.mjs` were written against the OLD embedded viewer (they fetch `/` + `/assets/app.js` and assert embedded markers like tabs / `app.js` content). Now that `npm run build` produces a real `web/dist`, update them: assert the SPA shell is served (`index.html` containing `id="app"`, `/assets/*` served with correct content-type) and that the read APIs + artifact outputs still work; REMOVE the obsolete embedded-`app.js`-content assertions (e.g. `htmlHasTabs`, `appJsCompiles`, and any browser-smoke that scraped embedded markup). Keep the lifecycle / API / artifact-index assertions. (This demo is fixture-driven and the user wants it retained — update it, do not delete it.)
+
+- [ ] **Step 2: Full test suite green** — `npm test`. Expected: backend `node --test` all pass (the migrated `web-server.e2e.test.js` and the updated `web-observability-demo.e2e.test.js` included), and `build` step also built the web app. Run `npm -w web run test` for the Vitest suite. Both green.
 
 - [ ] **Step 3: Live smoke against the running harness** — with the dev server already serving `.swarm-demo/live-agent-smoke` on :4319, build and serve the real UI:
 ```bash

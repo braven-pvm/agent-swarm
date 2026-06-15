@@ -654,7 +654,7 @@ Verification after Phase 8C-17 hardening:
 - `node --test tests\protocol.test.js`: passed
 - `node --test --test-name-pattern "revives a stalled worker" tests\live-agent-runner.e2e.test.js`: passed
 - `node --test tests\live-agent-runner.e2e.test.js`: passed 12/12
-- `npm test`: passed 73/73
+- `npm test`: passed 87/87
 - `git diff --check`: clean
 
 Phase 8C-18 real-agent rerun and immediate harness hardening:
@@ -676,6 +676,39 @@ Phase 8C-18 real-agent rerun and immediate harness hardening:
   - final full-product cleanup scans all accepted slices and broader historical planning/git-warning wording so accepted runs should finish with cleaner active escalation state
   - tests now cover reset cleanup output shape, normalized reviewer safe-directory guidance, and zero active escalations in the product-readiness feedback path
 
+Phase 8C-18A product probe isolation hardening:
+
+- Product readiness now copies `invoice-dashboard` into `live-agent-run-artifacts/product-dashboard-probe-workspace` before running `npm test` and `npm start`.
+- Readiness JSON and probe artifacts record `probeIsolation`, command `cwd`, source target, and copied probe workspace.
+- `commandResults.start.passed` now requires the HTML probe, `/api/summary` probe, and mark-paid workflow probe to pass.
+- This keeps workflow-level proof from mutating the terminal product target and makes repeated readiness checks less order-dependent.
+- Verification on 2026-06-14:
+  - `npm run build; node --test tests/live-agent-runner.e2e.test.js`: passed 12/12
+  - `npm test`: passed 87/87
+  - `git diff --check`: clean
+
+Phase 8C-19 real rerun and probe-shape hardening:
+
+- Real run `LAR-20260614T143508-live-agent-smoke-none-41428` completed with `finalOutcome: blocked` and `outcomeClassification.code: product_not_ready`.
+- This was a useful clean block, not a crash:
+  - 5 slices were accepted: three backend slices, one dashboard/UI slice, and one product-readiness slice.
+  - 24 agent runs completed.
+  - 5 deterministic verification runs completed.
+  - failed assertions were `[]`.
+  - stale dashboard dependency blockers cleared to zero once backend dependencies were accepted.
+  - final active escalation count was 1, scoped to product readiness.
+- Final blocker: `No overdue invoice was available for the mark-paid workflow probe.`
+- Artifact inspection showed the generated product did have overdue invoices and `/api/summary` returned `overdueCount: 2`; the issue was the harness probe expected `/api/invoices?status=overdue` to return a raw array, while the real product returned a normal wrapped API payload `{ invoices: [...] }`.
+- Hardening after the run:
+  - `scripts/run-live-agent-demo.mjs` mark-paid probe now accepts raw arrays plus `{ invoices: [...] }` and `{ items: [...] }`.
+  - The patched invoice response now accepts raw invoice objects plus `{ invoice: ... }` and `{ item: ... }`.
+  - `tests/live-agent-runner.e2e.test.js` fake dashboard server now returns wrapped list/detail/status payloads so the E2E covers the exact real-run failure shape.
+- Verification on 2026-06-14:
+  - focused full-product E2E: passed
+  - `node --test tests/live-agent-runner.e2e.test.js`: passed 12/12
+  - `npm test`: passed 99/99
+  - `git diff --check`: clean
+
 Operational cleanup on 2026-06-14:
 
 - Stopped leftover repo-owned servers before the next run:
@@ -690,36 +723,45 @@ Tracked improvement backlog from the last run:
 
 | Item | Status | Discussion needed? | Notes |
 | --- | --- | --- | --- |
-| Phase 8C-19 real confirmation run | ready | no | Run `npm run smoke:live-agent:full` against patched reset/warning/safe-directory hardening and inspect final active escalations. |
-| Clean final warning state | implemented, needs real confirmation | no | Fake E2E covers zero active escalation state after product-readiness feedback; next real run must confirm stale warning restatements stay suppressed. |
+| Phase 8C-19 real confirmation run | ran, blocked cleanly on probe-shape bug | no | Real run accepted all implementation slices and exposed a harness mark-paid probe envelope assumption. |
+| Phase 8C-19B rerun after probe-shape hardening | ready | no | Run `npm run smoke:live-agent:full` again to confirm wrapped API payloads now pass final product readiness. |
+| Clean final warning state | real-run partially confirmed | no | Stale dashboard dependency blockers cleared to zero during Phase 8C-19 once backend dependencies were accepted; next accepted real run should confirm final active escalations stay zero. |
 | Browser-level product proof | planned | yes | Decide whether proof should be DOM-only, screenshot artifact, or Playwright-style interaction. Current proof covers HTML, API summary, and mark-paid workflow but not actual browser interaction. |
 | Warning history vs active concern UX | planned | yes | Decide how the UI should separate resolved warning history from active escalations so visibility does not become noise. |
 | Quiet-but-alive agent state | planned | yes | Need explicit UI/state model for process alive, event stream quiet, current command, elapsed time, and last JSONL write. Avoid false stuck alarms. |
 | Child idle timeout defaults | planned | yes | Current support is env/protocol configurable. Need decide whether real runs get a project default and what role-specific thresholds should be. |
-| Fresh seeded product state | planned | no | Product is mutable while running; repeatable probes should start from seeded state or reset product data before each probe. |
+| Fresh seeded product state | implemented | no | Readiness commands run from an isolated copied product target and record the probe workspace in readiness/probe artifacts. |
 | Reset process cleanup audit | implemented, needs real confirmation | maybe | Reset can stop related processes automatically. Confirm whether this remains automatic for trusted local smoke only or becomes a general harness option. |
 
 ## Next Slice To Implement
 
-Name: Phase 8C-19 Verification And Rerun After Phase 8C-18 Hardening
+Name: Phase 9 Clean Real-Run Rebaseline + Phase 10A Operational Requirements Coverage
 
-Goal: verify the reset/warning/safe-directory hardening, then run another real full-product smoke to confirm the final accepted snapshot is clean and the product remains runnable.
+Goal: first rerun the real full-product smoke after the mark-paid probe was hardened for wrapped API payloads, then harden requirements coverage so every FR/AC can explain status, evidence, blockers, owner, and next action.
 
 Next practical slices:
 
-- run focused tests for reset, reviewer prompt, and full-product feedback cleanup
-- run full `npm test`
+Phase 9:
+
 - rerun `npm run smoke:live-agent:full` with the UI open
 - confirm no stale restated warning escalations remain active after final product acceptance
 - confirm stderr no longer contains Node `DEP0190`
 - confirm `product-dashboard-probe.json` includes `probes.markPaid.passed === true`
+- confirm mark-paid probe accepts the real product's `{ invoices: [...] }` and `{ invoice: ... }` API payloads
+- confirm readiness artifacts show `probeIsolation.strategy === "copied-target"` and `commandResults.start.passed` includes mark-paid workflow proof
 - confirm reset-first works even when a previous viewer/product process exists, or records exact cleanup limitations
-- review whether the agent table's last-signal/latest-event view is enough during quiet real-agent periods
-- review whether real quiet-agent periods need a project-level `recovery.childIdleTimeoutSeconds` value or should stay manually/env configured
-- discuss/browser-proof, warning UX, quiet-agent model, and idle-timeout defaults one question at a time before implementation where policy is not obvious
+- confirm `/api/coverage` and the web Coverage tab reflect the final accepted FR/AC state
+
+Phase 10A:
+
+- extend `buildCoverage()` and `/api/coverage` additively so existing UI consumers keep working
+- for every FR/AC ref, expose source/domain, status, status reason, owning slice, lane/target/worktree, relevant worker/reviewer/verifier/overseer actors, latest verification/review findings, evidence ids/artifact paths where available, active blocker/escalation summary, dependency state, next expected action, and `lastChangedAt`
+- keep the denominator as every indexed FR/AC ref, including not-started refs
+- keep accepted refs tied to accepted slice/lease and/or passed verification evidence, not worker claims alone
+- add tests for status reason, next action, blockers/escalations, dependency state, and accepted/not-started totals
 - preserve all Phase 5C and Phase 6A-6F live scenarios plus Phase 7A/7B/8A/8B diagnostics
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-18 are complete or attempted as documented. Do Phase 8C-19 next only after verification passes. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Do Phase 9 before Phase 10A code changes when a fresh real-run baseline is needed; if Phase 9 blocks on a new harness issue, fix that issue first and document the lesson. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.
 
 Do not lose the full-product target while implementing fault injection. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 

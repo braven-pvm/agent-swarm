@@ -814,6 +814,13 @@ test("full-product mode coordinates backend and dashboard through product readin
   assert.deepEqual(summary.productReadiness.dashboardDependencies.missingRefs, []);
   assert.equal(summary.productReadiness.commandResults.test.passed, true);
   assert.equal(summary.productReadiness.commandResults.start.passed, true);
+  assert.equal(summary.productReadiness.probeIsolation.strategy, "copied-target");
+  assert.equal(summary.productReadiness.probeIsolation.copied, true);
+  assert.equal(summary.productReadiness.probeIsolation.isolated, true);
+  assert.equal(summary.productReadiness.probeIsolation.sourcePath, path.join(workspace, "invoice-dashboard"));
+  assert.ok(fs.existsSync(summary.productReadiness.probeIsolation.workspacePath));
+  assert.equal(summary.productReadiness.commandResults.test.cwd, summary.productReadiness.probeIsolation.workspacePath);
+  assert.equal(summary.productReadiness.commandResults.start.cwd, summary.productReadiness.probeIsolation.workspacePath);
   assert.equal(summary.productReadiness.commandResults.start.probes.ui.passed, true);
   assert.equal(summary.productReadiness.commandResults.start.probes.api.passed, true);
   assert.equal(summary.productReadiness.commandResults.start.probes.api.jsonFieldsPresent.openTotalCents, true);
@@ -856,6 +863,9 @@ test("full-product mode coordinates backend and dashboard through product readin
   assert.ok(fs.existsSync(path.join(summary.history.finalTargets.invoiceDashboard.path, "src", "server.js")));
   const probeArtifact = JSON.parse(fs.readFileSync(summary.artifacts.productProbe, "utf8"));
   assert.equal(probeArtifact.passed, true);
+  assert.equal(probeArtifact.cwd, summary.productReadiness.probeIsolation.workspacePath);
+  assert.equal(probeArtifact.productTarget, path.join(workspace, "invoice-dashboard"));
+  assert.equal(probeArtifact.probeIsolation.isolated, true);
   assert.equal(probeArtifact.probes.api.jsonFieldsPresent.openTotalCents, true);
   assert.equal(probeArtifact.probes.markPaid.passed, true);
   assert.equal(probeArtifact.probes.markPaid.patched.status, "paid");
@@ -1744,7 +1754,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/invoices") {
-    sendJson(response, listInvoices({ status: url.searchParams.get("status") || undefined, customerId: url.searchParams.get("customerId") || undefined }));
+    sendJson(response, { invoices: listInvoices({ status: url.searchParams.get("status") || undefined, customerId: url.searchParams.get("customerId") || undefined }) });
     return;
   }
   const invoiceMatch = /^\\\\/api\\\\/invoices\\\\/([^/]+)$/.exec(url.pathname);
@@ -1755,7 +1765,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, { error: "invoice_not_found" }, 404);
       return;
     }
-    sendJson(response, invoice);
+    sendJson(response, { invoice });
     return;
   }
   if (request.method === "PATCH" && statusMatch) {
@@ -1764,7 +1774,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, { error: "invoice_not_found" }, 404);
       return;
     }
-    sendJson(response, invoice);
+    sendJson(response, { invoice });
     return;
   }
   sendJson(response, { error: "not_found" }, 404);

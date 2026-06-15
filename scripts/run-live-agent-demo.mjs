@@ -2246,30 +2246,55 @@ function inspectProductReadiness({ runCommands }) {
   const hasTestScript = typeof scripts.test === "string" && scripts.test.trim().length > 0;
   const hasStartScript = typeof scripts.start === "string" && scripts.start.trim().length > 0;
   const manualUrl = "http://127.0.0.1:4321";
+  const probeIsolation = runCommands && (hasTestScript || hasStartScript)
+    ? createProductProbeWorkspace()
+    : {
+        strategy: runCommands ? "not-needed" : "commands-disabled",
+        sourcePath: dashboardTarget,
+        workspacePath: undefined,
+        copied: false,
+        isolated: false,
+        reason: runCommands ? "No product readiness commands were available to isolate." : "Command execution disabled for this readiness pass.",
+      };
+  const commandWorkspace = probeIsolation.workspacePath ?? dashboardTarget;
+  const probeIsolationFailed = runCommands && (hasTestScript || hasStartScript) && !probeIsolation.workspacePath;
   const dashboardSlices = snapshot.slices.filter((slice) => slice.frAcRefs.some((ref) => ref.startsWith("AC-UI")));
   const acceptedDashboardSlices = dashboardSlices.filter((slice) => slice.status === "accepted");
   const activeDashboardSlices = dashboardSlices.filter((slice) => !["accepted", "closed"].includes(slice.status));
   const productReadinessSlices = snapshot.slices.filter((slice) => isProductReadinessSlice(slice));
   const activeProductReadinessSlices = productReadinessSlices.filter((slice) => isActiveSlice(slice));
   const dashboardDependencies = inspectDashboardDependencyGate(snapshot);
-  const testResult = runCommands && hasTestScript
-    ? runNpmScript("test", productTestOutputPath)
+  const testResult = runCommands && hasTestScript && !probeIsolationFailed
+    ? runNpmScript("test", productTestOutputPath, { cwd: commandWorkspace })
     : {
         command: "npm test",
         attempted: false,
         passed: false,
         outputPath: hasTestScript ? productTestOutputPath : undefined,
-        reason: hasTestScript ? "Command execution disabled for this readiness pass." : "No npm test script is defined.",
+        cwd: hasTestScript ? commandWorkspace : undefined,
+        reason: probeIsolationFailed
+          ? probeIsolation.reason
+          : hasTestScript
+            ? "Command execution disabled for this readiness pass."
+            : "No npm test script is defined.",
       };
-  const startResult = runCommands && hasStartScript
-    ? runStartProbe(manualUrl, productStartOutputPath, productProbePath, productProbeMarkdownPath)
+  const startResult = runCommands && hasStartScript && !probeIsolationFailed
+    ? runStartProbe(manualUrl, productStartOutputPath, productProbePath, productProbeMarkdownPath, {
+        cwd: commandWorkspace,
+        probeIsolation,
+      })
     : {
         command: "npm start",
         attempted: false,
         passed: false,
         manualUrl,
         outputPath: hasStartScript ? productStartOutputPath : undefined,
-        reason: hasStartScript ? "Command execution disabled for this readiness pass." : "No npm start script is defined.",
+        cwd: hasStartScript ? commandWorkspace : undefined,
+        reason: probeIsolationFailed
+          ? probeIsolation.reason
+          : hasStartScript
+            ? "Command execution disabled for this readiness pass."
+            : "No npm start script is defined.",
       };
   const checks = [
     {
@@ -2387,6 +2412,7 @@ function inspectProductReadiness({ runCommands }) {
       start: "npm start",
       manualUrl,
     },
+    probeIsolation,
     commandResults: {
       test: testResult,
       start: startResult,
@@ -2701,16 +2727,53 @@ function readJsonFile(filePath) {
   }
 }
 
-function runNpmScript(scriptName, outputPath) {
+function createProductProbeWorkspace() {
+  const probeWorkspace = path.join(artifactsPath, "product-dashboard-probe-workspace");
+  try {
+    fs.rmSync(probeWorkspace, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(probeWorkspace), { recursive: true });
+    fs.cpSync(dashboardTarget, probeWorkspace, {
+      recursive: true,
+      filter: (source) => {
+        const name = path.basename(source);
+        return name !== ".git" && name !== "node_modules";
+      },
+    });
+    return {
+      strategy: "copied-target",
+      sourcePath: dashboardTarget,
+      workspacePath: probeWorkspace,
+      copied: true,
+      isolated: !samePath(probeWorkspace, dashboardTarget),
+      skippedDirectories: [".git", "node_modules"],
+      reason: "Product readiness commands run against a copied target so workflow probes cannot mutate terminal product state.",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      strategy: "copied-target",
+      sourcePath: dashboardTarget,
+      workspacePath: undefined,
+      copied: false,
+      isolated: false,
+      skippedDirectories: [".git", "node_modules"],
+      reason: `Failed to create isolated product probe workspace: ${message}`,
+    };
+  }
+}
+
+function runNpmScript(scriptName, outputPath, options = {}) {
   const command = `npm ${scriptName}`;
   const invocation = npmInvocation(scriptName);
+  const cwd = options.cwd ?? dashboardTarget;
   const result = spawnSync(invocation.command, invocation.args, {
-    cwd: dashboardTarget,
+    cwd,
     encoding: "utf8",
     timeout: 30000,
   });
   const output = [
     `$ ${command}`,
+    `cwd: ${cwd}`,
     "",
     "## stdout",
     result.stdout ?? "",
@@ -2729,18 +2792,22 @@ function runNpmScript(scriptName, outputPath) {
     status: result.status,
     signal: result.signal,
     outputPath,
+    cwd,
     reason: result.status === 0 ? undefined : result.error?.message ?? `npm ${scriptName} exited with status ${result.status}`,
   };
 }
 
-function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath) {
+function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath, options = {}) {
   const outputFd = fs.openSync(outputPath, "w");
   let child;
+  const cwd = options.cwd ?? dashboardTarget;
+  const probeIsolation = options.probeIsolation;
   try {
     fs.writeSync(outputFd, `$ npm start\n\n`);
+    fs.writeSync(outputFd, `cwd: ${cwd}\n`);
     const invocation = npmInvocation("start");
     child = spawn(invocation.command, invocation.args, {
-      cwd: dashboardTarget,
+      cwd,
       stdio: ["ignore", outputFd, outputFd],
       env: {
         ...process.env,
@@ -2767,7 +2834,9 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
     const probeArtifact = {
       generatedAt: new Date().toISOString(),
       command: "npm start",
-      cwd: dashboardTarget,
+      cwd,
+      productTarget: dashboardTarget,
+      probeIsolation,
       manualUrl,
       passed: uiProbe.passed && apiProbe.passed && markPaidProbe.passed,
       probes: {
@@ -2782,11 +2851,13 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
     return {
       command: "npm start",
       attempted: true,
-      passed: uiProbe.passed && apiProbe.passed,
+      passed: uiProbe.passed && apiProbe.passed && markPaidProbe.passed,
       manualUrl,
       outputPath,
       probeOutputPath,
       probeMarkdownPath,
+      cwd,
+      probeIsolation,
       probes: {
         ui: uiProbe,
         api: apiProbe,
@@ -2834,16 +2905,18 @@ async function readJson(url, options = {}) {
 }
 try {
   const beforeSummary = await readJson(manualUrl + "/api/summary");
-  const overdue = await readJson(manualUrl + "/api/invoices?status=overdue");
+  const overduePayload = await readJson(manualUrl + "/api/invoices?status=overdue");
+  const overdue = normalizeInvoiceList(overduePayload);
   const candidate = Array.isArray(overdue) && overdue.length > 0 ? overdue[0] : undefined;
   if (!candidate || !candidate.id) {
     throw new Error("No overdue invoice was available for the mark-paid workflow probe.");
   }
-  const patched = await readJson(manualUrl + "/api/invoices/" + encodeURIComponent(candidate.id) + "/status", {
+  const patchedPayload = await readJson(manualUrl + "/api/invoices/" + encodeURIComponent(candidate.id) + "/status", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ status: "paid" })
   });
+  const patched = normalizeInvoice(patchedPayload);
   const afterSummary = await readJson(manualUrl + "/api/summary");
   const paidCountIncreased = afterSummary.paidCount === beforeSummary.paidCount + 1;
   const overdueCountDecreased = afterSummary.overdueCount === beforeSummary.overdueCount - 1;
@@ -2871,6 +2944,19 @@ try {
     reason: error && error.message ? error.message : String(error)
   }));
   process.exit(1);
+}
+
+function normalizeInvoiceList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.invoices)) return payload.invoices;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
+function normalizeInvoice(payload) {
+  if (payload?.invoice && typeof payload.invoice === "object") return payload.invoice;
+  if (payload?.item && typeof payload.item === "object") return payload.item;
+  return payload;
 }`,
     ],
     { encoding: "utf8", timeout: 5000 },
@@ -3050,6 +3136,12 @@ function renderProductReadinessMarkdown(readiness) {
   lines.push(`Declared refs: ${readiness.dashboardDependencies.dependsOn.join(", ") || "none"}`);
   lines.push(`Accepted refs: ${readiness.dashboardDependencies.acceptedRefs.join(", ") || "none"}`);
   lines.push(`Missing refs: ${readiness.dashboardDependencies.missingRefs.join(", ") || "none"}`);
+  lines.push("", "## Probe Isolation", "");
+  lines.push(`Strategy: ${readiness.probeIsolation?.strategy ?? "unknown"}`);
+  lines.push(`Isolated: ${readiness.probeIsolation?.isolated ? "yes" : "no"}`);
+  lines.push(`Source target: ${readiness.probeIsolation?.sourcePath ?? "unknown"}`);
+  lines.push(`Probe workspace: ${readiness.probeIsolation?.workspacePath ?? "none"}`);
+  if (readiness.probeIsolation?.reason) lines.push(`Reason: ${readiness.probeIsolation.reason}`);
   lines.push("");
   return `${lines.join("\n")}\n`;
 }
@@ -3094,6 +3186,12 @@ function renderProductProbeMarkdown(probe) {
     lines.push(`Overdue count decreased: ${markPaidProbe.overdueCountDecreased ? "yes" : "no"}`);
     if (markPaidProbe.reason) lines.push(`Reason: ${markPaidProbe.reason}`);
   }
+  lines.push("", "## Probe Isolation", "");
+  lines.push(`CWD: ${probe.cwd ?? "unknown"}`);
+  lines.push(`Product target: ${probe.productTarget ?? "unknown"}`);
+  lines.push(`Strategy: ${probe.probeIsolation?.strategy ?? "unknown"}`);
+  lines.push(`Isolated: ${probe.probeIsolation?.isolated ? "yes" : "no"}`);
+  if (probe.probeIsolation?.reason) lines.push(`Reason: ${probe.probeIsolation.reason}`);
   lines.push("");
   return `${lines.join("\n")}\n`;
 }
