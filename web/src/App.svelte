@@ -14,6 +14,11 @@
   const store = createConsoleStore();
   let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
 
+  const clamp = (n: number) => Math.max(180, Math.min(560, Number.isFinite(n) ? n : 240));
+  let agentsW = $state(240);
+  let cockpitEl = $state<HTMLElement | null>(null);
+  let resizing = $state(false);
+
   async function refresh() {
     try {
       const [snap, cov] = await Promise.all([api.snapshot(200), api.coverage().catch(() => null)]);
@@ -22,7 +27,29 @@
     } catch (e) { console.error("snapshot failed", e); }
   }
 
+  function startResize(e: PointerEvent) {
+    resizing = true;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    document.body.classList.add("cb-resizing");
+    e.preventDefault();
+  }
+  function onMove(e: PointerEvent) {
+    if (!resizing || !cockpitEl) return;
+    const left = cockpitEl.getBoundingClientRect().left;
+    const pad = parseFloat(getComputedStyle(cockpitEl).paddingLeft) || 0;
+    agentsW = clamp(e.clientX - left - pad);
+  }
+  function endResize() {
+    if (!resizing) return;
+    resizing = false;
+    document.body.classList.remove("cb-resizing");
+    localStorage.setItem("cb.agentsWidth", String(Math.round(agentsW)));
+  }
+
   onMount(() => {
+    const s = localStorage.getItem("cb.agentsWidth");
+    if (s) agentsW = clamp(+s);
+
     refresh();
     const poll = setInterval(refresh, 2500);
     const handle = connectStream({
@@ -48,8 +75,22 @@
   </nav>
 
   {#if route === "bridge"}
-    <main class="cockpit">
+    <main
+      class="cockpit"
+      bind:this={cockpitEl}
+      style="grid-template-columns: {agentsW}px 6px 1fr 280px;"
+      onpointermove={onMove}
+      onpointerup={endResize}
+      onpointerleave={endResize}
+    >
       <AgentRoster {store} onSelect={(actor) => store.select({ kind: "agent", actor })} />
+      <div
+        class="col-resizer"
+        class:resizing={resizing}
+        role="separator"
+        aria-orientation="vertical"
+        onpointerdown={startResize}
+      ></div>
       <div class="center">
         <WorkBoard {store} onSelect={(id) => store.select({ kind: "slice", id })} />
         <OverseerTimeline {store} onSelect={(eventId) => store.select({ kind: "overseerTurn", eventId })} />
