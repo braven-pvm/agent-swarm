@@ -585,6 +585,13 @@ export class SwarmStore {
       .map((row) => mapEvent(row as Row));
   }
 
+  eventsForActor(actor: string, limit = 300): import("./types.js").HarnessEvent[] {
+    return this.db
+      .prepare("select * from events where actor = ? order by timestamp desc limit ?")
+      .all(actor, limit)
+      .map((row) => mapEvent(row as Row));
+  }
+
   eventsSince(cursor: { lastRowid: number }, limit = 200): Array<HarnessEvent & { rowid: number }> {
     // rowid is SQLite's implicit monotonic key; it is the sole cursor of truth (timestamps collide at ms resolution).
     const rows = this.db

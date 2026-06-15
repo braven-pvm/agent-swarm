@@ -263,6 +263,27 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
     const historyBody = JSON.parse(historyRes.body);
     assert.ok(Array.isArray(historyBody.runs), "/api/history/runs should have .runs array");
 
+    // --- /api/agent-events: seeded actor returns events; unknown actor returns empty ---
+    const agentEventsRes = await get(port, "/api/agent-events?actor=seeder");
+    assert.equal(agentEventsRes.status, 200, "/api/agent-events should be 200");
+    const agentEventsBody = JSON.parse(agentEventsRes.body);
+    assert.equal(agentEventsBody.actor, "seeder", "/api/agent-events should echo actor");
+    assert.ok(Array.isArray(agentEventsBody.events), "/api/agent-events should have events array");
+    assert.ok(agentEventsBody.events.length >= 1, "/api/agent-events should have at least one event for seeded actor");
+    assert.ok("id" in agentEventsBody.events[0] && "type" in agentEventsBody.events[0], "event should have id and type");
+
+    const agentEventsNoneRes = await get(port, "/api/agent-events?actor=nonexistent-xyz");
+    assert.equal(agentEventsNoneRes.status, 200, "/api/agent-events with unknown actor should be 200");
+    const agentEventsNoneBody = JSON.parse(agentEventsNoneRes.body);
+    assert.equal(agentEventsNoneBody.actor, "nonexistent-xyz", "unknown actor should be echoed");
+    assert.deepEqual(agentEventsNoneBody.events, [], "unknown actor should return empty events");
+
+    const agentEventsNoActorRes = await get(port, "/api/agent-events");
+    assert.equal(agentEventsNoActorRes.status, 200, "/api/agent-events without actor param should be 200");
+    const agentEventsNoActorBody = JSON.parse(agentEventsNoActorRes.body);
+    assert.equal(agentEventsNoActorBody.actor, "", "missing actor should be empty string");
+    assert.deepEqual(agentEventsNoActorBody.events, [], "missing actor should return empty events");
+
     // --- SSE: subscribe, then insert an event (de-raced); tailer should push event.appended ---
     const { SwarmStore } = await import("../dist/storage.js");
     const { createEvent } = await import("../dist/events.js");

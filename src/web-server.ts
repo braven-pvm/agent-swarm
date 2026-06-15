@@ -168,6 +168,16 @@ export function createWebViewerServer(input: {
           sendJson(response, { query, source: selectedSource ? { id: selectedSource.id, title: selectedSource.title } : undefined, matches });
           return;
         }
+        if (requestUrl.pathname === "/api/agent-events") {
+          const actor = requestUrl.searchParams.get("actor") ?? "";
+          const limit = parseOptionalPositiveInteger(requestUrl.searchParams.get("limit")) ?? 300;
+          if (!actor) {
+            sendJson(response, { actor: "", events: [] });
+            return;
+          }
+          sendJson(response, { actor, events: store.eventsForActor(actor, limit) });
+          return;
+        }
         if (requestUrl.pathname.startsWith("/api/report/")) {
           const sliceId = decodeURIComponent(requestUrl.pathname.slice("/api/report/".length));
           if (!sliceId) {
