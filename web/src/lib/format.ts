@@ -50,6 +50,39 @@ export function prettifyTarget(target: string): string {
   return out;
 }
 
+export interface CommandSummary { action: string; target?: string; }
+// Turn a raw shell command into a concise semantic action. Unwraps the pwsh/-Command wrapper.
+export function summarizeCommand(raw: string): CommandSummary {
+  if (!raw) return { action: "" };
+  let cmd = raw.trim();
+  // unwrap: "...pwsh.exe" -Command "<inner>"  (or single-quoted inner)
+  const pwsh = cmd.match(/pwsh(?:\.exe)?"?\s+-Command\s+(["'])([\s\S]*)\1\s*$/i);
+  if (pwsh) cmd = pwsh[2].trim();
+  const stripQ = (p: string) => p.replace(/^['"]|['"]$/g, "");
+  // show a path: keep short relative paths; collapse absolute/long to basename
+  const showPath = (p: string) => {
+    const s = stripQ(p);
+    const isAbs = /^[A-Za-z]:[\\/]/.test(s) || s.startsWith("/");
+    if (isAbs || s.length > 40) return s.split(/[\\/]/).filter(Boolean).pop() || s;
+    return s;
+  };
+  let m: RegExpMatchArray | null;
+  if (/^["']?node["']?\b/i.test(cmd) && /\s-e\b/.test(cmd)) return { action: "ran node script" };
+  if ((m = cmd.match(/get-content\s+(?:-raw\s+|-literalpath\s+|-path\s+)*(['"]?[^'"|<>]+?['"]?)\s*$/i))) return { action: "read", target: showPath(m[1]) };
+  if ((m = cmd.match(/^\s*(?:cat|type)\s+(\S+)/i))) return { action: "read", target: showPath(m[1]) };
+  if (/test-path/i.test(cmd)) return { action: "checked path" };
+  if ((m = cmd.match(/\bgit\b[\s\S]*?\b(status|diff|log|add|commit|show|rev-parse|init)\b/i))) return { action: `git ${m[1].toLowerCase()}` };
+  if (/\bnpm\s+(run\s+)?test\b|\bnode\s+--test\b|\bvitest\b|\bpytest\b/i.test(cmd)) return { action: "ran tests" };
+  if (/\bnpm\s+run\s+build\b|\btsc\b/i.test(cmd)) return { action: "built" };
+  if (/\brg\b|\bgrep\b|select-string|findstr/i.test(cmd)) return { action: "searched" };
+  if (/get-childitem|^\s*ls\b|^\s*dir\b/i.test(cmd)) return { action: "listed files" };
+  // fallback: first token as action, lightly-cleaned remainder as target
+  const parts = cmd.split(/\s+/);
+  const head = stripQ(parts[0]).split(/[\\/]/).filter(Boolean).pop() || stripQ(parts[0]);
+  const rest = parts.slice(1).join(" ");
+  return { action: head, target: rest ? (rest.length > 50 ? rest.slice(0, 50) + "…" : rest) : undefined };
+}
+
 export interface EscalationGroup {
   key: string;
   level: EscalationRecord["level"];

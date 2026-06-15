@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
-  import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration } from "~/lib/format";
+  import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration, summarizeCommand } from "~/lib/format";
   import Markdown from "~/components/Markdown.svelte";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
@@ -85,7 +85,14 @@
       {#each agentActions as item (item.id)}
         <div class="activity-line">
           <span class="verb verb-{item.state ?? 'idle'}">{activityVerb(item.state)}</span>
-          <button class="cmd" class:cmd-expanded={expandedCmds.has(item.id)} title="click to expand/collapse" onclick={() => toggleCmd(item.id)}>{#each tokenizeCommand(prettifyTarget(item.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}</button>
+          <button class="cmd" class:cmd-expanded={expandedCmds.has(item.id)} title={item.target} onclick={() => toggleCmd(item.id)}>
+            {#if expandedCmds.has(item.id)}
+              {#each tokenizeCommand(prettifyTarget(item.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}
+            {:else}
+              {@const sum = summarizeCommand(item.target)}
+              {sum.action}{#if sum.target} <code class="now-target">{sum.target}</code>{/if}
+            {/if}
+          </button>
         </div>
       {/each}
     {:else if sel.kind === "escalation" && escalation}

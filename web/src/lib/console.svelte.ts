@@ -9,6 +9,7 @@ export interface AgentRosterRow {
   driver?: string;
   state: string;
   now: string;            // latest activity label
+  nowTarget?: string;     // raw command target from the newest agent_event (for semantic summary)
   next?: string;          // next intended action (from checkpoint, matched by createdBy === actor)
   stallMs?: number;       // ms since last heartbeat when stale (> 5m), else undefined
   runtimeMs?: number;     // duration of the latest agent run for this actor
@@ -58,6 +59,7 @@ export function createConsoleStore() {
       if (row && activity && ev.timestamp >= row.latest) {
         row.now = activity.label;
         row.state = activity.state;
+        row.nowTarget = activity.target ?? undefined;
       }
     }
     // enrich: next-action from checkpoint (matched by createdBy), stall if heartbeat is old

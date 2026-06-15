@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -98,6 +98,29 @@ describe("extractFrAcRefs", () => {
     const refs = extractFrAcRefs("fr-core-001 and ac-auth-02");
     expect(refs).toContain("FR-CORE-001");
     expect(refs).toContain("AC-AUTH-02");
+  });
+});
+
+describe("summarizeCommand", () => {
+  it("unwraps pwsh -Command and returns read + target for Get-Content", () => {
+    const result = summarizeCommand('"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-Content test\\invoices.test.js"');
+    expect(result).toEqual({ action: "read", target: "test\\invoices.test.js" });
+  });
+  it("unwraps single-quoted inner and returns git status", () => {
+    const result = summarizeCommand('"pwsh.exe" -Command \'git -c safe.directory=invoice-dashboard status --short\'');
+    expect(result.action).toBe("git status");
+  });
+  it("collapses absolute path to basename for Get-Content -LiteralPath", () => {
+    const result = summarizeCommand('"pwsh.exe" -Command "Get-Content -LiteralPath \'C:\\Users\\Marius\\.codex\\skills\\project-overseer\\SKILL.md\'"');
+    expect(result).toEqual({ action: "read", target: "SKILL.md" });
+  });
+  it("returns ran tests for npm test", () => {
+    const result = summarizeCommand('"pwsh.exe" -Command "npm test"');
+    expect(result.action).toBe("ran tests");
+  });
+  it("returns ran node script for node -e", () => {
+    const result = summarizeCommand('"pwsh.exe" -Command "node --input-type=module -e \\"import x\\""');
+    expect(result.action).toBe("ran node script");
   });
 });
 
