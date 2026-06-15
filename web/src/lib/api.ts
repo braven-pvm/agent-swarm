@@ -22,4 +22,8 @@ export const api = {
   historyCompare: (left?: string, right?: string) =>
     getJson<Record<string, unknown>>(`/api/history/compare${left && right ? `?left=${left}&right=${right}` : ""}`),
   coverage: () => getJson<CoverageSummary>("/api/coverage"),
+  agentEvents: (actor: string, limit = 500) =>
+    getJson<{ actor: string; events: import("~/lib/types").HarnessEvent[] }>(
+      `/api/agent-events?actor=${encodeURIComponent(actor)}&limit=${limit}`,
+    ),
 };
