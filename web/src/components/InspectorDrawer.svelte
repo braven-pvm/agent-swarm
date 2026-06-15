@@ -271,12 +271,60 @@
   const overseerEvent = $derived(
     sel?.kind === "overseerTurn" ? store.snapshot?.recentEvents.find((e) => e.id === sel.eventId) : undefined,
   );
+
+  // ---- Focus packets: lazy-fetched deep diagnostic packets for slice/run zoom. ----
+  let focusPacket = $state<Record<string, unknown> | null>(null);
+  let focusLoading = $state(false);
+  let focusError = $state<string | undefined>(undefined);
+  let openRawPacket = $state(false);
+  $effect(() => {
+    if (sel?.kind !== "focusSlice" && sel?.kind !== "focusRun") {
+      focusPacket = null; focusLoading = false; focusError = undefined; return;
+    }
+    const kind = sel.kind;
+    const id = sel.id;
+    focusPacket = null; focusError = undefined; focusLoading = true; openRawPacket = false;
+    let cancelled = false;
+    const p = kind === "focusSlice" ? api.focusSlice(id) : api.focusRun(id);
+    p.then((res) => {
+        if (cancelled || sel?.kind !== kind || sel.id !== id) return;
+        focusPacket = res;
+      })
+      .catch((e) => { if (!cancelled && sel?.kind === kind && sel.id === id) focusError = String(e?.message ?? e); })
+      .finally(() => { if (!cancelled && sel?.kind === kind && sel.id === id) focusLoading = false; });
+    return () => { cancelled = true; };
+  });
+
+  // Defensive accessors over the nested packet (shape is server-owned).
+  function pick(obj: unknown, path: string): unknown {
+    let cur: unknown = obj;
+    for (const key of path.split(".")) {
+      if (cur == null || typeof cur !== "object") return undefined;
+      cur = (cur as Record<string, unknown>)[key];
+    }
+    return cur;
+  }
+  function asStr(v: unknown): string | undefined {
+    return typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : undefined;
+  }
+  function asArr(v: unknown): unknown[] {
+    return Array.isArray(v) ? v : [];
+  }
+  function strArr(v: unknown): string[] {
+    return asArr(v).filter((x): x is string => typeof x === "string");
+  }
+  function joinKv(...pairs: Array<[string, unknown]>): string {
+    return pairs
+      .filter(([, v]) => v != null && v !== "")
+      .map(([k, v]) => `${k} ${asStr(v) ?? ""}`)
+      .join(" · ");
+  }
 </script>
 
 {#if sel}
   <aside class="inspector">
     <div class="inspector-head">
-      <strong>{sel.kind}{slice ? ` · ${slice.id}` : sel.kind === "agent" ? ` · ${sel.actor}` : ""}</strong>
+      <strong>{sel.kind}{slice ? ` · ${slice.id}` : sel.kind === "agent" ? ` · ${sel.actor}` : sel.kind === "focusSlice" || sel.kind === "focusRun" ? ` · ${sel.id}` : ""}</strong>
       <button class="close" onclick={() => store.select(null)}>✕</button>
     </div>
 
@@ -480,6 +528,140 @@
     {:else if sel.kind === "overseerTurn" && overseerEvent}
       <h4>{overseerEvent.type}</h4>
       <pre class="json">{JSON.stringify(overseerEvent.payload, null, 2)}</pre>
+    {:else if sel.kind === "focusSlice"}
+      <div class="focus-packet">
+        <h4>Focus · {sel.id}</h4>
+        {#if focusLoading}
+          <p class="empty">loading…</p>
+        {:else if focusError}
+          <p class="error">failed to load focus packet — {focusError}</p>
+        {:else if focusPacket}
+          {@const title = asStr(pick(focusPacket, "title")) ?? asStr(pick(focusPacket, "slice.title"))}
+          {@const status = asStr(pick(focusPacket, "status")) ?? asStr(pick(focusPacket, "slice.status"))}
+          {@const retry = asStr(pick(focusPacket, "retryCount")) ?? asStr(pick(focusPacket, "slice.retryCount"))}
+          {@const blockers = asArr(pick(focusPacket, "blockers"))}
+          {@const failureClasses = strArr(pick(focusPacket, "diagnosis.failureClasses"))}
+          {@const latestRunFocus = pick(focusPacket, "latestRunFocus")}
+          {@const recs = strArr(pick(focusPacket, "recommendedInterventions"))}
+          {@const escalations = asArr(pick(focusPacket, "activeEscalations")).length
+            ? asArr(pick(focusPacket, "activeEscalations"))
+            : asArr(pick(focusPacket, "escalations"))}
+
+          {#if title}<div class="focus-pk-title">{title}</div>{/if}
+          {#if status || retry}
+            <div class="muted focus-pk-meta">{joinKv(["status", status], ["retry", retry])}</div>
+          {/if}
+
+          {#if failureClasses.length > 0}
+            <div class="focus-pk-chips">
+              {#each failureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
+            </div>
+          {/if}
+
+          {#if blockers.length > 0}
+            <div class="run-subhead">Blockers</div>
+            <ul class="run-esc">
+              {#each blockers as b}<li>{asStr(b) ?? asStr(pick(b, "reason")) ?? asStr(pick(b, "message")) ?? JSON.stringify(b)}</li>{/each}
+            </ul>
+          {/if}
+
+          {#if latestRunFocus}
+            <div class="run-subhead">Latest run</div>
+            <div class="muted focus-pk-meta">{joinKv(
+              ["role", pick(latestRunFocus, "role")],
+              ["actor", pick(latestRunFocus, "actor") ?? pick(latestRunFocus, "run.actor")],
+              ["status", pick(latestRunFocus, "status") ?? pick(latestRunFocus, "run.status")],
+              ["heartbeat", pick(latestRunFocus, "heartbeatState") ?? pick(latestRunFocus, "run.heartbeatState")],
+            ) || "—"}</div>
+          {/if}
+
+          {#if recs.length > 0}
+            <div class="run-subhead">Recommended interventions</div>
+            <ul class="run-fixes">{#each recs as r}<li>{r}</li>{/each}</ul>
+          {/if}
+
+          {#if escalations.length > 0}
+            <div class="run-subhead">Escalations</div>
+            <ul class="run-esc">
+              {#each escalations as e}<li><b>{asStr(pick(e, "level")) ?? "—"}</b> {asStr(pick(e, "message")) ?? ""}</li>{/each}
+            </ul>
+          {/if}
+
+          <button class="run-act-toggle" onclick={() => (openRawPacket = !openRawPacket)}>
+            {openRawPacket ? "▾" : "▸"} raw packet
+          </button>
+          {#if openRawPacket}<pre class="json">{JSON.stringify(focusPacket, null, 2)}</pre>{/if}
+        {:else}
+          <p class="empty">no packet.</p>
+        {/if}
+      </div>
+    {:else if sel.kind === "focusRun"}
+      <div class="focus-packet">
+        <h4>Focus · {sel.id}</h4>
+        {#if focusLoading}
+          <p class="empty">loading…</p>
+        {:else if focusError}
+          <p class="error">failed to load focus packet — {focusError}</p>
+        {:else if focusPacket}
+          {@const run = pick(focusPacket, "run") ?? focusPacket}
+          {@const failureClasses = strArr(pick(focusPacket, "diagnosis.failureClasses"))}
+          {@const lastCommand = pick(focusPacket, "lastCommand") ?? pick(run, "lastCommand")}
+          {@const recs = strArr(pick(focusPacket, "recommendedInterventions"))}
+          {@const eventLineCount = asStr(pick(focusPacket, "eventLineCount")) ?? asStr(pick(run, "eventLineCount"))}
+          {@const parseErrors = asStr(pick(focusPacket, "eventParseErrors")) ?? asStr(pick(focusPacket, "parseErrors"))}
+          {@const resultExists = pick(focusPacket, "resultExists") ?? pick(run, "resultExists")}
+          {@const stderrExists = pick(focusPacket, "stderrExists") ?? pick(run, "stderrExists")}
+          {@const eventStreamExists = pick(focusPacket, "eventStreamExists") ?? pick(run, "eventStreamExists")}
+
+          <div class="muted focus-pk-meta">{joinKv(
+            ["role", pick(run, "role")],
+            ["actor", pick(run, "actor")],
+            ["status", pick(run, "status")],
+            ["attempt", pick(run, "attempt")],
+            ["heartbeat", pick(run, "heartbeatState")],
+          ) || "—"}</div>
+
+          {#if failureClasses.length > 0}
+            <div class="focus-pk-chips">
+              {#each failureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
+            </div>
+          {/if}
+
+          {#if lastCommand}
+            <div class="run-subhead">Last command</div>
+            <div class="focus-pk-meta"><code>{asStr(pick(lastCommand, "command")) ?? "—"}</code>
+              {#if pick(lastCommand, "exitCode") != null}
+                {@const ec = pick(lastCommand, "exitCode")}
+                <span class="exit" class:bad={ec !== 0}>exit code {asStr(ec)}</span>
+              {/if}
+            </div>
+            {#if asStr(pick(lastCommand, "outputTail"))}
+              <pre class="json">{asStr(pick(lastCommand, "outputTail"))}</pre>
+            {/if}
+          {/if}
+
+          <div class="run-subhead">Artifacts</div>
+          <div class="muted focus-pk-meta">{joinKv(
+            ["events", eventLineCount],
+            ["parse-errors", parseErrors],
+            ["result", resultExists != null ? (resultExists ? "yes" : "no") : undefined],
+            ["stderr", stderrExists != null ? (stderrExists ? "yes" : "no") : undefined],
+            ["event-stream", eventStreamExists != null ? (eventStreamExists ? "yes" : "no") : undefined],
+          ) || "—"}</div>
+
+          {#if recs.length > 0}
+            <div class="run-subhead">Recommended interventions</div>
+            <ul class="run-fixes">{#each recs as r}<li>{r}</li>{/each}</ul>
+          {/if}
+
+          <button class="run-act-toggle" onclick={() => (openRawPacket = !openRawPacket)}>
+            {openRawPacket ? "▾" : "▸"} raw packet
+          </button>
+          {#if openRawPacket}<pre class="json">{JSON.stringify(focusPacket, null, 2)}</pre>{/if}
+        {:else}
+          <p class="empty">no packet.</p>
+        {/if}
+      </div>
     {/if}
   </aside>
 {/if}

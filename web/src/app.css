@@ -167,3 +167,32 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 ui-mo
 .act-group { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 1px 0; }
 .act-group .targets { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-marker-row { opacity: .85; }
+/* Focus triage panel + zoom */
+.right-rail { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
+.right-rail .focus-rail { flex: none; max-height: 55%; overflow-y: auto; }
+.right-rail .rail:not(.focus-rail) { flex: 1; min-height: 0; overflow-y: auto; }
+.focus-card { border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: #20262c; }
+.focus-card-head { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; background: none; border: none; color: var(--ink); font: inherit; cursor: pointer; padding: 0; }
+.focus-card-head:hover .focus-title { text-decoration: underline; }
+.prio-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+.prio-red { background: var(--red); } .prio-amber { background: var(--amber); } .prio-muted { background: var(--muted); opacity: .6; }
+.focus-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-id { font-size: 10px; flex: none; } .focus-status { font-size: 11px; flex: none; margin-left: auto; }
+.focus-reasons { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.focus-reason { font-size: 10px; border-radius: 8px; padding: 0 6px; }
+.reason-red { background: rgba(248,81,73,.18); color: var(--red); }
+.reason-amber { background: rgba(210,153,34,.18); color: var(--amber); }
+.reason-muted { background: #2c3238; color: var(--muted); }
+.focus-run { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--muted); font: inherit; cursor: pointer; padding: 5px 0 0; }
+.focus-run:hover { color: var(--ink); }
+.focus-run-line { font-size: 11px; }
+.focus-cmd { display: block; font-size: 11px; margin-top: 2px; color: var(--muted); }
+.focus-cmd code { background: #0e1114; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: .9em; }
+.exit { font-size: 10px; border-radius: 8px; padding: 0 5px; margin-left: 4px; background: rgba(63,185,80,.16); color: var(--green); }
+.exit.bad { background: rgba(248,81,73,.18); color: var(--red); }
+.focus-rec { color: var(--muted); font-style: italic; font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.focus-chip { color: var(--amber); border-color: var(--amber); }
+.focus-packet .focus-pk-title { font-weight: 600; margin: 4px 0; }
+.focus-packet .focus-pk-meta { font-size: 12px; margin: 2px 0; }
+.focus-packet .focus-pk-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0; }
+.focus-packet pre { max-height: 320px; overflow: auto; }

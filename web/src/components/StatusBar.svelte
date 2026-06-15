@@ -26,6 +26,9 @@
     <span class="chip cov" title="FR/AC requirements implemented">reqs ▮ {c.done}/{c.total} · {c.total ? Math.round(100 * c.done / c.total) : 0}%</span>
   {/if}
   <span class="chip">uptime {uptime}</span>
+  {#if snap?.focusQueue?.length}
+    <span class="chip focus-chip" title="slices needing attention">⚑ focus {snap.focusQueue.length}</span>
+  {/if}
   <span class="spacer"></span>
   <span class="chip conn" class:on={store.connected} class:off={!store.connected}>
     {store.connected ? "● live" : "○ offline"}

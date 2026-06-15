@@ -26,4 +26,6 @@ export const api = {
     getJson<{ actor: string; events: import("~/lib/types").HarnessEvent[] }>(
       `/api/agent-events?actor=${encodeURIComponent(actor)}&limit=${limit}`,
     ),
+  focusSlice: (id: string) => getJson<Record<string, unknown>>(`/api/focus/slice/${encodeURIComponent(id)}`),
+  focusRun: (id: string) => getJson<Record<string, unknown>>(`/api/focus/run/${encodeURIComponent(id)}`),
 };

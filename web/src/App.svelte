@@ -8,6 +8,7 @@
   import WorkBoard from "~/components/WorkBoard.svelte";
   import OverseerTimeline from "~/components/OverseerTimeline.svelte";
   import EscalationsRail from "~/components/EscalationsRail.svelte";
+  import FocusRail from "~/components/FocusRail.svelte";
   import InspectorDrawer from "~/components/InspectorDrawer.svelte";
 
   const store = createConsoleStore();
@@ -53,7 +54,14 @@
         <WorkBoard {store} onSelect={(id) => store.select({ kind: "slice", id })} />
         <OverseerTimeline {store} onSelect={(eventId) => store.select({ kind: "overseerTurn", eventId })} />
       </div>
-      <EscalationsRail {store} onSelect={(id) => store.select({ kind: "escalation", id })} />
+      <div class="right-rail">
+        <FocusRail
+          {store}
+          onZoomSlice={(id) => store.select({ kind: "focusSlice", id })}
+          onZoomRun={(id) => store.select({ kind: "focusRun", id })}
+        />
+        <EscalationsRail {store} onSelect={(id) => store.select({ kind: "escalation", id })} />
+      </div>
       <InspectorDrawer {store} />
     </main>
   {:else if route === "specs"}

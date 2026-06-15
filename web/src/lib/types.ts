@@ -30,6 +30,29 @@ export interface SliceWithDetail {
   createdAt: string; updatedAt: string;
 }
 
+export interface FocusItem {
+  reason: string;            // comma-joined, e.g. "blocked,command_failed" or "none"
+  sliceId: string;
+  title: string;
+  status: string;
+  laneName?: string;
+  targetName?: string;
+  retryCount: number;
+  inspectSliceCommand: string;
+  inspectRunCommand?: string;
+  focusPriority: number;
+  latestRun?: {
+    id: string; role?: string; actor: string; status: string; attempt: number;
+    sessionIdCaptured: boolean; heartbeatState?: string; heartbeatAgeMs?: number;
+    promptPath?: string; resultExists: boolean; stderrExists: boolean;
+    eventStreamExists: boolean; eventLineCount: number;
+    lastCommand?: { command: string; status?: string; exitCode?: number; outputTail: string };
+  };
+  activeEscalations: Array<{ id: string; level: string; status: string; entityType: string; entityId: string; message: string; reason?: string; updatedAt: string }>;
+  recommendedInterventions: string[];
+  error?: string;
+}
+
 export interface SnapshotResponse {
   workspace: string; runMode: RunMode; generatedAt: string;
   scenario?: string; phase?: string; turnCount?: number;   // scenario derivable in M1; phase/turn surfaced in M3 (— until then)
@@ -39,6 +62,7 @@ export interface SnapshotResponse {
   dependencies: Array<DependencyEdge & { status: "pending" | "satisfied" | "blocked" }>;
   agentRuns: AgentRunRecord[]; heartbeats: HeartbeatRecord[];
   activeEscalations: EscalationRecord[]; checkpoints: CheckpointRecord[]; recentEvents: HarnessEvent[];
+  focusQueue: FocusItem[];
 }
 
 export interface CoverageRef {
@@ -112,4 +136,6 @@ export type SelectedEntity =
   | { kind: "slice"; id: string }
   | { kind: "agent"; actor: string }
   | { kind: "escalation"; id: string }
-  | { kind: "overseerTurn"; eventId: string };
+  | { kind: "overseerTurn"; eventId: string }
+  | { kind: "focusSlice"; id: string }
+  | { kind: "focusRun"; id: string };
