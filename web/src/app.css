@@ -230,3 +230,49 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .focus-packet .focus-pk-meta { font-size: 12px; margin: 2px 0; }
 .focus-packet .focus-pk-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0; }
 .focus-packet pre { max-height: 320px; overflow: auto; }
+/* Run-observability badges (StatusBar) */
+.ro-badge { font-size: var(--fs-meta); border-radius: 10px; padding: 1px 8px; }
+.ro-badge strong { font-weight: 600; }
+.ro-success { color: var(--green); background: rgba(92,184,122,.14); }
+.ro-warning { color: var(--amber); background: rgba(214,161,60,.14); }
+.ro-danger  { color: var(--red);   background: rgba(239,107,97,.14); }
+.ro-neutral { color: var(--muted); background: rgba(255,255,255,.06); }
+/* Observability callout banner */
+.obs-callout { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s2) var(--s3); font-size: var(--fs-meta); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.obs-callout.warning { background: rgba(214,161,60,.10); border-bottom-color: rgba(214,161,60,.25); }
+.obs-callout.danger  { background: rgba(239,107,97,.10); border-bottom-color: rgba(239,107,97,.25); }
+.obs-glyph { flex: none; }
+.obs-callout.warning .obs-glyph { color: var(--amber); }
+.obs-callout.danger  .obs-glyph { color: var(--red); }
+.obs-headline { font-weight: 600; }
+.obs-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 2px; }
+.obs-detail { font-size: var(--fs-eyebrow); }
+.obs-link { background: none; border: 1px solid var(--line-2); color: var(--ink); border-radius: 6px; padding: 1px 8px; cursor: pointer; font: inherit; font-size: var(--fs-meta); margin-left: auto; flex: none; }
+.obs-link:hover { background: var(--surface-2); }
+/* Truth-row pills */
+.truth-pill { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; }
+.truth-success { background: rgba(92,184,122,.14); color: var(--green); }
+.truth-warning  { background: rgba(214,161,60,.14); color: var(--amber); }
+.truth-danger   { background: rgba(239,107,97,.14); color: var(--red); }
+.truth-neutral  { background: rgba(255,255,255,.06); color: var(--muted); }
+/* Coverage interpretation block */
+.cov-interp { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s3); margin-bottom: var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.cov-interp-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
+.cov-interp-headline { font-size: var(--fs-h); font-weight: 600; }
+.cov-state-chip { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; }
+.cov-state-complete { background: rgba(92,184,122,.14); color: var(--green); }
+.cov-state-partial   { background: rgba(214,161,60,.14); color: var(--amber); }
+.cov-state-empty     { background: rgba(255,255,255,.06); color: var(--muted); }
+.cov-interp-pct { font-size: var(--fs-title); font-weight: 600; font-variant-numeric: tabular-nums; margin-left: auto; }
+.cov-interp-detail { font-size: var(--fs-meta); }
+.cov-warning { color: var(--amber); font-size: var(--fs-meta); }
+.cov-nextactions { display: flex; flex-wrap: wrap; gap: 4px; }
+.cov-nextaction { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; background: rgba(255,255,255,.06); color: var(--muted); }
+.cov-topdomains { display: flex; flex-direction: column; gap: 4px; margin-top: var(--s1); }
+.cov-topdomains-label { font-size: var(--fs-eyebrow); letter-spacing: .02em; font-weight: 600; display: block; margin-bottom: 2px; }
+.cov-topdomain { display: flex; align-items: center; gap: 8px; font-size: var(--fs-meta); }
+.cov-topdomain-name { flex: 0 0 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cov-topdomain-bar { flex: 1; max-width: 120px; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.cov-topdomain-fill { display: block; height: 100%; background: var(--amber); border-radius: 3px; }
+.cov-topdomain-pct { flex: none; font-variant-numeric: tabular-nums; width: 32px; text-align: right; }
+.cov-topdomain-inc { flex: none; }

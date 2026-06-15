@@ -18,6 +18,42 @@
   {#if !cov}
     <p class="empty">Loading coverage…</p>
   {:else}
+    {#if cov.interpretation}
+      {@const interp = cov.interpretation}
+      <div class="cov-interp">
+        <div class="cov-interp-head">
+          <span class="cov-interp-headline">{interp.headline}</span>
+          <span class="cov-state-chip cov-state-{interp.state}">{interp.state}</span>
+          <span class="cov-interp-pct">{interp.completionPercent}%</span>
+        </div>
+        <div class="muted cov-interp-detail">{interp.detail}</div>
+        {#if interp.warning}
+          <div class="cov-warning">⚠ {interp.warning}</div>
+        {/if}
+        {#if interp.nextActions?.length}
+          <div class="cov-nextactions">
+            {#each interp.nextActions as na}
+              <span class="cov-nextaction" title={na.action}>{na.count} to {na.label}</span>
+            {/each}
+          </div>
+        {/if}
+        {#if interp.topIncompleteDomains?.length}
+          <div class="cov-topdomains">
+            <span class="cov-topdomains-label muted">Top incomplete domains</span>
+            {#each interp.topIncompleteDomains as td}
+              <div class="cov-topdomain">
+                <span class="cov-topdomain-name">{td.domain}</span>
+                <span class="cov-topdomain-bar" title="{td.completionPercent}% done">
+                  <span class="cov-topdomain-fill" style="width:{td.completionPercent}%"></span>
+                </span>
+                <span class="cov-topdomain-pct muted">{td.completionPercent}%</span>
+                <span class="cov-topdomain-inc muted">{td.incomplete} incomplete</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
     <div class="cov-head"><h2>Coverage</h2><div class="cov-overall">{cov.totals.done} / {cov.totals.total} requirements done · <strong>{pct(cov.totals.done, cov.totals.total)}%</strong></div></div>
     <div class="cov-bar" title="done / in-progress / blocked / failed / not-started">
       <span class="seg seg-done" style="width:{pct(cov.totals.done,cov.totals.total)}%"></span>

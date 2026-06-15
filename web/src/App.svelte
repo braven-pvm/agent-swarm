@@ -10,6 +10,7 @@
   import EscalationsRail from "~/components/EscalationsRail.svelte";
   import FocusRail from "~/components/FocusRail.svelte";
   import InspectorDrawer from "~/components/InspectorDrawer.svelte";
+  import ObservabilityCallout from "~/components/ObservabilityCallout.svelte";
 
   const store = createConsoleStore();
   let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
@@ -73,6 +74,7 @@
     <button class:active={route === "specs"} onclick={() => (route = "specs")}>Specs</button>
     <button class:active={route === "history"} onclick={() => (route = "history")}>History</button>
   </nav>
+  <ObservabilityCallout {store} onGoCoverage={() => (route = "coverage")} />
 
   {#if route === "bridge"}
     <main

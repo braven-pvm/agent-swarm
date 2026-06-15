@@ -21,10 +21,9 @@
   <span class="chip">phase: {snap?.phase ?? "—"}</span>
   <span class="chip">turn {snap?.turnCount ?? "—"}</span>
   <span class="chip">slices ▮ {accepted}/{total}</span>
-  {#if store.coverage}
-    {@const c = store.coverage.totals}
-    <span class="chip cov" title="FR/AC requirements implemented">reqs ▮ {c.done}/{c.total} · {c.total ? Math.round(100 * c.done / c.total) : 0}%</span>
-  {/if}
+  {#each store.snapshot?.runObservability?.uiHints?.badges ?? [] as b}
+    <span class="ro-badge ro-{b.tone}" title={b.tooltip}>{b.label}: <strong>{b.value}</strong></span>
+  {/each}
   <span class="chip">uptime {uptime}</span>
   {#if snap?.focusQueue?.length}
     <span class="chip focus-chip" title="slices needing attention">⚑ focus {snap.focusQueue.length}</span>
