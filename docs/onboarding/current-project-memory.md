@@ -84,6 +84,29 @@ npm test -> 103/103 passing
 git diff --check -> clean
 ```
 
+## Latest Observability Contract Update
+
+On 2026-06-15, after a smooth full-product live smoke accepted run, the next hardening focus narrowed to observability clarity. The core lesson:
+
+- `finalOutcome: accepted` means the selected bounded run path passed.
+- `coverage: 15/83` means the broader indexed source requirements are still partial.
+- The UI must show both at once and must not imply whole-product completion from a selected-scope accepted run.
+
+Implemented contract additions:
+
+- new `GET /api/run-observability`
+- `GET /api/snapshot` now includes `runObservability`
+- `GET /api/coverage` now includes `interpretation`
+- `scripts/run-live-agent-demo.mjs` now writes compact `coverage` and `outcomeVsCoverage` into `live-agent-run-summary.json`
+- frontend type/API mirror updated in `web/src/lib/types.ts` and `web/src/lib/api.ts`
+- design note added at `docs/architecture/run-observability-contract.md`
+
+Expected UI behavior:
+
+- show run outcome, coverage, and product readiness as separate top-level truths
+- call out `accepted_partial` as a warning: run accepted for selected scope, coverage still incomplete
+- use `runObservability.uiHints` for badges/callouts where useful
+
 ## Recent UI Work Completed
 
 The local web viewer was upgraded from a simple panel layout into a tabbed observability surface:

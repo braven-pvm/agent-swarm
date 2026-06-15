@@ -16,6 +16,34 @@ const baseSnapshot = (): SnapshotResponse => ({
   dependencies: [], agentRuns: [{ id: "R1", sliceId: "SLICE-1", role: "worker", actor: "backend-worker", driver: "codex", status: "completed", attempt: 1, startedAt: "", updatedAt: "" }],
   heartbeats: [{ id: "heartbeat:backend-worker", actor: "backend-worker", state: "idle", detail: "done", timestamp: "2026-06-14T08:00:00Z" }],
   activeEscalations: [], checkpoints: [], recentEvents: [],
+  focusQueue: [],
+  runObservability: {
+    generatedAt: "2026-06-14T08:00:00Z",
+    workspace: "/w",
+    runMode: "live-agent-smoke",
+    outcome: { available: true, source: "live-summary", finalOutcome: "accepted", accepted: true },
+    coverage: {
+      totals: { total: 1, done: 1, inProgress: 0, blocked: 0, failed: 0, notStarted: 0 },
+      completionPercent: 100,
+      complete: true,
+      incomplete: 0,
+      state: "complete",
+      headline: "1/1 indexed requirements done",
+      byDomain: [],
+      topIncompleteDomains: [],
+    },
+    productReadiness: { available: false, acceptedRefs: [], blockers: [] },
+    slices: { total: 1, accepted: 1, active: 0, blocked: 0, byStatus: { accepted: 1 } },
+    outcomeVsCoverage: {
+      state: "accepted_complete",
+      severity: "success",
+      headline: "Run accepted and indexed requirements are complete",
+      detail: "ok",
+      truthRows: [],
+    },
+    warnings: [],
+    uiHints: { badges: [], callouts: [], recommendedPrimaryView: "history" },
+  },
 });
 
 describe("console store", () => {

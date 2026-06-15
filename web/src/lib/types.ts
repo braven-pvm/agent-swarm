@@ -63,6 +63,7 @@ export interface SnapshotResponse {
   agentRuns: AgentRunRecord[]; heartbeats: HeartbeatRecord[];
   activeEscalations: EscalationRecord[]; checkpoints: CheckpointRecord[]; recentEvents: HarnessEvent[];
   focusQueue: FocusItem[];
+  runObservability: RunObservabilitySummary;
 }
 
 export interface CoverageRef {
@@ -123,8 +124,88 @@ export interface CoverageDomain {
 export interface CoverageSummary {
   generatedAt: string;
   totals: { total: number; done: number; inProgress: number; blocked: number; failed: number; notStarted: number };
+  interpretation: CoverageInterpretation;
   byDomain: CoverageDomain[];
   refs: CoverageRef[];
+}
+
+export interface CoverageInterpretation {
+  completionPercent: number;
+  state: "empty" | "complete" | "partial";
+  headline: string;
+  detail: string;
+  warning?: string;
+  nextActions: Array<{ action: CoverageRef["nextAction"]; count: number; label: string }>;
+  topIncompleteDomains: Array<CoverageDomain & { incomplete: number; completionPercent: number }>;
+}
+
+export interface RunObservabilitySummary {
+  generatedAt: string;
+  workspace: string;
+  runMode: RunMode;
+  scenario?: string;
+  outcome: {
+    available: boolean;
+    source: "live-summary" | "harness-state";
+    runId?: string;
+    finalOutcome?: string;
+    finalReason?: string;
+    accepted: boolean;
+    classification?: { code?: string; severity?: string; explanation?: string };
+    generatedAt?: string;
+    phase?: string;
+    faultMode?: string;
+    counts?: Record<string, number>;
+    artifacts?: Record<string, string>;
+  };
+  coverage: {
+    totals: CoverageSummary["totals"];
+    completionPercent: number;
+    complete: boolean;
+    incomplete: number;
+    state: CoverageInterpretation["state"];
+    headline: string;
+    warning?: string;
+    byDomain: CoverageSummary["byDomain"];
+    topIncompleteDomains: CoverageInterpretation["topIncompleteDomains"];
+  };
+  productReadiness: {
+    available: boolean;
+    passed?: boolean;
+    productName?: string;
+    manualUrl?: string;
+    acceptedRefs: string[];
+    dependencyGate?: {
+      satisfied: boolean;
+      declaredRefs: string[];
+      acceptedRefs: string[];
+      missingRefs: string[];
+    };
+    checks?: { total: number; passed: number; failed: number };
+    blockers: Array<{ id?: string; label?: string; message?: string; severity?: string }>;
+    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean };
+    artifacts?: Record<string, string>;
+  };
+  slices: {
+    total: number;
+    accepted: number;
+    active: number;
+    blocked: number;
+    byStatus: Record<string, number>;
+  };
+  outcomeVsCoverage: {
+    state: "accepted_complete" | "accepted_partial" | "not_accepted" | "unknown";
+    severity: "success" | "warning" | "danger" | "neutral";
+    headline: string;
+    detail: string;
+    truthRows: Array<{ label: string; state: string; meaning: string; severity: "success" | "warning" | "danger" | "neutral" }>;
+  };
+  warnings: string[];
+  uiHints: {
+    badges: Array<{ label: string; value: string; tone: "success" | "warning" | "danger" | "neutral"; tooltip: string }>;
+    callouts: Array<{ tone: "success" | "warning" | "danger" | "neutral"; title: string; detail: string }>;
+    recommendedPrimaryView: "coverage" | "bridge" | "history";
+  };
 }
 
 export type SSEFrame =

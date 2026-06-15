@@ -250,6 +250,18 @@ test("buildCoverage enumerates every indexed FR/AC ref incl. not-started", async
     assert.ok(typeof coverage.generatedAt === "string", "generatedAt should be a string");
     assert.ok(Array.isArray(coverage.refs), "refs should be an array");
     assert.ok(Array.isArray(coverage.byDomain), "byDomain should be an array");
+    assert.equal(coverage.interpretation.state, "partial", "mixed coverage should be interpreted as partial");
+    assert.equal(coverage.interpretation.completionPercent, 33, "interpretation should expose a rounded completion percent");
+    assert.match(coverage.interpretation.headline, /1\/3 indexed requirements done/, "interpretation should expose a headline");
+    assert.match(coverage.interpretation.warning, /partial/i, "partial interpretation should warn that coverage is incomplete");
+    assert.ok(
+      coverage.interpretation.nextActions.some((item) => item.action === "repair_or_review"),
+      "interpretation should summarize next actions",
+    );
+    assert.ok(
+      coverage.interpretation.topIncompleteDomains.some((item) => item.domain === "Coverage" && item.incomplete === 2),
+      "interpretation should list incomplete domains",
+    );
 
     // --- Denominator: all 3 indexed refs are counted ---
     assert.equal(coverage.totals.total, 3, "totals.total should count every indexed ref");

@@ -345,8 +345,88 @@ export interface CoverageDomain {
 export interface CoverageSummary {
   generatedAt: string;
   totals: { total: number; done: number; inProgress: number; blocked: number; failed: number; notStarted: number };
+  interpretation: CoverageInterpretation;
   byDomain: CoverageDomain[];
   refs: CoverageRef[];
+}
+
+export interface CoverageInterpretation {
+  completionPercent: number;
+  state: "empty" | "complete" | "partial";
+  headline: string;
+  detail: string;
+  warning?: string;
+  nextActions: Array<{ action: CoverageRef["nextAction"]; count: number; label: string }>;
+  topIncompleteDomains: Array<CoverageDomain & { incomplete: number; completionPercent: number }>;
+}
+
+export interface RunObservabilitySummary {
+  generatedAt: string;
+  workspace: string;
+  runMode: RunMode;
+  scenario?: string;
+  outcome: {
+    available: boolean;
+    source: "live-summary" | "harness-state";
+    runId?: string;
+    finalOutcome?: string;
+    finalReason?: string;
+    accepted: boolean;
+    classification?: { code?: string; severity?: string; explanation?: string };
+    generatedAt?: string;
+    phase?: string;
+    faultMode?: string;
+    counts?: Record<string, number>;
+    artifacts?: Record<string, string>;
+  };
+  coverage: {
+    totals: CoverageSummary["totals"];
+    completionPercent: number;
+    complete: boolean;
+    incomplete: number;
+    state: CoverageInterpretation["state"];
+    headline: string;
+    warning?: string;
+    byDomain: CoverageSummary["byDomain"];
+    topIncompleteDomains: CoverageInterpretation["topIncompleteDomains"];
+  };
+  productReadiness: {
+    available: boolean;
+    passed?: boolean;
+    productName?: string;
+    manualUrl?: string;
+    acceptedRefs: string[];
+    dependencyGate?: {
+      satisfied: boolean;
+      declaredRefs: string[];
+      acceptedRefs: string[];
+      missingRefs: string[];
+    };
+    checks?: { total: number; passed: number; failed: number };
+    blockers: Array<{ id?: string; label?: string; message?: string; severity?: string }>;
+    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean };
+    artifacts?: Record<string, string>;
+  };
+  slices: {
+    total: number;
+    accepted: number;
+    active: number;
+    blocked: number;
+    byStatus: Record<string, number>;
+  };
+  outcomeVsCoverage: {
+    state: "accepted_complete" | "accepted_partial" | "not_accepted" | "unknown";
+    severity: "success" | "warning" | "danger" | "neutral";
+    headline: string;
+    detail: string;
+    truthRows: Array<{ label: string; state: string; meaning: string; severity: "success" | "warning" | "danger" | "neutral" }>;
+  };
+  warnings: string[];
+  uiHints: {
+    badges: Array<{ label: string; value: string; tone: "success" | "warning" | "danger" | "neutral"; tooltip: string }>;
+    callouts: Array<{ tone: "success" | "warning" | "danger" | "neutral"; title: string; detail: string }>;
+    recommendedPrimaryView: "coverage" | "bridge" | "history";
+  };
 }
 
 /**
@@ -551,7 +631,61 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
   }
   const byDomain = [...domains.values()].sort((a, b) => b.total - a.total || a.domain.localeCompare(b.domain));
 
-  return { generatedAt: new Date().toISOString(), totals, byDomain, refs };
+  const interpretation = buildCoverageInterpretation(totals, byDomain, refs);
+  return { generatedAt: new Date().toISOString(), totals, interpretation, byDomain, refs };
+}
+
+export function buildRunObservability(store: SwarmStore, workspace: string): RunObservabilitySummary {
+  const coverage = buildCoverage(store);
+  const slices = store.listSlices();
+  const heartbeats = store.listHeartbeats();
+  const activeEscalations = store.listEscalations("active");
+  const summary = readLiveRunSummary(workspace);
+  const productReadiness = objectValue(summary?.productReadiness) ?? readProductReadiness(workspace);
+  const scenario = stringValue(summary?.scenario) ??
+    [...heartbeats, ...activeEscalations]
+      .map((item) => item.entityId)
+      .find((id) => typeof id === "string" && id.startsWith("scenario:"))
+      ?.slice("scenario:".length);
+  const sliceCounts = countValues(slices.map((slice) => slice.status));
+  const accepted = numberFromCount(sliceCounts.accepted);
+  const active = slices.filter((slice) => !["accepted", "closed"].includes(slice.status)).length;
+  const blocked = numberFromCount(sliceCounts.blocked);
+  const coverageIncomplete = coverage.totals.total - coverage.totals.done;
+  const outcome = summarizeRunOutcome(summary);
+  const readiness = summarizeReadiness(productReadiness, summary);
+  const outcomeVsCoverage = compareOutcomeToCoverage(outcome, coverage, readiness);
+  const warnings = buildRunObservabilityWarnings(outcome, coverage, readiness, activeEscalations.length);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    workspace,
+    runMode: currentRunMode(store),
+    scenario,
+    outcome,
+    coverage: {
+      totals: coverage.totals,
+      completionPercent: coverage.interpretation.completionPercent,
+      complete: coverage.interpretation.state === "complete",
+      incomplete: coverageIncomplete,
+      state: coverage.interpretation.state,
+      headline: coverage.interpretation.headline,
+      warning: coverage.interpretation.warning,
+      byDomain: coverage.byDomain,
+      topIncompleteDomains: coverage.interpretation.topIncompleteDomains,
+    },
+    productReadiness: readiness,
+    slices: {
+      total: slices.length,
+      accepted,
+      active,
+      blocked,
+      byStatus: sliceCounts,
+    },
+    outcomeVsCoverage,
+    warnings,
+    uiHints: buildRunObservabilityUiHints(outcome, coverage, readiness, outcomeVsCoverage, warnings),
+  };
 }
 
 function owningSliceForRef(slices: SliceRecord[], ref: string): SliceRecord | undefined {
@@ -573,6 +707,368 @@ function countCoverage(
   else if (status === "blocked") bucket.blocked += 1;
   else if (status === "failed") bucket.failed += 1;
   else bucket.notStarted += 1;
+}
+
+function buildCoverageInterpretation(
+  totals: CoverageSummary["totals"],
+  byDomain: CoverageDomain[],
+  refs: CoverageRef[],
+): CoverageInterpretation {
+  const completionPercent = percent(totals.done, totals.total);
+  const incomplete = totals.total - totals.done;
+  const state: CoverageInterpretation["state"] =
+    totals.total === 0 ? "empty" : incomplete === 0 ? "complete" : "partial";
+  const nextActionCounts = countValues(
+    refs
+      .filter((ref) => ref.status !== "done" && ref.nextAction !== "none")
+      .map((ref) => ref.nextAction),
+  );
+  const nextActions = Object.entries(nextActionCounts)
+    .map(([action, count]) => ({
+      action: action as CoverageRef["nextAction"],
+      count,
+      label: actionLabel(action as CoverageRef["nextAction"]),
+    }))
+    .sort((left, right) => right.count - left.count || left.action.localeCompare(right.action));
+  const topIncompleteDomains = byDomain
+    .map((domain) => ({
+      ...domain,
+      incomplete: domain.total - domain.done,
+      completionPercent: percent(domain.done, domain.total),
+    }))
+    .filter((domain) => domain.incomplete > 0)
+    .sort((left, right) => right.incomplete - left.incomplete || left.domain.localeCompare(right.domain))
+    .slice(0, 5);
+
+  if (state === "empty") {
+    return {
+      completionPercent,
+      state,
+      headline: "No requirements indexed",
+      detail: "The harness has no registered FR/AC refs to measure yet.",
+      nextActions,
+      topIncompleteDomains,
+    };
+  }
+  if (state === "complete") {
+    return {
+      completionPercent,
+      state,
+      headline: `All ${totals.total} indexed requirements are done`,
+      detail: "Every indexed FR/AC ref is owned by accepted work with verification evidence.",
+      nextActions,
+      topIncompleteDomains,
+    };
+  }
+  return {
+    completionPercent,
+    state,
+    headline: `${totals.done}/${totals.total} indexed requirements done`,
+    detail: `${incomplete} indexed FR/AC refs are not done yet: ${totals.inProgress} in progress, ${totals.blocked} blocked, ${totals.failed} failed, ${totals.notStarted} not started.`,
+    warning: "Coverage is partial even if a selected smoke run or readiness gate is accepted.",
+    nextActions,
+    topIncompleteDomains,
+  };
+}
+
+function readLiveRunSummary(workspace: string): Record<string, unknown> | undefined {
+  return safeReadWorkspaceJson(path.resolve(workspace), path.join(path.resolve(workspace), "live-agent-run-summary.json"));
+}
+
+function readProductReadiness(workspace: string): Record<string, unknown> | undefined {
+  return safeReadWorkspaceJson(path.resolve(workspace), path.join(path.resolve(workspace), "live-agent-run-artifacts", "product-readiness.json"));
+}
+
+function safeReadWorkspaceJson(workspace: string, filePath: string): Record<string, unknown> | undefined {
+  const root = path.resolve(workspace);
+  const resolved = path.resolve(filePath);
+  if (resolved !== root && !resolved.toLowerCase().startsWith(`${root.toLowerCase()}${path.sep}`)) return undefined;
+  if (!fs.existsSync(resolved)) return undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+    return objectValue(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+function summarizeRunOutcome(summary: Record<string, unknown> | undefined): RunObservabilitySummary["outcome"] {
+  if (!summary) {
+    return {
+      available: false,
+      source: "harness-state",
+      accepted: false,
+      classification: {
+        code: "unknown",
+        severity: "neutral",
+        explanation: "No finalized live-agent run summary artifact exists in this workspace yet.",
+      },
+    };
+  }
+  const classification = objectValue(summary.outcomeClassification);
+  const fault = objectValue(summary.fault);
+  return {
+    available: true,
+    source: "live-summary",
+    runId: stringValue(summary.runId),
+    finalOutcome: stringValue(summary.finalOutcome),
+    finalReason: stringValue(summary.finalReason),
+    accepted: stringValue(summary.finalOutcome) === "accepted",
+    classification: {
+      code: stringValue(classification?.code),
+      severity: stringValue(classification?.severity),
+      explanation: stringValue(classification?.explanation),
+    },
+    generatedAt: stringValue(summary.generatedAt),
+    phase: stringValue(summary.phase),
+    faultMode: stringValue(fault?.mode),
+    counts: numericRecord(objectValue(summary.counts)),
+    artifacts: stringRecord(objectValue(summary.artifacts)),
+  };
+}
+
+function summarizeReadiness(
+  readiness: Record<string, unknown> | undefined,
+  summary: Record<string, unknown> | undefined,
+): RunObservabilitySummary["productReadiness"] {
+  if (!readiness) {
+    return {
+      available: false,
+      acceptedRefs: [],
+      blockers: [],
+      artifacts: stringRecord(objectValue(summary?.artifacts)),
+    };
+  }
+  const dependencyGate = objectValue(readiness.dashboardDependencies);
+  const checks = arrayValue(readiness.checks).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const blockers = arrayValue(readiness.blockers).map(objectValue).filter((item): item is Record<string, unknown> => Boolean(item));
+  const commandResults = objectValue(readiness.commandResults);
+  const start = objectValue(commandResults?.start);
+  const probes = objectValue(start?.probes);
+  const uiProbe = objectValue(probes?.ui);
+  const apiProbe = objectValue(probes?.api);
+  const markPaidProbe = objectValue(probes?.markPaid);
+  const productSlices = objectValue(readiness.productReadinessSlices);
+  const productSliceIds = arrayValue(productSlices?.ids)
+    .map(objectValue)
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+  const acceptedRefs = unique(
+    productSliceIds
+      .filter((item) => stringValue(item.status) === "accepted")
+      .flatMap((item) => stringArray(item.refs)),
+  );
+  return {
+    available: true,
+    passed: readiness.passed === true,
+    productName: stringValue(readiness.productName),
+    manualUrl: stringValue(objectValue(readiness.commands)?.manualUrl),
+    acceptedRefs,
+    dependencyGate: dependencyGate
+      ? {
+          satisfied: dependencyGate.satisfied === true,
+          declaredRefs: stringArray(dependencyGate.dependsOn),
+          acceptedRefs: stringArray(dependencyGate.acceptedRefs),
+          missingRefs: stringArray(dependencyGate.missingRefs),
+        }
+      : undefined,
+    checks: {
+      total: checks.length,
+      passed: checks.filter((check) => check.passed === true).length,
+      failed: checks.filter((check) => check.passed !== true).length,
+    },
+    blockers: blockers.map((blocker) => ({
+      id: stringValue(blocker.id),
+      label: stringValue(blocker.label),
+      message: stringValue(blocker.message),
+      severity: stringValue(blocker.severity),
+    })),
+    probes: {
+      ui: uiProbe?.passed === true,
+      api: apiProbe?.passed === true,
+      markPaid: markPaidProbe?.passed === true,
+    },
+    artifacts: stringRecord(objectValue(summary?.artifacts)),
+  };
+}
+
+function compareOutcomeToCoverage(
+  outcome: RunObservabilitySummary["outcome"],
+  coverage: CoverageSummary,
+  readiness: RunObservabilitySummary["productReadiness"],
+): RunObservabilitySummary["outcomeVsCoverage"] {
+  const coverageComplete = coverage.interpretation.state === "complete";
+  const readinessState = readiness.available ? (readiness.passed ? "passed" : "not passed") : "unknown";
+  if (!outcome.available) {
+    return {
+      state: "unknown",
+      severity: "neutral",
+      headline: "No finalized run outcome is available",
+      detail: "The UI should show live harness state without implying the latest run has completed.",
+      truthRows: truthRows(outcome, coverage, readinessState),
+    };
+  }
+  if (outcome.accepted && coverageComplete) {
+    return {
+      state: "accepted_complete",
+      severity: "success",
+      headline: "Run accepted and indexed requirements are complete",
+      detail: "The latest run outcome and full FR/AC coverage agree.",
+      truthRows: truthRows(outcome, coverage, readinessState),
+    };
+  }
+  if (outcome.accepted) {
+    return {
+      state: "accepted_partial",
+      severity: "warning",
+      headline: "Run accepted for selected scope; full requirement coverage is still partial",
+      detail: `${coverage.totals.done}/${coverage.totals.total} indexed refs are done. Treat the accepted run as proof of its selected slices and readiness gate, not proof that every registered requirement is complete.`,
+      truthRows: truthRows(outcome, coverage, readinessState),
+    };
+  }
+  return {
+    state: "not_accepted",
+    severity: outcome.finalOutcome === "human_required" ? "danger" : "warning",
+    headline: `Run outcome is ${outcome.finalOutcome ?? "not accepted"}`,
+    detail: outcome.finalReason ?? outcome.classification?.explanation ?? "Inspect active blockers, review findings, and coverage gaps.",
+    truthRows: truthRows(outcome, coverage, readinessState),
+  };
+}
+
+function truthRows(
+  outcome: RunObservabilitySummary["outcome"],
+  coverage: CoverageSummary,
+  readinessState: string,
+): RunObservabilitySummary["outcomeVsCoverage"]["truthRows"] {
+  const coverageComplete = coverage.interpretation.state === "complete";
+  return [
+    {
+      label: "Run outcome",
+      state: outcome.finalOutcome ?? "unknown",
+      meaning: outcome.available
+        ? "Outcome of the latest bounded smoke/harness run."
+        : "No completed run artifact has been written for this workspace.",
+      severity: outcome.accepted ? "success" : outcome.available ? "warning" : "neutral",
+    },
+    {
+      label: "Requirement coverage",
+      state: coverage.interpretation.state,
+      meaning: `${coverage.totals.done}/${coverage.totals.total} indexed FR/AC refs are done.`,
+      severity: coverageComplete ? "success" : "warning",
+    },
+    {
+      label: "Product readiness",
+      state: readinessState,
+      meaning: "Final runnable-product gate: local start, test command, browser/API probe, and readiness blockers.",
+      severity: readinessState === "passed" ? "success" : readinessState === "unknown" ? "neutral" : "warning",
+    },
+  ];
+}
+
+function buildRunObservabilityWarnings(
+  outcome: RunObservabilitySummary["outcome"],
+  coverage: CoverageSummary,
+  readiness: RunObservabilitySummary["productReadiness"],
+  activeEscalationCount: number,
+): string[] {
+  const warnings: string[] = [];
+  if (outcome.accepted && coverage.interpretation.state === "partial") {
+    warnings.push("Latest run is accepted, but indexed requirement coverage is partial.");
+  }
+  if (readiness.passed && coverage.interpretation.state === "partial") {
+    warnings.push("Product readiness passed for the selected readiness refs; broader product/source refs remain not done.");
+  }
+  if (activeEscalationCount > 0) warnings.push(`${activeEscalationCount} active escalation(s) remain visible in harness state.`);
+  if (!outcome.available) warnings.push("No finalized run summary artifact is available yet.");
+  return warnings;
+}
+
+function buildRunObservabilityUiHints(
+  outcome: RunObservabilitySummary["outcome"],
+  coverage: CoverageSummary,
+  readiness: RunObservabilitySummary["productReadiness"],
+  outcomeVsCoverage: RunObservabilitySummary["outcomeVsCoverage"],
+  warnings: string[],
+): RunObservabilitySummary["uiHints"] {
+  const badges: RunObservabilitySummary["uiHints"]["badges"] = [
+    {
+      label: "run",
+      value: outcome.finalOutcome ?? "unknown",
+      tone: outcome.accepted ? "success" : outcome.available ? "warning" : "neutral",
+      tooltip: "Latest bounded run outcome from the run summary artifact.",
+    },
+    {
+      label: "coverage",
+      value: `${coverage.totals.done}/${coverage.totals.total}`,
+      tone: coverage.interpretation.state === "complete" ? "success" : coverage.interpretation.state === "partial" ? "warning" : "neutral",
+      tooltip: "Authoritative indexed FR/AC coverage across registered sources.",
+    },
+    {
+      label: "readiness",
+      value: readiness.available ? (readiness.passed ? "passed" : "not passed") : "unknown",
+      tone: readiness.passed ? "success" : readiness.available ? "warning" : "neutral",
+      tooltip: "Final runnable-product readiness gate.",
+    },
+  ];
+  return {
+    badges,
+    callouts: [
+      {
+        tone: outcomeVsCoverage.severity,
+        title: outcomeVsCoverage.headline,
+        detail: outcomeVsCoverage.detail,
+      },
+      ...warnings.map((warning) => ({
+        tone: "warning" as const,
+        title: "Observability warning",
+        detail: warning,
+      })),
+    ],
+    recommendedPrimaryView: coverage.interpretation.state === "partial" ? "coverage" : outcome.available ? "history" : "bridge",
+  };
+}
+
+function actionLabel(action: CoverageRef["nextAction"]): string {
+  return action.replaceAll("_", " ");
+}
+
+function percent(numerator: number, denominator: number): number {
+  return denominator > 0 ? Math.round((100 * numerator) / denominator) : 0;
+}
+
+function countValues(values: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
+  return counts;
+}
+
+function numberFromCount(value: number | undefined): number {
+  return typeof value === "number" ? value : 0;
+}
+
+function numericRecord(value: Record<string, unknown> | undefined): Record<string, number> | undefined {
+  if (!value) return undefined;
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [key, numberValue(item)] as const)
+      .filter((entry): entry is readonly [string, number] => typeof entry[1] === "number"),
+  );
+}
+
+function stringRecord(value: Record<string, unknown> | undefined): Record<string, string> | undefined {
+  if (!value) return undefined;
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [key, stringValue(item)] as const)
+      .filter((entry): entry is readonly [string, string] => typeof entry[1] === "string"),
+  );
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringArray(value: unknown): string[] {
+  return arrayValue(value).filter((item): item is string => typeof item === "string");
 }
 
 function coverageStatusReason(input: {
@@ -705,6 +1201,7 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
     activeEscalations,
     checkpoints: store.listCheckpoints(),
     recentEvents: store.recentEvents(eventCount),
+    runObservability: buildRunObservability(store, workspace),
   };
   // Focus queue (triage) — computed from the assembled snapshot's active slices.
   // Runs buildSliceFocusPacket for each active slice with the overseer's modest

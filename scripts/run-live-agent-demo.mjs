@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { refreshCheckpoint } from "../dist/checkpoints.js";
 import { createEvent } from "../dist/events.js";
 import { makeId } from "../dist/ids.js";
+import { buildCoverage } from "../dist/observability.js";
 import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -524,6 +525,9 @@ const artifactPaths = {
   artifactIndexMarkdown: artifactIndexMarkdownPath,
 };
 
+const finalCoverage = readCoverageSummary();
+const finalOutcomeVsCoverage = summarizeOutcomeVsCoverage(finalOutcome, finalCoverage);
+
 const summary = {
   runId,
   workspace,
@@ -541,6 +545,13 @@ const summary = {
   finalOutcome,
   finalReason,
   outcomeClassification,
+  coverage: {
+    generatedAt: finalCoverage.generatedAt,
+    totals: finalCoverage.totals,
+    interpretation: finalCoverage.interpretation,
+    byDomain: finalCoverage.byDomain,
+  },
+  outcomeVsCoverage: finalOutcomeVsCoverage,
   sliceId: selectedSliceId,
   finalSliceStatus: finalSlice?.status,
   limits: {
@@ -1320,6 +1331,42 @@ function pickComparableCounts(counts = {}) {
     graphNodes: counts.graphNodes ?? 0,
     graphEdges: counts.graphEdges ?? 0,
     timelineItems: counts.timelineItems ?? 0,
+  };
+}
+
+function readCoverageSummary() {
+  const store = new SwarmStore(workspace);
+  try {
+    return buildCoverage(store);
+  } finally {
+    store.close();
+  }
+}
+
+function summarizeOutcomeVsCoverage(outcome, coverage) {
+  const coverageState = coverage.interpretation?.state ?? "empty";
+  const coverageText = `${coverage.totals.done}/${coverage.totals.total}`;
+  if (outcome === "accepted" && coverageState === "complete") {
+    return {
+      state: "accepted_complete",
+      severity: "success",
+      headline: "Run accepted and indexed requirements are complete",
+      detail: `${coverageText} indexed FR/AC refs are done.`,
+    };
+  }
+  if (outcome === "accepted") {
+    return {
+      state: "accepted_partial",
+      severity: "warning",
+      headline: "Run accepted for selected scope; indexed requirement coverage is partial",
+      detail: `${coverageText} indexed FR/AC refs are done. The accepted run proves its selected slices and readiness gate, not every registered requirement.`,
+    };
+  }
+  return {
+    state: outcome ? "not_accepted" : "unknown",
+    severity: outcome === "human_required" ? "danger" : "warning",
+    headline: `Run outcome is ${outcome ?? "unknown"}`,
+    detail: `${coverageText} indexed FR/AC refs are done.`,
   };
 }
 

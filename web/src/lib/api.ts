@@ -1,4 +1,4 @@
-import type { SnapshotResponse, CoverageSummary } from "~/lib/types";
+import type { SnapshotResponse, CoverageSummary, RunObservabilitySummary } from "~/lib/types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -22,6 +22,7 @@ export const api = {
   historyCompare: (left?: string, right?: string) =>
     getJson<Record<string, unknown>>(`/api/history/compare${left && right ? `?left=${left}&right=${right}` : ""}`),
   coverage: () => getJson<CoverageSummary>("/api/coverage"),
+  runObservability: () => getJson<RunObservabilitySummary>("/api/run-observability"),
   agentEvents: (actor: string, limit = 500) =>
     getJson<{ actor: string; events: import("~/lib/types").HarnessEvent[] }>(
       `/api/agent-events?actor=${encodeURIComponent(actor)}&limit=${limit}`,

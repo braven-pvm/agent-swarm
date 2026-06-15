@@ -10,6 +10,7 @@ import { SwarmStore } from "./storage.js";
 import {
   buildObservabilitySnapshot,
   buildCoverage,
+  buildRunObservability,
   buildSliceReport,
   buildTimeline,
   buildGraph,
@@ -125,6 +126,10 @@ export function createWebViewerServer(input: {
         }
         if (requestUrl.pathname === "/api/coverage") {
           sendJson(response, buildCoverage(store));
+          return;
+        }
+        if (requestUrl.pathname === "/api/run-observability") {
+          sendJson(response, buildRunObservability(store, input.workspace));
           return;
         }
         if (requestUrl.pathname === "/api/graph") {

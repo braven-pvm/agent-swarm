@@ -145,6 +145,9 @@ async function seedWorkspace() {
   const runDir = path.join(historyRoot, runId);
   fs.mkdirSync(runDir, { recursive: true });
   const generatedAt = new Date().toISOString();
+  const summaryPath = path.join(runDir, "summary.json");
+  const artifactIndexPath = path.join(runDir, "artifact-index.json");
+  const artifactIndexMarkdownPath = path.join(runDir, "artifact-index.md");
   const summary = {
     runId,
     workspace,
@@ -163,10 +166,37 @@ async function seedWorkspace() {
       turns: 1, verifyRuns: 1, lanes: 1, slices: 1,
       agentRuns: 1, evidence: 1, activeEscalations: 0,
     },
+    productReadiness: {
+      mode: "full-product",
+      productName: "Invoice Operations Dashboard",
+      passed: true,
+      commands: { manualUrl: "http://127.0.0.1:4321" },
+      dashboardDependencies: {
+        satisfied: true,
+        dependsOn: ["AC-INV-001.1"],
+        acceptedRefs: ["AC-INV-001.1"],
+        missingRefs: [],
+      },
+      checks: [{ id: "dashboard-start-probed", label: "Dashboard local URL is probed", passed: true }],
+      blockers: [],
+      commandResults: {
+        start: {
+          probes: {
+            ui: { passed: true },
+            api: { passed: true },
+            markPaid: { passed: true },
+          },
+        },
+      },
+      productReadinessSlices: {
+        ids: [{ id: sliceId, status: "accepted", refs: ["AC-PROD-001.1"] }],
+      },
+    },
+    artifacts: {
+      summary: summaryPath,
+      productReadiness: path.join(workspace, "live-agent-run-artifacts", "product-readiness.json"),
+    },
   };
-  const summaryPath = path.join(runDir, "summary.json");
-  const artifactIndexPath = path.join(runDir, "artifact-index.json");
-  const artifactIndexMarkdownPath = path.join(runDir, "artifact-index.md");
   const artifactIndex = {
     generatedAt,
     workspace,
@@ -189,6 +219,7 @@ async function seedWorkspace() {
     }],
   };
   fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  fs.writeFileSync(path.join(workspace, "live-agent-run-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
   fs.writeFileSync(artifactIndexPath, `${JSON.stringify(artifactIndex, null, 2)}\n`, "utf8");
   fs.writeFileSync(artifactIndexMarkdownPath, `# ${runId}\n`, "utf8");
   fs.writeFileSync(
@@ -255,6 +286,12 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
     }
     assert.equal(snapshot.runMode, "scripted-codex", "runMode should match seeded value");
     assert.ok(Array.isArray(snapshot.focusQueue), "snapshot should include a focusQueue array");
+    assert.ok(snapshot.runObservability, "snapshot should include runObservability");
+    assert.equal(
+      snapshot.runObservability.outcomeVsCoverage.state,
+      "accepted_partial",
+      "snapshot should distinguish accepted run outcome from partial coverage",
+    );
 
     // --- Focus endpoints ---
     const sliceFocusRes = await get(port, `/api/focus/slice/${encodeURIComponent(sliceId)}`);
@@ -286,8 +323,29 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
     assert.equal(coverageRes.status, 200, "/api/coverage should be 200");
     const coverage = JSON.parse(coverageRes.body);
     assert.ok(coverage.totals && typeof coverage.totals.total === "number", "/api/coverage should have totals.total");
+    assert.equal(coverage.interpretation.state, "partial", "/api/coverage should include partial interpretation");
     assert.ok(Array.isArray(coverage.byDomain), "/api/coverage should have byDomain array");
     assert.ok(Array.isArray(coverage.refs), "/api/coverage should have refs array");
+
+    const runObservabilityRes = await get(port, "/api/run-observability");
+    assert.equal(runObservabilityRes.status, 200, "/api/run-observability should be 200");
+    const runObservability = JSON.parse(runObservabilityRes.body);
+    assert.equal(runObservability.outcome.finalOutcome, "accepted", "run observability should expose final outcome");
+    assert.equal(
+      runObservability.outcomeVsCoverage.state,
+      "accepted_partial",
+      "run observability should call out accepted run with partial coverage",
+    );
+    assert.ok(
+      runObservability.warnings.some((warning) => /coverage is partial/i.test(warning)),
+      "run observability should include a partial-coverage warning",
+    );
+    assert.equal(runObservability.productReadiness.passed, true, "run observability should include product readiness");
+    assert.deepEqual(
+      runObservability.productReadiness.acceptedRefs,
+      ["AC-PROD-001.1"],
+      "run observability should expose product readiness accepted refs",
+    );
 
     const sourceRes = await get(port, `/api/source/${encodeURIComponent(sourceId)}`);
     assert.equal(sourceRes.status, 200, `/api/source/${sourceId} should be 200`);
