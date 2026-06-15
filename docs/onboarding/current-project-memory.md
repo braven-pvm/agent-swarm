@@ -719,17 +719,40 @@ Operational cleanup on 2026-06-14:
 - Verified ports `4317`, `4318`, `4319`, `4321`, and `4322` had no repo-owned listeners afterward.
 - Next live run should start all UI/product processes fresh from the reset-first path.
 
+Phase 9 real-run rebaseline attempt on 2026-06-15:
+
+- A real full-product smoke was started from the reset-first path with the UI live on `http://127.0.0.1:4319/`.
+- Backend-first orchestration worked:
+  - three backend slices accepted
+  - dashboard slice unlocked only after backend refs were accepted
+  - dashboard slice accepted
+  - coverage moved conservatively from `0/83` to `11/83` as accepted refs landed
+- Product-readiness exposed a real stalled-worker failure:
+  - first product-readiness worker stopped emitting JSONL after editing `package.json` and never wrote `worker-result.json`
+  - manual termination of the child Codex process caused the harness to mark it failed and start a same-slice recovery/restart worker
+  - restarted worker surfaced a malformed inline PowerShell/Node `npm start` self-probe and then went quiet after a blocked command
+- The run was intentionally stopped before the outer max-runtime; no `live-agent-run-summary.json` was produced.
+- Terminal state before cleanup: 5 slices, 4 accepted, product-readiness slice still implementing, 23 agent runs, 7 active warning escalations, coverage `11/83 done`, `4 in_progress`, `68 not_started`.
+- Findings:
+  - same-session/restart recovery can continue after a child exits, but real full-product runs did not have automatic child idle timeout armed
+  - product-readiness workers should not hand-roll fragile local-server probes; the harness should provide canonical probes
+  - warning restatement suppression still needs hardening because repeated non-blocking warnings accumulated
+  - coverage needs status reason, owner, evidence, escalation, dependency, and next-action detail so humans and overseers can understand each ref state
+- Immediate hardening:
+  - live-smoke reset now writes `recovery.childIdleTimeoutSeconds: 300` into both disposable target `protocol.yaml` files and records it in the manifest/summary
+  - `/api/coverage` now has additive operational fields: source title/URI/section, status reason, next action, last changed, lane/target/worktree, actors, active escalations, dependencies, and evidence summaries
+
 Tracked improvement backlog from the last run:
 
 | Item | Status | Discussion needed? | Notes |
 | --- | --- | --- | --- |
 | Phase 8C-19 real confirmation run | ran, blocked cleanly on probe-shape bug | no | Real run accepted all implementation slices and exposed a harness mark-paid probe envelope assumption. |
-| Phase 8C-19B rerun after probe-shape hardening | ready | no | Run `npm run smoke:live-agent:full` again to confirm wrapped API payloads now pass final product readiness. |
-| Clean final warning state | real-run partially confirmed | no | Stale dashboard dependency blockers cleared to zero during Phase 8C-19 once backend dependencies were accepted; next accepted real run should confirm final active escalations stay zero. |
+| Phase 9 rerun after probe-shape hardening | attempted, blocked on stalled product-readiness worker | no | Backend/dashboard accepted correctly; product-readiness exposed missing real-run idle timeout and fragile worker self-probe. |
+| Clean final warning state | needs more hardening | no | Phase 9 accumulated repeated non-blocking warning restatements; suppression is not complete. |
 | Browser-level product proof | planned | yes | Decide whether proof should be DOM-only, screenshot artifact, or Playwright-style interaction. Current proof covers HTML, API summary, and mark-paid workflow but not actual browser interaction. |
 | Warning history vs active concern UX | planned | yes | Decide how the UI should separate resolved warning history from active escalations so visibility does not become noise. |
 | Quiet-but-alive agent state | planned | yes | Need explicit UI/state model for process alive, event stream quiet, current command, elapsed time, and last JSONL write. Avoid false stuck alarms. |
-| Child idle timeout defaults | planned | yes | Current support is env/protocol configurable. Need decide whether real runs get a project default and what role-specific thresholds should be. |
+| Child idle timeout defaults | implemented for live smoke | no | Reset writes `recovery.childIdleTimeoutSeconds: 300` for both disposable targets; global default stays off. |
 | Fresh seeded product state | implemented | no | Readiness commands run from an isolated copied product target and record the probe workspace in readiness/probe artifacts. |
 | Reset process cleanup audit | implemented, needs real confirmation | maybe | Reset can stop related processes automatically. Confirm whether this remains automatic for trusted local smoke only or becomes a general harness option. |
 
@@ -741,9 +764,9 @@ Goal: first rerun the real full-product smoke after the mark-paid probe was hard
 
 Next practical slices:
 
-Phase 9:
+Phase 9 follow-up:
 
-- rerun `npm run smoke:live-agent:full` with the UI open
+- rerun `npm run smoke:live-agent:full` with the UI open after the live-smoke protocol timeout default is verified
 - confirm no stale restated warning escalations remain active after final product acceptance
 - confirm stderr no longer contains Node `DEP0190`
 - confirm `product-dashboard-probe.json` includes `probes.markPaid.passed === true`
@@ -754,11 +777,13 @@ Phase 9:
 
 Phase 10A:
 
-- extend `buildCoverage()` and `/api/coverage` additively so existing UI consumers keep working
+- extend `buildCoverage()` and `/api/coverage` additively so existing UI consumers keep working [implemented]
 - for every FR/AC ref, expose source/domain, status, status reason, owning slice, lane/target/worktree, relevant worker/reviewer/verifier/overseer actors, latest verification/review findings, evidence ids/artifact paths where available, active blocker/escalation summary, dependency state, next expected action, and `lastChangedAt`
 - keep the denominator as every indexed FR/AC ref, including not-started refs
 - keep accepted refs tied to accepted slice/lease and/or passed verification evidence, not worker claims alone
-- add tests for status reason, next action, blockers/escalations, dependency state, and accepted/not-started totals
+- add tests for status reason, next action, blockers/escalations, dependency state, and accepted/not-started totals [focused tests implemented]
+- harden warning-restatement suppression for repeated scenario warnings
+- move product-readiness self-probing toward harness-owned canonical probes instead of agent-authored inline shell probes
 - preserve all Phase 5C and Phase 6A-6F live scenarios plus Phase 7A/7B/8A/8B diagnostics
 
 Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Do Phase 9 before Phase 10A code changes when a fresh real-run baseline is needed; if Phase 9 blocks on a new harness issue, fix that issue first and document the lesson. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.

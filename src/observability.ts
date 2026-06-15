@@ -290,13 +290,45 @@ export interface CoverageRef {
   ref: string;
   domain: string;
   sourceId: string;
+  sourceTitle: string;
+  sourceUri: string;
+  sourceSectionId?: string;
+  sourceSectionTitle?: string;
   status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  statusReason: string;
+  nextAction:
+    | "none"
+    | "pull_slice"
+    | "run_worker"
+    | "await_worker_result"
+    | "run_reviewer"
+    | "run_verifier"
+    | "repair_or_review"
+    | "resolve_blocker"
+    | "await_verification"
+    | "wait_for_dependency"
+    | "inspect_accepted_state";
+  lastChangedAt: string;
   sliceId?: string;
   sliceStatus?: string;
+  laneId?: string;
+  laneName?: string;
+  targetId?: string;
+  targetName?: string;
+  worktree?: string;
   verification?: "passed" | "failed" | "missing_evidence" | "overridden";
   reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
   proof?: string;
   evidenceIds?: string[];
+  actors?: {
+    workers: string[];
+    reviewers: string[];
+    verifiers: string[];
+    overseers: string[];
+  };
+  activeEscalations?: Array<{ level: string; entityId: string; message: string }>;
+  dependencies?: Array<{ target: string; status: "pending" | "satisfied" | "blocked"; reason: string; fromId: string }>;
+  evidence?: Array<{ id: string; kind: string; summary: string; createdAt: string; ref?: string }>;
 }
 
 export interface CoverageDomain {
@@ -326,26 +358,63 @@ export interface CoverageSummary {
 export function buildCoverage(store: SwarmStore): CoverageSummary {
   const slices = store.listSlices();
   const leases = store.listLeases();
+  const sources = store.listSources();
+  const lanes = store.listLanes();
+  const targets = store.listTargets();
+  const agentRuns = store.listAgentRuns();
+  const activeEscalations = store.listEscalations("active");
+  const dependencies = store.listDependencies();
+  const events = store.listEvents();
 
   // 1. Inventory (denominator): de-duplicated map of every indexed FR/AC ref.
   //    First occurrence wins for domain/sourceId attribution — matches the
   //    `refsForSources` de-dupe semantics used by buildDomainSummaries.
-  const inventory = new Map<string, { domain: string; sourceId: string }>();
-  for (const source of store.listSources()) {
+  const inventory = new Map<
+    string,
+    {
+      domain: string;
+      sourceId: string;
+      sourceTitle: string;
+      sourceUri: string;
+      sourceSectionId?: string;
+      sourceSectionTitle?: string;
+      sourceUpdatedAt: string;
+    }
+  >();
+  for (const source of sources) {
     const domain = sourceDomain(source);
+    const sections = sourceSections(source);
     for (const ref of sourceFrAcRefs(source)) {
-      if (!inventory.has(ref)) inventory.set(ref, { domain, sourceId: source.id });
+      const section = sections.find((item) => item.refs.includes(ref));
+      if (!inventory.has(ref)) {
+        inventory.set(ref, {
+          domain,
+          sourceId: source.id,
+          sourceTitle: source.title,
+          sourceUri: source.uri,
+          sourceSectionId: section?.id,
+          sourceSectionTitle: section?.title,
+          sourceUpdatedAt: source.updatedAt,
+        });
+      }
     }
   }
 
   // Cache the most-advanced owning slice per ref, plus that slice's evidence-derived
   // verification/review results (loaded once per slice, not once per ref).
-  const evidenceCache = new Map<string, { frAcResults: FrAcVerificationResult[]; reviewResult: ReviewResult | undefined }>();
+  const evidenceCache = new Map<
+    string,
+    {
+      evidence: Array<ReturnType<SwarmStore["listEvidence"]>[number]>;
+      frAcResults: FrAcVerificationResult[];
+      reviewResult: ReviewResult | undefined;
+    }
+  >();
   const sliceEvidence = (sliceId: string) => {
     let cached = evidenceCache.get(sliceId);
     if (!cached) {
       const evidence = store.listEvidence(sliceId);
-      cached = { frAcResults: latestFrAcResults(evidence), reviewResult: latestReviewResult(evidence) };
+      cached = { evidence, frAcResults: latestFrAcResults(evidence), reviewResult: latestReviewResult(evidence) };
       evidenceCache.set(sliceId, cached);
     }
     return cached;
@@ -354,21 +423,55 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
   const refs: CoverageRef[] = [...inventory.entries()].map(([ref, attribution]) => {
     const owning = owningSliceForRef(slices, ref);
     if (!owning) {
-      return { ref, domain: attribution.domain, sourceId: attribution.sourceId, status: "not_started" as const };
+      const relatedDependencies = dependencies.filter((item) => item.target === ref);
+      const dependencyBlocks = relatedDependencies.some((item) => currentDependencyStatus(store, item) !== "satisfied");
+      return {
+        ref,
+        domain: attribution.domain,
+        sourceId: attribution.sourceId,
+        sourceTitle: attribution.sourceTitle,
+        sourceUri: attribution.sourceUri,
+        sourceSectionId: attribution.sourceSectionId,
+        sourceSectionTitle: attribution.sourceSectionTitle,
+        status: "not_started" as const,
+        statusReason: dependencyBlocks
+          ? "Indexed from source but waiting for prerequisite dependency evidence before a slice can safely own it."
+          : "Indexed from source but not currently owned by any slice.",
+        nextAction: dependencyBlocks ? "wait_for_dependency" : "pull_slice",
+        lastChangedAt: maxIso([attribution.sourceUpdatedAt, ...relatedDependencies.map((item) => item.updatedAt)]),
+        dependencies: coverageDependencies(store, relatedDependencies),
+      };
     }
     const lease = leases
       .filter((item) => item.sliceId === owning.id && item.frAcRef === ref)
       .at(-1);
-    const { frAcResults, reviewResult } = sliceEvidence(owning.id);
+    const { evidence, frAcResults, reviewResult } = sliceEvidence(owning.id);
     const frAcResult = frAcResults.find((item) => item.ref === ref);
     const reviewFinding = reviewResult?.frAcFindings.find((item) => item.ref === ref);
+    const lane = lanes.find((item) => item.id === owning.laneId);
+    const target = targets.find((item) => item.id === owning.targetId);
+    const relatedAgentRuns = agentRuns.filter((item) => item.sliceId === owning.id);
+    const relatedEscalations = activeEscalations.filter(
+      (item) => item.entityId === ref || item.entityId === owning.id || item.entityId === owning.laneId,
+    );
+    const relatedDependencies = dependencies.filter((item) => item.fromId === owning.id || item.target === ref);
+    const relatedEvents = events.filter(
+      (item) =>
+        item.entityId === ref ||
+        item.entityId === owning.id ||
+        item.entityId === owning.laneId ||
+        String(item.payload.sliceId ?? "") === owning.id,
+    );
+    const hasBlockingEscalation = relatedEscalations.some((item) =>
+      ["blocker", "human_required", "critical"].includes(item.level),
+    );
 
     let status: CoverageRef["status"];
-    if (frAcResult?.status === "passed" || (lease?.status === "completed" && owning.status === "accepted")) {
+    if (!hasBlockingEscalation && (frAcResult?.status === "passed" || (lease?.status === "completed" && owning.status === "accepted"))) {
       status = "done";
     } else if (frAcResult?.status === "failed" || reviewFinding?.status === "failed") {
       status = "failed";
-    } else if (owning.status === "blocked") {
+    } else if (owning.status === "blocked" || hasBlockingEscalation) {
       status = "blocked";
     } else {
       status = "in_progress";
@@ -378,9 +481,44 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
       ref,
       domain: attribution.domain,
       sourceId: attribution.sourceId,
+      sourceTitle: attribution.sourceTitle,
+      sourceUri: attribution.sourceUri,
+      sourceSectionId: attribution.sourceSectionId,
+      sourceSectionTitle: attribution.sourceSectionTitle,
       status,
+      statusReason: coverageStatusReason({ status, slice: owning, lease, frAcResult, reviewFinding, relatedEscalations }),
+      nextAction: coverageNextAction({ status, slice: owning, reviewResult, frAcResult, hasBlockingEscalation }),
+      lastChangedAt: maxIso([
+        attribution.sourceUpdatedAt,
+        owning.updatedAt,
+        lease?.updatedAt,
+        ...evidence.map((item) => item.createdAt),
+        ...relatedAgentRuns.map((item) => item.updatedAt),
+        ...relatedEscalations.map((item) => item.updatedAt),
+        ...relatedDependencies.map((item) => item.updatedAt),
+        ...relatedEvents.map((item) => item.timestamp),
+      ]),
       sliceId: owning.id,
       sliceStatus: owning.status,
+      laneId: lane?.id,
+      laneName: lane?.name,
+      targetId: target?.id,
+      targetName: target?.name,
+      worktree: lane?.worktree,
+      actors: coverageActors(relatedAgentRuns, frAcResult),
+      activeEscalations: relatedEscalations.map((item) => ({
+        level: item.level,
+        entityId: item.entityId,
+        message: item.message,
+      })),
+      dependencies: coverageDependencies(store, relatedDependencies),
+      evidence: evidence.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        summary: item.summary,
+        createdAt: item.createdAt,
+        ref: item.ref,
+      })),
     };
     if (frAcResult) {
       coverageRef.verification = frAcResult.status;
@@ -434,6 +572,97 @@ function countCoverage(
   else if (status === "blocked") bucket.blocked += 1;
   else if (status === "failed") bucket.failed += 1;
   else bucket.notStarted += 1;
+}
+
+function coverageStatusReason(input: {
+  status: CoverageRef["status"];
+  slice: SliceRecord;
+  lease?: ReturnType<SwarmStore["listLeases"]>[number];
+  frAcResult?: FrAcVerificationResult;
+  reviewFinding?: ReviewResult["frAcFindings"][number];
+  relatedEscalations: ReturnType<SwarmStore["listEscalations"]>;
+}): string {
+  const blocking = input.relatedEscalations.find((item) =>
+    ["blocker", "human_required", "critical"].includes(item.level),
+  );
+  if (blocking) return `${blocking.level} escalation is active: ${blocking.message}`;
+  if (input.frAcResult?.status === "passed") return `Passed deterministic verification: ${input.frAcResult.proof}`;
+  if (input.frAcResult?.status === "failed") return `Failed deterministic verification: ${input.frAcResult.proof}`;
+  if (input.reviewFinding?.status === "failed") return `Independent review failed: ${input.reviewFinding.finding}`;
+  if (input.reviewFinding?.status === "missing_evidence") return `Independent review is missing evidence: ${input.reviewFinding.finding}`;
+  if (input.slice.status === "accepted" && input.lease?.status === "completed") {
+    return "Owning slice is accepted and the FR/AC lease is completed.";
+  }
+  if (input.slice.status === "blocked") return "Owning slice is blocked.";
+  if (input.slice.status === "ready") return "Owning slice is ready and waiting for worker dispatch.";
+  if (input.slice.status === "implementing") return "Owning slice is currently being implemented.";
+  if (input.slice.status === "implemented" || input.slice.status === "ready_for_review") {
+    return "Worker implementation is present and waiting for independent review or deterministic verification.";
+  }
+  if (input.slice.status === "repairing") return "Owning slice is in repair after review or verification feedback.";
+  if (input.slice.status === "verifying") return "Owning slice is currently being verified.";
+  return `Owning slice is ${input.slice.status}.`;
+}
+
+function coverageNextAction(input: {
+  status: CoverageRef["status"];
+  slice: SliceRecord;
+  reviewResult?: ReviewResult;
+  frAcResult?: FrAcVerificationResult;
+  hasBlockingEscalation: boolean;
+}): CoverageRef["nextAction"] {
+  if (input.status === "done") return "none";
+  if (input.status === "failed") return "repair_or_review";
+  if (input.hasBlockingEscalation || input.slice.status === "blocked") return "resolve_blocker";
+  if (input.slice.status === "ready" || input.slice.status === "candidate" || input.slice.status === "claimed") return "run_worker";
+  if (input.slice.status === "implementing") return "await_worker_result";
+  if (input.slice.status === "implemented" || input.slice.status === "ready_for_review") {
+    if (!input.reviewResult) return "run_reviewer";
+    if (input.reviewResult.status !== "accepted") return "repair_or_review";
+    if (!input.frAcResult || input.frAcResult.status === "missing_evidence") return "run_verifier";
+    return "inspect_accepted_state";
+  }
+  if (input.slice.status === "verifying") return "await_verification";
+  if (input.slice.status === "repairing") return "repair_or_review";
+  if (input.slice.status === "accepted") return "inspect_accepted_state";
+  return "pull_slice";
+}
+
+function coverageActors(
+  agentRuns: ReturnType<SwarmStore["listAgentRuns"]>,
+  frAcResult?: FrAcVerificationResult,
+): CoverageRef["actors"] {
+  return {
+    workers: unique(agentRuns.filter((item) => item.role === "worker").map((item) => item.actor)),
+    reviewers: unique(agentRuns.filter((item) => item.role === "reviewer").map((item) => item.actor)),
+    verifiers: unique([
+      ...agentRuns.filter((item) => item.role === "verifier").map((item) => item.actor),
+      ...(frAcResult?.verifiedBy ? [frAcResult.verifiedBy] : []),
+    ]),
+    overseers: unique(agentRuns.filter((item) => item.role === "overseer").map((item) => item.actor)),
+  };
+}
+
+function coverageDependencies(
+  store: SwarmStore,
+  dependencies: ReturnType<SwarmStore["listDependencies"]>,
+): CoverageRef["dependencies"] {
+  return dependencies.map((item) => ({
+    target: item.target,
+    status: currentDependencyStatus(store, item),
+    reason: item.reason,
+    fromId: item.fromId,
+  }));
+}
+
+function maxIso(values: Array<string | undefined>): string {
+  const normalized = values.filter((value): value is string => typeof value === "string" && value.length > 0);
+  if (normalized.length === 0) return new Date(0).toISOString();
+  return normalized.sort((a, b) => b.localeCompare(a))[0];
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 export function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {

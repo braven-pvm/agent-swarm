@@ -1765,7 +1765,7 @@ Acceptance criteria:
 
 #### Phase 9: Clean Real-Run Rebaseline
 
-Status: approved for next implementation.
+Status: attempted on 2026-06-15; produced actionable engine hardening findings before acceptance.
 
 Goal:
 
@@ -1798,9 +1798,38 @@ Outputs to inspect after the run:
 - archived run history entry under `.swarm-demo/live-agent-run-history/`
 - `/api/coverage` and the web Coverage tab
 
+Phase 9 attempt notes:
+
+- A real full-product smoke was started from the reset-first path with the web viewer on `http://127.0.0.1:4319/`.
+- Backend-first sequencing worked:
+  - three backend slices were accepted
+  - dashboard work unlocked only after accepted backend refs were available
+  - dashboard slice was accepted
+  - coverage moved conservatively as refs were accepted: `0/83` -> `3/83` -> `6/83` -> `8/83` -> `11/83`
+- Product-readiness work exposed a real stalled-worker class:
+  - first product-readiness worker stopped emitting JSONL after editing `package.json` and did not write a final `worker-result.json`
+  - manual termination of the child Codex process caused the harness to mark that run failed and start a same-slice recovery/restart worker
+  - the restarted worker surfaced a malformed inline PowerShell/Node `npm start` self-probe, then went quiet after a blocked command
+- The run was intentionally stopped before outer max-runtime because the finding was clear and hidden child agents needed cleanup.
+- No final `live-agent-run-summary.json` was produced because the run was stopped manually.
+- Terminal state before cleanup:
+  - 5 slices total
+  - 4 accepted
+  - 1 product-readiness slice still implementing
+  - 23 agent runs
+  - coverage `11/83 done`, `4 in_progress`, `68 not_started`
+  - 7 active warning escalations, mostly repeated non-blocking warning restatements
+
+Phase 9 hardening decisions from the attempt:
+
+- Workers should not have to invent fragile `npm start` probes. Product readiness must prefer harness-owned probes and deterministic verification artifacts.
+- The live-smoke reset should arm child idle supervision by default for disposable targets. This is now set through target protocol `recovery.childIdleTimeoutSeconds: 300` during reset while keeping the global default conservative.
+- Coverage/status views must expose why a ref is in progress, who owns it, what the last signal was, and what next action is expected.
+- Warning restatement suppression still needs another pass; repeated non-blocking warning text accumulated despite prior suppression.
+
 #### Phase 10A: Operational Requirements Coverage
 
-Status: planned immediately after Phase 9 rebaseline.
+Status: in implementation.
 
 Goal:
 
@@ -1853,5 +1882,12 @@ Implementation notes:
 - Reuse existing persisted state from sources, slices, leases, evidence, reviews, heartbeats, escalations, dependencies, and events.
 - Do not create a second requirements state store. Harness state remains canonical; status sinks remain outbound mirrors later.
 - If a ref appears in multiple slices, keep the current "accepted wins, otherwise most recent owner" behavior unless Phase 10A evidence proves it is misleading.
+
+Implemented in Phase 10A so far:
+
+- `/api/coverage` remains additive but now includes per-ref source title/URI/section, status reason, next action, last-changed timestamp, owning lane/target/worktree, actors, active escalations, dependency summaries, and evidence summaries.
+- Existing totals and by-domain rollups remain stable.
+- The live-smoke reset writes `recovery.childIdleTimeoutSeconds: 300` to both disposable target protocols and records the value in the manifest/summary.
+- Focused tests cover enriched coverage fields and the live-smoke child idle timeout default.
 
 Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 6F proves a stalled child worker can be killed visibly, revived by session id, and still pass normal review/verification gates before acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Phase 8A prevents backend-only acceptance from masquerading as product completion. Phase 8B proves the full-product path can continue into a dashboard lane and accept only after dashboard verification plus local start/API probes. Phase 8C-1 gives full-product acceptance structured product evidence and a resettable real-agent command. Phase 8C-2 proved real agents can run but exposed reviewer-loop blocking around command policy. Phase 8C-3 proved the reviewer fix worked and backend reached deterministic acceptance, then exposed overseer prompt/state drift. Phase 8C-4 adds compact actionable overseer state and direct prompt delivery. Phase 8C-5 proved compact state fixed active-slice dispatch, but exposed real-run budget/dependency visibility gaps. Phase 8C-6 calibrates the budget and makes missing dashboard dependency refs explicit. Phase 8C-7 proved the lower-level planner blocks premature dashboard work but exposed missing orchestration-priority guidance. Phase 8C-8 adds source pull queues and dependency preflight. Phase 8C-9 proved accepted backend dependencies unlock dashboard work and exposed Windows prompt-length failure. Phase 8C-10 moves overseer launch to artifact-backed prompts and gets the dashboard slice accepted. Phase 8C-11 turns final product-readiness blockers into visible runtime-capability work. Phase 8C-12 proved the real runtime-capability work can complete and exposed stale escalation and child-process lifecycle issues. Phase 8C-13 proved the full real run can accept after reviewer rework and product runtime repair, then hardened stale-warning cleanup for real overseer wording. Phase 8C-14 confirmed the hardening in a fresh real full-product run: accepted product readiness, no failed assertions, and no stale active escalations. Phase 8C-15 preserves the terminal workspace after completion and archives final target snapshots so later reset-first runs do not erase the only runnable product copy. Phase 8C-16 lets reviewers use normal tooling, adds workflow-level product proof, removes the live npm shell-warning path, clears stale reviewer diagnostics after product acceptance, and improves agent signal visibility. Phase 8C-17 adds supervised quiet-child recovery and cleaner heartbeat semantics. Phase 8C-18 proved the real harness can produce a runnable product again and hardened reset cleanup, safe-directory guidance, warning amplification, and product probe isolation before the next confirmation run. Phase 8C-19 proved the final gate can block cleanly on product readiness while all implementation slices are accepted, then hardened the mark-paid workflow probe for wrapped API response shapes.

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -22,6 +23,7 @@ const dashboardTarget = path.join(workspace, "invoice-dashboard");
 const sourceSpecsDir = path.join(workspace, "source-specs");
 const productSpec = path.join(sourceSpecsDir, "live-smoke-invoice-dashboard-product-spec.md");
 const manifestPath = path.join(workspace, "live-agent-smoke.json");
+const liveSmokeChildIdleTimeoutSeconds = 300;
 
 const stoppedProcesses = stopRelatedProcesses ? stopRelatedProcessesForWorkspace(workspace) : [];
 resetWorkspace();
@@ -29,6 +31,8 @@ runSwarm(["init"]);
 runSwarm(["run-mode", "set", "live-agent-smoke"]);
 runSwarm(["target", "init", invoiceTarget]);
 runSwarm(["target", "init", dashboardTarget]);
+configureLiveSmokeProtocol(invoiceTarget);
+configureLiveSmokeProtocol(dashboardTarget);
 runSwarm([
   "sources",
   "add-file",
@@ -84,6 +88,7 @@ const manifest = {
     maxAgentRuns: 60,
     maxRuntimeMinutes: 45,
     maxTurns: 40,
+    childIdleTimeoutSeconds: liveSmokeChildIdleTimeoutSeconds,
   },
   targets: [
     {
@@ -130,6 +135,9 @@ const summary = {
     domains: snapshot.domains.length,
     slices: snapshot.slices.length,
     agentRuns: snapshot.agentRuns.length,
+  },
+  recovery: {
+    childIdleTimeoutSeconds: liveSmokeChildIdleTimeoutSeconds,
   },
   sources: manifest.sources,
 };
@@ -236,6 +244,17 @@ function runSwarm(commandArgs) {
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
   });
+}
+
+function configureLiveSmokeProtocol(targetPath) {
+  const protocolPath = path.join(targetPath, ".swarm", "protocol.yaml");
+  const parsed = fs.existsSync(protocolPath)
+    ? YAML.parse(fs.readFileSync(protocolPath, "utf8")) ?? {}
+    : {};
+  parsed.protocol ??= {};
+  parsed.protocol.recovery ??= {};
+  parsed.protocol.recovery.childIdleTimeoutSeconds = liveSmokeChildIdleTimeoutSeconds;
+  fs.writeFileSync(protocolPath, YAML.stringify(parsed, { lineWidth: 0 }), "utf8");
 }
 
 function assertApprovedWorkspace(target) {

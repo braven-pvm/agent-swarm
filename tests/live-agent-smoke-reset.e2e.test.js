@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import YAML from "yaml";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -22,6 +23,7 @@ test("live agent smoke reset creates a labeled resettable workspace", () => {
   assert.equal(summary.counts.sources, 3);
   assert.equal(summary.counts.slices, 0);
   assert.ok(Array.isArray(summary.stoppedProcesses));
+  assert.equal(summary.recovery.childIdleTimeoutSeconds, 300);
   assert.ok(fs.existsSync(summary.manifest));
 
   const manifest = JSON.parse(fs.readFileSync(summary.manifest, "utf8"));
@@ -33,6 +35,7 @@ test("live agent smoke reset creates a labeled resettable workspace", () => {
   assert.equal(manifest.fullProductMode.plannedCommand, "npm run smoke:live-agent:full");
   assert.ok(manifest.fullProductMode.productSpec.endsWith("live-smoke-invoice-dashboard-product-spec.md"));
   assert.equal(manifest.fullProductMode.maxTurns, 40);
+  assert.equal(manifest.fullProductMode.childIdleTimeoutSeconds, 300);
   assert.equal(manifest.commands.fullProduct, "npm run demo:live-agent:full");
   assert.equal(manifest.commands.resetAndFullProduct, "npm run smoke:live-agent:full");
 
@@ -47,9 +50,13 @@ test("live agent smoke reset creates a labeled resettable workspace", () => {
 
   const productSpec = path.join(workspace, "source-specs", "live-smoke-invoice-dashboard-product-spec.md");
   const dashboardPackage = JSON.parse(fs.readFileSync(path.join(workspace, "invoice-dashboard", "package.json"), "utf8"));
+  const backendProtocol = YAML.parse(fs.readFileSync(path.join(workspace, "invoice-api", ".swarm", "protocol.yaml"), "utf8"));
+  const dashboardProtocol = YAML.parse(fs.readFileSync(path.join(workspace, "invoice-dashboard", ".swarm", "protocol.yaml"), "utf8"));
   assert.ok(fs.existsSync(productSpec));
   assert.equal(typeof dashboardPackage.scripts.test, "string");
   assert.equal(dashboardPackage.scripts.start, undefined);
+  assert.equal(backendProtocol.protocol.recovery.childIdleTimeoutSeconds, 300);
+  assert.equal(dashboardProtocol.protocol.recovery.childIdleTimeoutSeconds, 300);
 
   const status = runSwarm(["status"], workspace);
   assert.match(status, /Run mode: live-agent-smoke/);

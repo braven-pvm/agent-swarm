@@ -45,13 +45,45 @@ export interface CoverageRef {
   ref: string;
   domain: string;
   sourceId: string;
+  sourceTitle: string;
+  sourceUri: string;
+  sourceSectionId?: string;
+  sourceSectionTitle?: string;
   status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  statusReason: string;
+  nextAction:
+    | "none"
+    | "pull_slice"
+    | "run_worker"
+    | "await_worker_result"
+    | "run_reviewer"
+    | "run_verifier"
+    | "repair_or_review"
+    | "resolve_blocker"
+    | "await_verification"
+    | "wait_for_dependency"
+    | "inspect_accepted_state";
+  lastChangedAt: string;
   sliceId?: string;
   sliceStatus?: string;
+  laneId?: string;
+  laneName?: string;
+  targetId?: string;
+  targetName?: string;
+  worktree?: string;
   verification?: "passed" | "failed" | "missing_evidence" | "overridden";
   reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
   proof?: string;
   evidenceIds?: string[];
+  actors?: {
+    workers: string[];
+    reviewers: string[];
+    verifiers: string[];
+    overseers: string[];
+  };
+  activeEscalations?: Array<{ level: string; entityId: string; message: string }>;
+  dependencies?: Array<{ target: string; status: "pending" | "satisfied" | "blocked"; reason: string; fromId: string }>;
+  evidence?: Array<{ id: string; kind: string; summary: string; createdAt: string; ref?: string }>;
 }
 
 export interface CoverageDomain {
