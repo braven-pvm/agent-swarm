@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
-  import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration, summarizeCommand } from "~/lib/format";
+  import { activityVerb, prettifyTarget, tokenizeCommand, formatDuration, describeActivity, fmtClock, shortAge, livenessLevel } from "~/lib/format";
   import Markdown from "~/components/Markdown.svelte";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
@@ -12,28 +12,44 @@
   // Current heartbeat state for the selected agent.
   const heartbeat = $derived(sel?.kind === "agent" ? store.snapshot?.heartbeats.find((h) => h.actor === sel.actor) : undefined);
   const currentState = $derived(heartbeat?.state);
-  // Build action history: only events WITH a target, sorted newest-first, consecutive same-target collapsed, capped at 40.
+  const working = $derived(["reading", "testing", "editing", "verifying"].includes(currentState ?? ""));
+  // Latest run status for the selected actor (latest run by startedAt).
+  const runStatus = $derived((() => {
+    if (sel?.kind !== "agent") return undefined;
+    const runs = (store.snapshot?.agentRuns ?? []).filter((r) => r.actor === sel.actor);
+    if (runs.length === 0) return undefined;
+    return runs.reduce((a, b) => (a.startedAt >= b.startedAt ? a : b)).status;
+  })());
+  // Last-signal age + liveness for the selected agent.
+  const sigAge = $derived(heartbeat ? Date.now() - Date.parse(heartbeat.timestamp) : Infinity);
+  const level = $derived(livenessLevel(runStatus, sigAge));
+  // Build action groups with timing: events WITH a target, sorted ASC by ts, consecutive same-target grouped
+  // (startTs = first ts, endTs = last ts), then reversed so newest first; capped ~40.
+  interface ActGroup { id: string; state: string | undefined; target: string; startTs: string; endTs: string; }
   const agentActions = $derived((() => {
-    if (sel?.kind !== "agent") return [] as { id: string; state: string | undefined; target: string }[];
+    if (sel?.kind !== "agent") return [] as ActGroup[];
     const events = (store.snapshot?.recentEvents ?? [])
       .filter((e) => e.actor === sel.actor && e.type.endsWith("agent_event") && (e.payload?.activity as import("~/lib/types").AgentActivity | undefined)?.target);
-    // Sort newest-first by timestamp.
-    const sorted = [...events].sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
-    // Collapse consecutive entries with the same target.
-    const out: { id: string; state: string | undefined; target: string }[] = [];
+    // Sort ASCENDING by timestamp.
+    const sorted = [...events].sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
+    // Group consecutive entries with the same target, tracking start/end timestamps.
+    const groups: ActGroup[] = [];
     for (const ev of sorted) {
       const act = ev.payload?.activity as import("~/lib/types").AgentActivity | undefined;
       const target = act?.target as string;
       const state = act?.state;
-      if (out.length > 0 && out[out.length - 1].target === target) continue;
-      out.push({ id: ev.id, state, target });
-      if (out.length >= 40) break;
+      const last = groups[groups.length - 1];
+      if (last && last.target === target) {
+        last.endTs = ev.timestamp;
+        continue;
+      }
+      groups.push({ id: ev.id, state, target, startTs: ev.timestamp, endTs: ev.timestamp });
     }
-    return out;
+    // Newest first, capped at 40.
+    return groups.reverse().slice(0, 40);
   })());
-  // True when the live state is a no-target (transient) state.
-  const NO_TARGET_STATES = ["thinking", "idle", "waiting"];
-  const showCurrentIdle = $derived(!!currentState && NO_TARGET_STATES.includes(currentState));
+  // Show the standalone "thinking" line only when the agent is thinking and has no in-flight action.
+  const showCurrentThinking = $derived(currentState === "thinking" && !working);
   const escalation = $derived(
     sel?.kind === "escalation" ? store.snapshot?.activeEscalations.find((e) => e.id === sel.id) : undefined,
   );
@@ -70,29 +86,34 @@
         {/each}
       </div>
     {:else if sel.kind === "agent"}
+      <div class="agent-liveness">
+        <span class="live-dot live-{level}"></span>
+        <span class="liveness-word">{level === "done" ? "done" : level === "dead" ? "no signal" : "live"}</span>
+        <span class="muted"> · last signal {shortAge(sigAge)}</span>
+        {#if working && heartbeat?.detail}<span class="liveness-target" title={heartbeat.detail}> · {heartbeat.detail}</span>{/if}
+      </div>
       {#if checkpoint}
         <div class="kv"><b>objective</b> {(checkpoint.payload as any).currentObjective ?? "—"}</div>
         <div class="kv"><b>last</b> {(checkpoint.payload as any).lastMeaningfulAction ?? "—"}</div>
         <div class="kv"><b>next</b> {(checkpoint.payload as any).nextIntendedAction ?? "—"}</div>
       {/if}
       <h4>Recent activity</h4>
-      {#if showCurrentIdle}
+      {#if showCurrentThinking}
         <div class="activity-idle current">
-          {#if currentState !== "idle"}<span class="spinner" aria-hidden="true"></span>{:else}<span class="dot" aria-hidden="true"></span>{/if}
+          <span class="spinner" aria-hidden="true"></span>
           <span class="idle-word">{activityVerb(currentState).toLowerCase()}</span>
         </div>
       {/if}
-      {#each agentActions as item (item.id)}
-        <div class="activity-line">
-          <span class="verb verb-{item.state ?? 'idle'}">{activityVerb(item.state)}</span>
-          <button class="cmd" class:cmd-expanded={expandedCmds.has(item.id)} title={item.target} onclick={() => toggleCmd(item.id)}>
-            {#if expandedCmds.has(item.id)}
-              {#each tokenizeCommand(prettifyTarget(item.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}
-            {:else}
-              {@const sum = summarizeCommand(item.target)}
-              {sum.action}{#if sum.target} <code class="now-target">{sum.target}</code>{/if}
-            {/if}
-          </button>
+      {#each agentActions as g, i (g.id)}
+        {@const cur = i === 0 && working}
+        {@const d = describeActivity({ state: g.state, target: g.target })}
+        {@const dur = Date.parse(g.endTs) - Date.parse(g.startTs)}
+        <div class="act" class:act-current={cur}>
+          <span class="act-time" title={g.startTs}>{fmtClock(g.startTs)}</span>
+          {#if cur}<span class="spinner" aria-hidden="true"></span>{/if}
+          <span class="act-verb">{cur ? d.present : d.past}</span>
+          {#if d.target}<button class="act-target" class:cmd-expanded={expandedCmds.has(g.id)} title={g.target} onclick={() => toggleCmd(g.id)}>{#if expandedCmds.has(g.id)}{#each tokenizeCommand(prettifyTarget(g.target)) as t}<span class="tok-{t.kind}">{t.text}</span>{" "}{/each}{:else}<code class="now-target">{d.target}</code>{/if}</button>{/if}
+          {#if dur > 1500 && !cur}<span class="act-dur" title="duration">{formatDuration(dur)}</span>{/if}
         </div>
       {/each}
     {:else if sel.kind === "escalation" && escalation}

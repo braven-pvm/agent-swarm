@@ -50,10 +50,10 @@ export function prettifyTarget(target: string): string {
   return out;
 }
 
-export interface CommandSummary { action: string; target?: string; }
-// Turn a raw shell command into a concise semantic action. Unwraps the pwsh/-Command wrapper.
+export interface CommandSummary { present: string; past: string; target?: string; }
+// Turn a raw shell command into concise semantic actions (present + past tense). Unwraps the pwsh/-Command wrapper.
 export function summarizeCommand(raw: string): CommandSummary {
-  if (!raw) return { action: "" };
+  if (!raw) return { present: "", past: "" };
   let cmd = raw.trim();
   // unwrap: "...pwsh.exe" -Command "<inner>"  (or single-quoted inner)
   const pwsh = cmd.match(/pwsh(?:\.exe)?"?\s+-Command\s+(["'])([\s\S]*)\1\s*$/i);
@@ -67,20 +67,71 @@ export function summarizeCommand(raw: string): CommandSummary {
     return s;
   };
   let m: RegExpMatchArray | null;
-  if (/^["']?node["']?\b/i.test(cmd) && /\s-e\b/.test(cmd)) return { action: "ran node script" };
-  if ((m = cmd.match(/get-content\s+(?:-raw\s+|-literalpath\s+|-path\s+)*(['"]?[^'"|<>]+?['"]?)\s*$/i))) return { action: "read", target: showPath(m[1]) };
-  if ((m = cmd.match(/^\s*(?:cat|type)\s+(\S+)/i))) return { action: "read", target: showPath(m[1]) };
-  if (/test-path/i.test(cmd)) return { action: "checked path" };
-  if ((m = cmd.match(/\bgit\b[\s\S]*?\b(status|diff|log|add|commit|show|rev-parse|init)\b/i))) return { action: `git ${m[1].toLowerCase()}` };
-  if (/\bnpm\s+(run\s+)?test\b|\bnode\s+--test\b|\bvitest\b|\bpytest\b/i.test(cmd)) return { action: "ran tests" };
-  if (/\bnpm\s+run\s+build\b|\btsc\b/i.test(cmd)) return { action: "built" };
-  if (/\brg\b|\bgrep\b|select-string|findstr/i.test(cmd)) return { action: "searched" };
-  if (/get-childitem|^\s*ls\b|^\s*dir\b/i.test(cmd)) return { action: "listed files" };
+  if (/^["']?node["']?\b/i.test(cmd) && /\s-e\b/.test(cmd)) return { present: "running script", past: "ran script" };
+  if ((m = cmd.match(/get-content\s+(?:-raw\s+|-literalpath\s+|-path\s+)*(['"]?[^'"|<>]+?['"]?)\s*$/i))) return { present: "reading", past: "read", target: showPath(m[1]) };
+  if ((m = cmd.match(/^\s*(?:cat|type)\s+(\S+)/i))) return { present: "reading", past: "read", target: showPath(m[1]) };
+  if (/test-path/i.test(cmd)) return { present: "checking path", past: "checked path" };
+  if ((m = cmd.match(/\bgit\b[\s\S]*?\b(status|diff|log|add|commit|show|rev-parse|init)\b/i))) {
+    const sub = m[1].toLowerCase();
+    return { present: `running git ${sub}`, past: `git ${sub}` };
+  }
+  if (/\bnpm\s+(run\s+)?test\b|\bnode\s+--test\b|\bvitest\b|\bpytest\b/i.test(cmd)) return { present: "running tests", past: "ran tests" };
+  if (/\bnpm\s+run\s+build\b|\btsc\b/i.test(cmd)) return { present: "building", past: "built" };
+  if (/\brg\b|\bgrep\b|select-string|findstr/i.test(cmd)) return { present: "searching", past: "searched" };
+  if (/get-childitem|^\s*ls\b|^\s*dir\b/i.test(cmd)) return { present: "listing files", past: "listed files" };
   // fallback: first token as action, lightly-cleaned remainder as target
   const parts = cmd.split(/\s+/);
   const head = stripQ(parts[0]).split(/[\\/]/).filter(Boolean).pop() || stripQ(parts[0]);
   const rest = parts.slice(1).join(" ");
-  return { action: head, target: rest ? (rest.length > 50 ? rest.slice(0, 50) + "…" : rest) : undefined };
+  return { present: `running ${head}`, past: `ran ${head}`, target: rest ? (rest.length > 50 ? rest.slice(0, 50) + "…" : rest) : undefined };
+}
+
+// Pick present/past phrasing for an activity whose target may be a command OR a bare file path.
+export function describeActivity(a: { state?: string; target?: string }): { present: string; past: string; target?: string } {
+  const t = a.target ?? "";
+  if (!t) {
+    const s = a.state ?? "working";
+    const map: Record<string, [string, string]> = { thinking: ["thinking", "thought"], idle: ["idle", "idle"], waiting: ["waiting", "waited"], verifying: ["verifying", "verified"], reading: ["reading", "read"], editing: ["editing", "edited"], testing: ["testing", "tested"], blocked: ["blocked", "blocked"] };
+    const [present, past] = map[s] ?? [s, s];
+    return { present, past };
+  }
+  if (/\s/.test(t) || /pwsh|get-content|git\b|npm\b|node\b|\brg\b|select-string|test-path|get-childitem/i.test(t)) {
+    return summarizeCommand(t);
+  }
+  // bare file path → phrase by state
+  const file = t.replace(/^['"]|['"]$/g, "");
+  const base = (/^[A-Za-z]:[\\/]/.test(file) || file.length > 40) ? (file.split(/[\\/]/).filter(Boolean).pop() || file) : file;
+  switch (a.state) {
+    case "editing": return { present: "editing", past: "edited", target: base };
+    case "reading": return { present: "reading", past: "read", target: base };
+    case "testing": return { present: "testing", past: "tested", target: base };
+    default: return { present: a.state ?? "working", past: a.state ?? "did", target: base };
+  }
+}
+
+// Local wall-clock HH:MM:SS for an ISO timestamp; "" when invalid.
+export function fmtClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour12: false });
+}
+
+// Compact relative age: "now" / "Ns" / "Nm" / "Nh".
+export function shortAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 1000) return "now";
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 3_600_000)}h`;
+}
+
+export type LivenessLevel = "alive" | "quiet" | "stale" | "dead" | "done";
+// Classify per-agent liveness from run status + last-signal age.
+export function livenessLevel(runStatus: string | undefined, ageMs: number): LivenessLevel {
+  if (runStatus === "completed" || runStatus === "released") return "done";
+  if (ageMs < 15_000) return "alive";
+  if (ageMs < 60_000) return "quiet";
+  if (ageMs < 300_000) return "stale";
+  return "dead";
 }
 
 export interface EscalationGroup {
