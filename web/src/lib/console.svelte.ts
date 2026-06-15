@@ -15,6 +15,9 @@ export interface AgentRosterRow {
   runtimeMs?: number;     // duration of the latest agent run for this actor
   latest: string;         // heartbeat timestamp
   runStatus?: string;
+  sliceId?: string;       // id of the slice the latest run is bound to (undefined for slice-less actors, e.g. overseer)
+  sliceTitle?: string;    // title of that bound slice
+  frAcRefs?: string[];    // FR/AC refs that slice owns
 }
 
 export interface ProofChainRow {
@@ -76,6 +79,14 @@ export function createConsoleStore() {
         const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
         const rt = endMs - Date.parse(latest.startedAt);
         if (Number.isFinite(rt)) row.runtimeMs = rt;
+        // Bind the work: the slice this latest run belongs to. Guard — overseer / heartbeat-only
+        // verifiers may reference no real slice, so only set when a matching slice exists.
+        const slc = snapshot.slices.find((s) => s.id === latest.sliceId);
+        if (slc) {
+          row.sliceId = slc.id;
+          row.sliceTitle = slc.title;
+          row.frAcRefs = slc.frAcRefs;
+        }
       }
       // Stall only matters for a live run that has gone silent — a finished/absent run that hasn't
       // signalled in a while is idle, not stalled.

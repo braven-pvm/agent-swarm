@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
-  import type { HarnessEvent, AgentRunRecord, ReviewResult, SliceWithDetail, AgentActivity } from "~/lib/types";
-  import { formatDuration, describeActivity, fmtClock, shortAge, livenessLevel, groupRunActivity, summarizeCommand, prettifyTarget, type ActivityGroup } from "~/lib/format";
+  import type { HarnessEvent, AgentRunRecord, ReviewResult, SliceWithDetail, AgentActivity, CoverageRef } from "~/lib/types";
+  import { formatDuration, describeActivity, fmtClock, shortAge, livenessLevel, groupRunActivity, summarizeCommand, prettifyTarget, refTone, statusLabel, type ActivityGroup } from "~/lib/format";
   import { api } from "~/lib/api";
   import Markdown from "~/components/Markdown.svelte";
   let { store }: { store: ConsoleStore } = $props();
@@ -70,6 +70,27 @@
       .filter((r) => r.actor === sel.actor)
       .slice()
       .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+  })());
+
+  // ---- "Working on": the slice the agent's latest/current run is bound to. ----
+  // Latest run by startedAt → its slice. Skipped (undefined) when no resolvable slice (e.g. overseer).
+  const workingSlice = $derived((() => {
+    if (sel?.kind !== "agent") return undefined;
+    const latest = agentRuns[0]; // agentRuns is sorted newest-first by startedAt
+    return latest ? sliceById(latest.sliceId) : undefined;
+  })());
+  // Coverage lookup to color the working-slice refs + name the spec/domain. Empty when coverage is null.
+  const covByRef = $derived.by(() => {
+    const map = new Map<string, CoverageRef>();
+    for (const r of store.coverage?.refs ?? []) map.set(r.ref.toUpperCase(), r);
+    return map;
+  });
+  const workingSpec = $derived((() => {
+    for (const ref of workingSlice?.frAcRefs ?? []) {
+      const cr = covByRef.get(ref.toUpperCase());
+      if (cr) return cr.domain || cr.sourceTitle || undefined;
+    }
+    return undefined;
   })());
 
   // Resolve the review_result THIS run produced (match by resultPath), else the slice's latest review.
@@ -343,6 +364,30 @@
         {/each}
       </div>
     {:else if sel.kind === "agent"}
+      <!-- 0. "Working on" — the slice this agent's latest run is bound to. Skipped when no slice. -->
+      {#if workingSlice}
+        <div class="ag-working">
+          <div class="ag-working-head">
+            <span class="ag-working-eyebrow">Working on</span>
+            <button class="ag-working-title" title="Open slice {workingSlice.id}" onclick={() => store.select({ kind: "slice", id: workingSlice.id })}>
+              {workingSlice.title}
+            </button>
+            <span class="verdict verdict-{verdictClass(workingSlice.status)}">{workingSlice.status}</span>
+          </div>
+          {#if workingSpec}<div class="ag-working-spec muted">{workingSpec}</div>{/if}
+          {#if workingSlice.frAcRefs.length > 0}
+            <div class="ag-working-refs">
+              {#each workingSlice.frAcRefs as ref (ref)}
+                {@const tone = refTone(covByRef.get(ref.toUpperCase())?.status)}
+                <span class="ag-working-ref {tone.cls}" title="{ref} · {statusLabel(covByRef.get(ref.toUpperCase())?.status ?? '')}">
+                  <span class="ag-ref-glyph" aria-hidden="true">{tone.glyph}</span>{ref}
+                </span>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
       <!-- 1. Identity / status card — always visible, compact. -->
       <div class="ag-card">
         <div class="agent-liveness">

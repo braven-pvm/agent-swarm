@@ -235,7 +235,8 @@ const TONES: Record<string, RefTone> = {
   not_started: { cls: "cov-badge-not_started", glyph: "○", label: "Not started" },
 };
 
-const UNINDEXED_TONE: RefTone = { cls: "spec-ref-unindexed", glyph: "◌", label: "Not indexed" };
+// "–" (not "◌") so it stays legible and clearly distinct from not_started's ○ at chip size.
+const UNINDEXED_TONE: RefTone = { cls: "spec-ref-unindexed", glyph: "–", label: "Not indexed" };
 
 /** Map a coverage status (or undefined → unindexed) to its reused tone class + glyph + label. */
 export function refTone(status?: string): RefTone {
