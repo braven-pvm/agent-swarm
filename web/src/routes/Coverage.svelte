@@ -53,7 +53,7 @@
           </div>
         {/if}
       </div>
-    {/if}
+    {:else}
     <div class="cov-head"><h2>Coverage</h2><div class="cov-overall">{cov.totals.done} / {cov.totals.total} requirements done · <strong>{pct(cov.totals.done, cov.totals.total)}%</strong></div></div>
     <div class="cov-bar" title="done / in-progress / blocked / failed / not-started">
       <span class="seg seg-done" style="width:{pct(cov.totals.done,cov.totals.total)}%"></span>
@@ -76,6 +76,7 @@
         </div>
       {/each}
     </div>
+    {/if}
     <div class="cov-filters">
       <input class="search" placeholder="Filter refs / domain / slice…" bind:value={q} />
       <select bind:value={statusFilter}>{#each STATUSES as s}<option value={s}>{s}</option>{/each}</select>
