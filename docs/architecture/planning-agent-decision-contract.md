@@ -12,10 +12,14 @@ The planner is the part of the system that turns approved specs, harness state, 
 
 The planner may control implementation flow. It may not mutate source specs.
 
+The planner, or an authorized overseer acting in the planner role, owns verification-obligation creation for served slices. Workers may receive those obligations, but they may not create, edit, weaken, or approve the obligations used to accept their own work.
+
 It can:
 
 - choose slice order
 - batch FR/ACs into a slice
+- derive immutable verification obligations from source FR/AC text
+- add mutable verifier guidance/comments after slice creation
 - create coherent readiness packs when micro-slices stop answering the delivery question
 - create, reuse, pause, or repurpose lanes
 - dispatch workers, verifiers, and reviewers
@@ -27,6 +31,8 @@ It cannot:
 
 - edit immutable specs
 - reinterpret ACs as completed without evidence
+- dispatch a normal implementation slice with missing verification obligations
+- allow a worker to mutate acceptance criteria, responsible verifier, or evidence thresholds
 - serve downstream work based on stubs when the protocol requires real backend readiness
 - hide decisions outside harness state
 - clear independent verification or spec concerns without the allowed clearance path
@@ -44,6 +50,7 @@ Every planner decision should be based on visible state:
 - blockers and escalations
 - worker, verifier, reviewer, and recovery events
 - evidence and accepted verification results
+- verification obligations and per-ref requirement status
 - protocol limits and allowed actions
 - human instructions/comments
 
@@ -59,7 +66,7 @@ The planner loop is:
 6. Detect proof-slice bureaucracy: repeated narrow work that improves evidence plumbing without resolving a meaningful delivery question.
 7. Select the next work cluster or explain why no work is safe.
 8. Create or reuse lanes within configured limits.
-9. Serve or rescope slices/readiness packs while respecting global FR/AC leases.
+9. Serve or rescope slices/readiness packs while respecting global FR/AC leases and verification obligations.
 10. Dispatch workers/verifiers/reviewers according to protocol.
 11. Record the decision and update the rolling plan.
 
@@ -106,6 +113,15 @@ Each significant planner action should emit a structured decision event:
     "frAcRefs": ["AC-..."]
   },
   "sourceRefs": ["SRC-..."],
+  "verificationObligations": [
+    {
+      "ref": "AC-...",
+      "mode": "automated",
+      "responsibleParty": "deterministic-verifier",
+      "criteriaCount": 1,
+      "immutable": true
+    }
+  ],
   "dependenciesConsidered": ["AC-...", "SLICE-...", "LANE-..."],
   "readinessEvidence": ["evidence-id-or-event-id"],
   "protocolRules": ["frontend_requires_accepted_backend", "max_lanes_per_project"],

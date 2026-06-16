@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import spawn from "cross-spawn";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -781,6 +781,10 @@ program
     try {
       const slice = store.listSlices().find((item) => item.id === sliceId);
       if (!slice) throw new Error(`Slice not found: ${sliceId}`);
+      const obligationIssues = validateVerificationObligations(slice);
+      if (obligationIssues.length > 0) {
+        throw new Error(`Slice ${slice.id} has invalid verification obligations: ${obligationIssues.join("; ")}`);
+      }
       const verifiableStates = new Set(["implemented", "verifying", "ready_for_review", "accepted"]);
       if (!options.force && !verifiableStates.has(slice.status)) {
         throw new Error(
@@ -816,7 +820,7 @@ program
           type: "verification.started",
           entityType: "slice",
           entityId: slice.id,
-          payload: { command, cwd: target.path },
+          payload: { command, cwd: target.path, verificationObligations: summarizeVerificationObligations(slice) },
         }),
       );
 
@@ -861,6 +865,7 @@ program
           workerGate,
           reviewGate,
           activeAcceptanceBlockers,
+          verificationObligations: summarizeVerificationObligations(slice),
           frAcResults,
           missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
           failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
@@ -892,6 +897,7 @@ program
             workerGate,
             reviewGate,
             activeAcceptanceBlockers,
+            verificationObligations: summarizeVerificationObligations(slice),
             frAcResults,
             missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
             failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
@@ -1420,6 +1426,7 @@ recovery
         status: "running",
         sessionId: previousRun.sessionId,
         attempt,
+        eventsPath: jsonlPath,
         startedAt: now,
         updatedAt: now,
       });
@@ -1444,6 +1451,7 @@ recovery
             sessionId: previousRun.sessionId,
             attempt,
             promptPath,
+            eventsPath: jsonlPath,
           },
         }),
       );
@@ -1477,6 +1485,7 @@ recovery
         sliceId: slice.id,
         store,
         driver: previousRun.driver,
+        runId: revivedRunId,
         classify: adapter.classifyHeartbeat?.bind(adapter),
         idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
       });
@@ -1732,6 +1741,7 @@ async function executeOverseerRun(input: {
     driver: input.driver,
     status: "running",
     attempt,
+    eventsPath: jsonlPath,
     startedAt: now,
     updatedAt: now,
   });
@@ -1759,6 +1769,7 @@ async function executeOverseerRun(input: {
         attempt,
         manifestPath: manifest.path,
         promptPath,
+        eventsPath: jsonlPath,
       },
     }),
   );
@@ -1806,6 +1817,7 @@ async function executeOverseerRun(input: {
       store: input.store,
       driver: input.driver,
       eventPrefix: "overseer",
+      runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
@@ -1972,6 +1984,7 @@ async function executeWorkerRun(input: {
     driver: driverId,
     status: "running",
     attempt,
+    eventsPath: jsonlPath,
     startedAt: now,
     updatedAt: now,
   });
@@ -1999,6 +2012,8 @@ async function executeWorkerRun(input: {
         attempt,
         previousRunId: input.previousRunId,
         promptPath,
+        eventsPath: jsonlPath,
+        verificationObligations: summarizeVerificationObligations(slice),
       },
     }),
   );
@@ -2040,6 +2055,7 @@ async function executeWorkerRun(input: {
       sliceId: slice.id,
       store: input.store,
       driver: driverId,
+      runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
@@ -2188,6 +2204,7 @@ async function executeReviewRun(input: {
     driver: input.driver,
     status: "running",
     attempt,
+    eventsPath: jsonlPath,
     startedAt: now,
     updatedAt: now,
   });
@@ -2214,6 +2231,8 @@ async function executeReviewRun(input: {
         runId,
         attempt,
         promptPath,
+        eventsPath: jsonlPath,
+        verificationObligations: summarizeVerificationObligations(slice),
         sourceMutationsBefore,
       },
     }),
@@ -2264,6 +2283,7 @@ async function executeReviewRun(input: {
       store: input.store,
       driver: input.driver,
       eventPrefix: "reviewer",
+      runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
     });
@@ -2423,6 +2443,7 @@ function spawnWorkerStreaming(input: {
   entityId?: string;
   store: SwarmStore;
   driver: string;
+  runId?: string;
   eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
   idleTimeoutMs?: number;
@@ -2450,12 +2471,28 @@ function spawnWorkerStreaming(input: {
     let settled = false;
     let idleTimedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let forceResolveTimer: NodeJS.Timeout | undefined;
     const idleTimeoutMs = input.idleTimeoutMs ?? configuredAgentIdleTimeoutMs();
     const entityType = input.entityType ?? "slice";
     const entityId = input.entityId ?? input.sliceId;
 
     const clearTimers = () => {
       if (killTimer) clearTimeout(killTimer);
+      if (forceResolveTimer) clearTimeout(forceResolveTimer);
+    };
+
+    const resolveOnce = (status: number | null, stderr: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      const workerEvents = ingestor.flush();
+      resolve({
+        status,
+        stdout: stdoutChunks.join(""),
+        stderr,
+        workerEvents,
+        idleTimedOut,
+      });
     };
 
     const armIdleTimer = () => {
@@ -2482,13 +2519,17 @@ function spawnWorkerStreaming(input: {
             entityId,
             payload: {
               driver: input.driver,
+              runId: input.runId,
               idleTimeoutMs,
               pid: child.pid,
               jsonlPath: input.jsonlPath,
             },
           }),
         );
-        child.kill();
+        terminateChildProcessTree(child);
+        forceResolveTimer = setTimeout(() => {
+          resolveOnce(1, stderrChunks.join("\n"));
+        }, 10000);
       }, idleTimeoutMs);
     };
     armIdleTimer();
@@ -2514,32 +2555,28 @@ function spawnWorkerStreaming(input: {
       stderrChunks.push(chunk);
     });
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      const workerEvents = ingestor.flush();
-      resolve({
-        status: 1,
-        stdout: stdoutChunks.join(""),
-        stderr: [...stderrChunks, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n"),
-        workerEvents,
-        idleTimedOut,
-      });
+      resolveOnce(1, [...stderrChunks, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n"));
     });
     child.on("close", (status) => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      const workerEvents = ingestor.flush();
-      resolve({
-        status,
-        stdout: stdoutChunks.join(""),
-        stderr: stderrChunks.join(""),
-        workerEvents,
-        idleTimedOut,
-      });
+      resolveOnce(status, stderrChunks.join(""));
     });
   });
+}
+
+function terminateChildProcessTree(child: ChildProcess): void {
+  if (child.pid && process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  }
+  try {
+    child.kill();
+  } catch {
+    // It may already be gone after taskkill.
+  }
+  child.unref();
 }
 
 function configuredAgentIdleTimeoutMs(): number | undefined {
@@ -3162,6 +3199,9 @@ ${sourceRefs}
 FR/AC scope:
 ${input.slice.frAcRefs.map((ref) => `- ${ref}`).join("\n")}
 
+Verification obligations (read-only):
+${formatVerificationObligations(input.slice)}
+
 Scope:
 ${input.slice.scope.map((item) => `- ${item}`).join("\n")}
 
@@ -3188,10 +3228,12 @@ ${JSON.stringify(input.sourceMutations, null, 2)}
 
 Review rules:
 - Do not modify source specs.
+- Do not create, edit, weaken, or reinterpret verification obligations.
 - Prefer evidence from code inspection, targeted commands, recorded worker evidence, and recorded deterministic command evidence.
 - If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Do not reinterpret or rewrite the source spec.
 - Treat missing per-FR/AC evidence as a finding.
+- Judge evidence against the read-only verification obligations, not generic confidence or broad command success.
 - Treat stubs, hardcoded shortcuts, hollow tests, or unproven runtime paths as material risks.
 - Deterministic command verification is a separate harness gate after reviewer acceptance.
 - You may run npm test, node --test, git, shell, or other local inspection commands when useful and allowed by the configured driver/protocol.
@@ -3450,6 +3492,8 @@ function validateSliceDispatchContract(slice: SliceRecord): void {
   if (slice.frAcRefs.length === 0) missing.push("frAcRefs");
   if (!slice.deliveryQuestion.trim()) missing.push("deliveryQuestion");
   if (slice.expectedEvidence.length === 0) missing.push("expectedEvidence");
+  const obligationIssues = validateVerificationObligations(slice);
+  if (obligationIssues.length > 0) missing.push(`verificationObligations (${obligationIssues.join("; ")})`);
   if (missing.length > 0) {
     throw new Error(`Slice ${slice.id} is missing required planning fields: ${missing.join(", ")}`);
   }
@@ -3464,6 +3508,39 @@ function validateSliceDispatchContract(slice: SliceRecord): void {
       `Slice ${slice.id} does not declare a meaningful unblock/readiness target. Add unblockTargets or use a multi-AC readiness pack.`,
     );
   }
+}
+
+function validateVerificationObligations(slice: SliceRecord): string[] {
+  if (slice.frAcRefs.length === 0) return [];
+  const issues: string[] = [];
+  if (slice.verificationObligations.length === 0) {
+    issues.push("no obligations recorded");
+    return issues;
+  }
+  const obligationRefs = new Set(slice.verificationObligations.map((obligation) => obligation.ref));
+  const missingRefs = slice.frAcRefs.filter((ref) => !obligationRefs.has(ref));
+  if (missingRefs.length > 0) issues.push(`missing refs: ${missingRefs.join(", ")}`);
+  const extraRefs = slice.verificationObligations.map((obligation) => obligation.ref).filter((ref) => !slice.frAcRefs.includes(ref));
+  if (extraRefs.length > 0) issues.push(`out-of-scope refs: ${extraRefs.join(", ")}`);
+  for (const obligation of slice.verificationObligations) {
+    if (!obligation.ref.trim()) issues.push("obligation has empty ref");
+    if (!obligation.sourceText.trim()) issues.push(`${obligation.ref} missing sourceText`);
+    if (!obligation.responsibleParty.trim()) issues.push(`${obligation.ref} missing responsibleParty`);
+    if (obligation.immutable !== true) issues.push(`${obligation.ref} is not immutable`);
+    if (!Array.isArray(obligation.criteria) || obligation.criteria.length === 0) {
+      issues.push(`${obligation.ref} has no criteria`);
+      continue;
+    }
+    for (const criterion of obligation.criteria) {
+      if (!criterion.id.trim()) issues.push(`${obligation.ref} has criterion without id`);
+      if (!criterion.expectedOutcome.trim()) issues.push(`${obligation.ref}/${criterion.id} missing expectedOutcome`);
+      if (!criterion.acceptanceThreshold.trim()) issues.push(`${obligation.ref}/${criterion.id} missing acceptanceThreshold`);
+      if (!Array.isArray(criterion.evidenceRequired) || criterion.evidenceRequired.length === 0) {
+        issues.push(`${obligation.ref}/${criterion.id} missing evidenceRequired`);
+      }
+    }
+  }
+  return issues;
 }
 
 function readAndValidateWorkerResult(
@@ -3569,13 +3646,15 @@ function readAndValidateWorkerResult(
 }
 
 function missingEvidenceResults(slice: SliceRecord, verifier: string, proof: string): FrAcVerificationResult[] {
-  return slice.frAcRefs.map((ref) => ({
-    ref,
-    status: "missing_evidence",
-    evidenceIds: [],
-    proof,
-    verifiedBy: verifier,
-  }));
+  return slice.frAcRefs.map((ref) =>
+    attachCriterionResults(slice, {
+      ref,
+      status: "missing_evidence",
+      evidenceIds: [],
+      proof,
+      verifiedBy: verifier,
+    }),
+  );
 }
 
 function buildFrAcResults(input: {
@@ -3588,36 +3667,86 @@ function buildFrAcResults(input: {
   return input.slice.frAcRefs.map((ref) => {
     const workerResult = input.workerGate.frAcResults.find((item) => item.ref === ref);
     if (!workerResult) {
-      return {
+      return attachCriterionResults(input.slice, {
         ref,
         status: "missing_evidence",
         evidenceIds: [input.verificationEvidenceId],
         proof: "No worker coverage result was available for this ref.",
         verifiedBy: input.verifier,
-      };
+      });
     }
     if (workerResult.status !== "passed") {
-      return {
+      return attachCriterionResults(input.slice, {
         ...workerResult,
         evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
         verifiedBy: input.verifier,
-      };
+      });
     }
     if (!input.commandPassed) {
-      return {
+      return attachCriterionResults(input.slice, {
         ref,
         status: "failed",
         evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
         proof: "Worker coverage existed, but the configured verification command failed.",
         verifiedBy: input.verifier,
-      };
+      });
     }
-    return {
+    return attachCriterionResults(input.slice, {
       ...workerResult,
       evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
       verifiedBy: input.verifier,
-    };
+    });
   });
+}
+
+function attachCriterionResults(slice: SliceRecord, result: FrAcVerificationResult): FrAcVerificationResult {
+  const obligation = slice.verificationObligations.find((item) => item.ref === result.ref);
+  if (!obligation || obligation.criteria.length === 0) return result;
+  return {
+    ...result,
+    criteriaResults: obligation.criteria.map((criterion) => ({
+      criterionId: criterion.id,
+      status: result.status,
+      expectedOutcome: criterion.expectedOutcome,
+      actualOutcome: result.proof,
+      evidenceIds: result.evidenceIds,
+    })),
+  };
+}
+
+function formatVerificationObligations(slice: SliceRecord): string {
+  if (slice.verificationObligations.length === 0) return "- none recorded";
+  return slice.verificationObligations
+    .map((obligation) => {
+      const criteria = obligation.criteria
+        .map(
+          (criterion) =>
+            `  - ${criterion.id}: ${criterion.expectedOutcome}\n    evidence: ${criterion.evidenceRequired.join(", ")}\n    threshold: ${criterion.acceptanceThreshold}`,
+        )
+        .join("\n");
+      return [
+        `- ${obligation.ref} [${obligation.mode}; ${obligation.responsibleParty}; immutable:${obligation.immutable}]`,
+        `  source: ${obligation.sourceTitle ?? obligation.sourceUri ?? obligation.sourceRef ?? "unknown"}`,
+        obligation.sourceContext ? `  context: ${obligation.sourceContext}` : undefined,
+        `  source text: ${obligation.sourceText}`,
+        `  criteria:`,
+        criteria,
+        obligation.guidance.length > 0 ? `  guidance: ${obligation.guidance.join(" | ")}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
+}
+
+function summarizeVerificationObligations(slice: SliceRecord): Record<string, unknown>[] {
+  return slice.verificationObligations.map((obligation) => ({
+    ref: obligation.ref,
+    mode: obligation.mode,
+    responsibleParty: obligation.responsibleParty,
+    criteriaCount: obligation.criteria.length,
+    immutable: obligation.immutable,
+  }));
 }
 
 function detectAndRecordLowSignalWork(store: SwarmStore, acceptedSlice: SliceRecord): void {
@@ -5083,6 +5212,9 @@ ${sourceRefs}
 FR/AC scope:
 ${input.slice.frAcRefs.map((ref) => `- ${ref}`).join("\n")}
 
+Verification obligations (read-only):
+${formatVerificationObligations(input.slice)}
+
 Scope:
 ${input.slice.scope.map((item) => `- ${item}`).join("\n")}
 
@@ -5098,10 +5230,12 @@ ${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
 Instructions:
 - Implement only this slice scope.
 - Do not modify source spec files.
+- Do not create, edit, weaken, or reinterpret verification obligations.
 - Prefer minimal, behavior-focused changes.
 - Run relevant target tests if available.
 - If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Provide frAcCoverage for every in-scope FR/AC ref.
+- Map frAcCoverage evidence to the read-only verification obligations above.
 - Return the final answer in the required structured schema.
 `;
 }

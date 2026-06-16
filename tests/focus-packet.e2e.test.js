@@ -115,6 +115,148 @@ test("inspect run classifies failed command and missing structured result", () =
   assert.ok(slicePacket.diagnosis.recommendedInterventions.some((item) => item.includes("high-retry")));
 });
 
+test("inspect run finds live event stream from idle-timeout event payload", () => {
+  const { workspace, sliceId } = setupWorkspace("swarm-focus-running-timeout");
+  const store = new SwarmStore(workspace);
+  try {
+    const runId = "RUN-focus-running-timeout";
+    const actor = "focus-worker";
+    const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const eventsPath = path.join(artifactDir, "worker-events.jsonl");
+    const promptPath = path.join(artifactDir, "worker-prompt-RUN-focus-running-timeout.md");
+    const now = new Date().toISOString();
+    fs.writeFileSync(promptPath, "Worker prompt for running timeout focus packet test.\n", "utf8");
+    fs.writeFileSync(
+      eventsPath,
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread-focus-running-timeout" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            id: "item_1",
+            type: "command_execution",
+            status: "completed",
+            command: "npm run test",
+            exit_code: 0,
+            aggregated_output: "tests 3 pass 3",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    store.updateSliceStatus(sliceId, "implementing");
+    store.insertAgentRun({
+      id: runId,
+      sliceId,
+      role: "worker",
+      entityType: "slice",
+      entityId: sliceId,
+      actor,
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      startedAt: now,
+      updatedAt: now,
+    });
+    store.upsertHeartbeat({
+      actor,
+      state: "blocked",
+      detail: "Agent child process produced no output for 300s; terminating for supervised recovery.",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: now,
+    });
+    store.addEvent(
+      createEvent({
+        actor,
+        type: "worker.child_idle_timeout",
+        entityType: "slice",
+        entityId: sliceId,
+        payload: { runId, jsonlPath: eventsPath, idleTimeoutMs: 300000 },
+      }),
+    );
+  } finally {
+    store.close();
+  }
+
+  const packet = JSON.parse(runSwarm(workspace, ["inspect", "run", "RUN-focus-running-timeout", "--json"]));
+  assert.equal(packet.eventStream.exists, true);
+  assert.equal(packet.artifacts.events.exists, true);
+  assert.equal(packet.eventStream.lineCount, 2);
+  assert.equal(packet.latestSignals.lastCommand.exitCode, 0);
+  assert.ok(packet.diagnosis.failureClasses.includes("child_idle_timeout"));
+  assert.ok(!packet.diagnosis.failureClasses.includes("no_event_stream"));
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  assert.equal(snapshot.focusQueue[0].reason, "child_idle_timeout");
+  assert.equal(snapshot.focusQueue[0].latestRun.eventStreamExists, true);
+});
+
+test("observe exposes run-level focus for quiet overseer before first action", () => {
+  const { workspace } = setupWorkspace("swarm-focus-quiet-overseer");
+  const store = new SwarmStore(workspace);
+  try {
+    const runId = "RUN-quiet-overseer";
+    const actor = "live-overseer";
+    const artifactDir = path.join(workspace, ".swarm", "artifacts", "scenario-focus");
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const eventsPath = path.join(artifactDir, "overseer-events-RUN-quiet-overseer.jsonl");
+    const promptPath = path.join(artifactDir, "overseer-prompt-RUN-quiet-overseer.md");
+    const startedAt = new Date(Date.now() - 180_000).toISOString();
+    fs.writeFileSync(promptPath, "Overseer prompt for quiet pre-action focus packet test.\n", "utf8");
+    fs.writeFileSync(
+      eventsPath,
+      [JSON.stringify({ type: "thread.started" }), JSON.stringify({ type: "turn.started" })].join("\n") + "\n",
+      "utf8",
+    );
+    store.insertAgentRun({
+      id: runId,
+      sliceId: "scenario:focus",
+      role: "overseer",
+      entityType: "harness",
+      entityId: "scenario:focus",
+      actor,
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      eventsPath,
+      startedAt,
+      updatedAt: startedAt,
+    });
+    store.upsertHeartbeat({
+      actor,
+      state: "thinking",
+      detail: "Thinking (turn.started)",
+      entityType: "harness",
+      entityId: "scenario:focus",
+      timestamp: startedAt,
+    });
+    store.addEvent(
+      createEvent({
+        actor,
+        type: "overseer.started",
+        entityType: "harness",
+        entityId: "scenario:focus",
+        payload: { runId, promptPath, eventsPath },
+      }),
+    );
+  } finally {
+    store.close();
+  }
+
+  const packet = JSON.parse(runSwarm(workspace, ["inspect", "run", "RUN-quiet-overseer", "--json"]));
+  assert.equal(packet.eventStream.exists, true);
+  assert.equal(packet.eventStream.lineCount, 2);
+  assert.ok(packet.diagnosis.failureClasses.includes("quiet_before_first_action"));
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "40"]));
+  assert.equal(snapshot.focusQueue.length, 0);
+  assert.equal(snapshot.agentFocusQueue[0].runId, "RUN-quiet-overseer");
+  assert.equal(snapshot.agentFocusQueue[0].reason, "quiet_before_first_action");
+  assert.match(snapshot.agentFocusQueue[0].recommendedInterventions[0], /Inspect the prompt/);
+});
+
 function setupWorkspace(name) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
   const target = path.join(workspace, "target");

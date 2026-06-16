@@ -1892,7 +1892,11 @@ function handleSupervisedRecovery(turn, snapshot) {
 function findSupervisedRecoveryCandidate(snapshot) {
   const slicesById = new Map(snapshot.slices.map((slice) => [slice.id, slice]));
   const workerRuns = snapshot.agentRuns
-    .filter((run) => run.role === "worker" && ["failed", "stale"].includes(run.status))
+    .filter((run) => {
+      if (run.role !== "worker") return false;
+      if (["failed", "stale"].includes(run.status)) return true;
+      return run.status === "running" && latestRunFailureEvent(snapshot, run)?.type === "worker.child_idle_timeout";
+    })
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
 
   for (const run of workerRuns) {
@@ -1902,7 +1906,7 @@ function findSupervisedRecoveryCandidate(snapshot) {
     if (hasLaterCompletedWorker(snapshot, run)) continue;
     const recentFailureEvent = latestRunFailureEvent(snapshot, run);
     const reason =
-      recentFailureEvent?.payload?.idleTimedOut === true
+      recentFailureEvent?.type === "worker.child_idle_timeout" || recentFailureEvent?.payload?.idleTimedOut === true
         ? "child idle timeout"
         : run.resultPath
           ? "failed worker run"
@@ -1936,8 +1940,11 @@ function hasLaterCompletedWorker(snapshot, run) {
 function latestRunFailureEvent(snapshot, run) {
   return snapshot.recentEvents
     .filter((event) => {
-      if (!["worker.completed", "recovery.revive_completed", "recovery.restart_completed"].includes(event.type)) return false;
-      return event.payload?.runId === run.id || event.entityId === run.id || event.payload?.previousRunId === run.id;
+      if (!["worker.child_idle_timeout", "worker.completed", "recovery.revive_completed", "recovery.restart_completed"].includes(event.type)) {
+        return false;
+      }
+      if (event.payload?.runId === run.id || event.entityId === run.id || event.payload?.previousRunId === run.id) return true;
+      return event.type === "worker.child_idle_timeout" && event.actor === run.actor && event.entityId === run.sliceId;
     })
     .at(-1);
 }

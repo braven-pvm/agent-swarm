@@ -50,7 +50,8 @@ export function buildRunFocusPacket(
   const heartbeat = findRunHeartbeat(store, run);
   const heartbeatAgeMs = heartbeat ? Date.now() - Date.parse(heartbeat.timestamp) : undefined;
   const promptPath = findPromptArtifactPath(store, workspace, run);
-  const eventStream = summarizeAgentJsonlFile(run.eventsPath, options.eventLimit ?? 20);
+  const eventsPath = findRunEventsArtifactPath(store, workspace, run);
+  const eventStream = summarizeAgentJsonlFile(eventsPath, options.eventLimit ?? 20);
   const resultArtifact = summarizeArtifact(run.resultPath);
   const stderrArtifact = summarizeArtifact(run.stderrPath, { tail: true });
   const promptArtifact = summarizeArtifact(promptPath);
@@ -75,6 +76,7 @@ export function buildRunFocusPacket(
   const failureClasses = classifyRunFocus({
     run,
     heartbeatAgeMs,
+    heartbeat,
     eventStream,
     resultArtifact,
     relatedEscalations,
@@ -122,7 +124,7 @@ export function buildRunFocusPacket(
       : undefined,
     artifacts: {
       prompt: promptArtifact,
-      events: summarizeArtifact(run.eventsPath),
+      events: summarizeArtifact(eventsPath),
       result: resultArtifact,
       stderr: stderrArtifact,
     },
@@ -193,7 +195,7 @@ export function buildSliceFocusPacket(
       attempt: run.attempt,
       sessionId: run.sessionId,
       promptPath: findPromptArtifactPath(store, workspace, run),
-      eventsPath: run.eventsPath,
+      eventsPath: findRunEventsArtifactPath(store, workspace, run),
       resultPath: run.resultPath,
       stderrPath: run.stderrPath,
       updatedAt: run.updatedAt,
@@ -238,6 +240,39 @@ function findPromptArtifactPath(store: SwarmStore, workspace: string, run: Agent
     candidates.push(path.join(entityDir, `overseer-prompt-${run.id}.md`));
   }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function findRunEventsArtifactPath(store: SwarmStore, workspace: string, run: AgentRunRecord): string | undefined {
+  if (run.eventsPath) return run.eventsPath;
+
+  const eventPath = store
+    .listEvents()
+    .slice()
+    .reverse()
+    .map((event) => {
+      if (event.payload.runId !== run.id && event.payload.previousRunId !== run.id) return undefined;
+      if (typeof event.payload.eventsPath === "string") return event.payload.eventsPath;
+      if (typeof event.payload.jsonlPath === "string") return event.payload.jsonlPath;
+      return undefined;
+    })
+    .find((candidate): candidate is string => Boolean(candidate));
+  if (eventPath) return eventPath;
+
+  const candidates: string[] = [];
+  if (run.sliceId) {
+    const sliceDir = path.join(artifactsDir(workspace), run.sliceId);
+    candidates.push(
+      path.join(sliceDir, `worker-events-${run.id}.jsonl`),
+      path.join(sliceDir, `worker-revive-${run.id}.jsonl`),
+      path.join(sliceDir, `review-events-${run.id}.jsonl`),
+      path.join(sliceDir, "worker-events.jsonl"),
+    );
+  }
+  if (run.entityId) {
+    const entityDir = path.join(artifactsDir(workspace), sanitizeArtifactSegment(run.entityId));
+    candidates.push(path.join(entityDir, `overseer-events-${run.id}.jsonl`));
+  }
+  return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
 function summarizeArtifact(filePath: string | undefined, options: { tail?: boolean } = {}) {
@@ -403,6 +438,7 @@ function relatedActiveEscalations(
 export function classifyRunFocus(input: {
   run: AgentRunRecord;
   heartbeatAgeMs?: number;
+  heartbeat?: HeartbeatRecord;
   eventStream: ReturnType<typeof summarizeAgentJsonlFile>;
   resultArtifact: ReturnType<typeof summarizeArtifact>;
   relatedEscalations: EscalationRecord[];
@@ -410,7 +446,17 @@ export function classifyRunFocus(input: {
   const classes = new Set<string>();
   if (!input.eventStream.exists || input.eventStream.lineCount === 0) classes.add("no_event_stream");
   if (input.eventStream.parseErrorCount > 0) classes.add("agent_event_parse_errors");
+  if (input.run.status === "running" && input.heartbeatAgeMs !== undefined && input.heartbeatAgeMs > 120000 && input.eventStream.lineCount <= 2) {
+    classes.add("quiet_before_first_action");
+  }
   if (input.run.status === "running" && input.heartbeatAgeMs !== undefined && input.heartbeatAgeMs > 300000) classes.add("quiet_running_agent");
+  if (
+    input.run.status === "running" &&
+    input.heartbeat?.state === "blocked" &&
+    /idle timeout|produced no output|supervised recovery/i.test(input.heartbeat.detail ?? "")
+  ) {
+    classes.add("child_idle_timeout");
+  }
   if (input.run.status !== "running" && !input.resultArtifact.exists && ["worker", "reviewer"].includes(input.run.role ?? "")) {
     classes.add("missing_structured_result");
   }
@@ -425,6 +471,8 @@ export function classifyRunFocus(input: {
 function recommendRunInterventions(input: { run: AgentRunRecord; failureClasses: string[]; hasSession: boolean }): string[] {
   const classes = new Set(input.failureClasses);
   const recommendations: string[] = [];
+  if (classes.has("child_idle_timeout")) recommendations.push("Treat the child as stalled: inspect the event tail, then revive by session id or restart with the focus packet.");
+  if (classes.has("quiet_before_first_action")) recommendations.push("Inspect the prompt and event stream; the agent has been quiet before any visible command or structured status.");
   if (classes.has("quiet_running_agent")) recommendations.push("Send a structured status-poke before killing or restarting the child session.");
   if (classes.has("command_failed")) recommendations.push("Coach the agent with the last command output and ask for one simpler retry strategy.");
   if (classes.has("missing_structured_result") && input.hasSession) recommendations.push("Try same-session revive with this focus packet and require a final structured result or exact blocker.");
@@ -504,6 +552,73 @@ export function buildOverseerFocusQueue(input: {
     .map(({ needsFocus, priority, ...item }) => ({ ...item, focusPriority: priority }));
 }
 
+export function buildAgentFocusQueue(input: { store: SwarmStore; workspace: string; cli: string }) {
+  return input.store
+    .listAgentRuns()
+    .filter((run) => ["running", "failed", "stale"].includes(run.status))
+    .map((run) => {
+      try {
+        return summarizeRunFocusForPrompt(buildRunFocusPacket(input.store, input.workspace, run.id, { eventLimit: 8 }), input.cli);
+      } catch (error) {
+        return {
+          needsFocus: true,
+          priority: 90,
+          reason: "run_focus_packet_error",
+          runId: run.id,
+          actor: run.actor,
+          role: run.role,
+          status: run.status,
+          inspectRunCommand: `${input.cli} inspect run ${run.id}`,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+    .filter((item) => item.needsFocus)
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, 8)
+    .map(({ needsFocus, priority, ...item }) => ({ ...item, focusPriority: priority }));
+}
+
+export function summarizeRunFocusForPrompt(packet: RunFocusPacket, cli: string) {
+  const failureClasses = packet.diagnosis.failureClasses ?? [];
+  const latestRunFailed = ["failed", "stale"].includes(packet.run.status);
+  const needsFocus = latestRunFailed || failureClasses.length > 0;
+  const lastCommand = packet.latestSignals.lastCommand;
+  const reasons = [latestRunFailed ? `run_${packet.run.status}` : undefined, ...failureClasses].filter((item): item is string =>
+    Boolean(item),
+  );
+
+  return {
+    needsFocus,
+    priority: focusPriority({ blocked: false, highRetry: false, latestRunFailed, failureClasses }),
+    reason: reasons.join(", ") || "none",
+    runId: packet.run.id,
+    actor: packet.run.actor,
+    role: packet.run.role,
+    status: packet.run.status,
+    entityType: packet.run.entityType,
+    entityId: packet.run.entityId,
+    sliceId: packet.run.sliceId,
+    inspectRunCommand: `${cli} inspect run ${packet.run.id}`,
+    heartbeatState: packet.heartbeat?.state,
+    heartbeatAgeMs: packet.heartbeat?.ageMs,
+    promptPath: packet.artifacts.prompt.path,
+    resultExists: packet.artifacts.result.exists,
+    stderrExists: packet.artifacts.stderr.exists,
+    eventStreamExists: packet.eventStream.exists,
+    eventLineCount: packet.eventStream.lineCount,
+    lastCommand: lastCommand
+      ? {
+          command: clipText(lastCommand.command ?? "", 260),
+          status: lastCommand.status,
+          exitCode: lastCommand.exitCode,
+          outputTail: clipText(lastCommand.outputTail ?? "", 500),
+        }
+      : undefined,
+    recommendedInterventions: [...new Set(packet.diagnosis.recommendedInterventions)].slice(0, 6),
+  };
+}
+
 export function summarizeSliceFocusForPrompt(packet: SliceFocusPacket, cli: string) {
   const latest = packet.latestRunFocus;
   const failureClasses = latest?.diagnosis.failureClasses ?? [];
@@ -578,6 +693,8 @@ export function focusPriority(input: {
   if (input.highRetry) priority += 20;
   if (input.failureClasses.includes("missing_structured_result")) priority += 18;
   if (input.failureClasses.includes("command_failed")) priority += 16;
+  if (input.failureClasses.includes("child_idle_timeout")) priority += 25;
+  if (input.failureClasses.includes("quiet_before_first_action")) priority += 14;
   if (input.failureClasses.includes("quiet_running_agent")) priority += 12;
   if (input.failureClasses.includes("active_blocker")) priority += 10;
   if (input.failureClasses.includes("run_stale")) priority += 10;

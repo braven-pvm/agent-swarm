@@ -1,6 +1,6 @@
 # Current Project Memory
 
-Last updated: 2026-06-12
+Last updated: 2026-06-15
 
 This file is the durable handoff memory for the current state of `agent-swarm`. It should let a fresh agent resume without relying on the chat transcript.
 
@@ -30,6 +30,10 @@ The user is deliberately pushing against:
 - The planner must optimize coherence first and cadence a very close second.
 - No fake-ready UI work by default. UI work should depend on accepted backend FR/ACs.
 - Verification against FR/ACs is the glue that holds the system together.
+- No executable slice without harness-owned verification obligations for each included FR/AC.
+- Implementing agents may not create, edit, weaken, or approve the verification obligations used to accept their own work.
+- `human_input_required` blocks the affected FR/AC, slice, and downstream dependencies for spec/input resolution; `human_verification_required` permits implementation but blocks acceptance until human sign-off.
+- Requirement, slice, sprint, and product rollups must derive from the requirement ledger and evidence, not chat memory, broad command success, or agent confidence.
 - Checkpoints/resume packets make chat memory disposable.
 
 ## Current Implementation State
@@ -49,6 +53,10 @@ Implemented and covered by tests:
 - streaming Codex JSONL ingestion into events and heartbeats
 - structured worker result validation
 - verifier acceptance gate with per-FR/AC evidence coverage
+- planner-created verification obligations derived from source text for every served FR/AC ref
+- worker/reviewer dispatch gates that block slices with missing or malformed verification obligations
+- worker/reviewer prompts include read-only verification obligations
+- deterministic verification evidence includes criterion-level expected/actual results
 - independent reviewer runner through `swarm review`; reviewer dispatches through the driver registry with the target protocol's normal tool/command posture
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
 - visible overseer runner through `swarm orchestrate`; overseer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
@@ -80,7 +88,7 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 103/103 passing
+npm test -> 108/108 passing
 git diff --check -> clean
 ```
 
@@ -106,6 +114,26 @@ Expected UI behavior:
 - show run outcome, coverage, and product readiness as separate top-level truths
 - call out `accepted_partial` as a warning: run accepted for selected scope, coverage still incomplete
 - use `runObservability.uiHints` for badges/callouts where useful
+
+## Core Verification Doctrine Decision
+
+On 2026-06-15, after reviewing why a run could be accepted while global coverage remained `15/83`, the product doctrine was tightened:
+
+- Agent Swarm converts immutable requirements into verified implementation state.
+- Every executable slice must have verification obligations before worker dispatch.
+- Each obligation must state the immutable FR/AC ref/text, expected outcome, responsible verifier, required evidence, and acceptance threshold.
+- The planner/authorized overseer may derive obligations from the source spec; workers may not create, edit, weaken, or approve obligations for their own work.
+- Planner/overseer may add verifier guidance/comments later, but cannot alter the responsible party or acceptance criteria after dispatch.
+- `human_input_required` means ambiguity or missing decision; block the affected FR/AC, slice, and downstream dependencies.
+- `human_verification_required` means clear requirement but human acceptance needed; implementation may proceed, but final acceptance waits for a human packet and result.
+- A human verification packet must include exact FR/AC text, source context, slice/lane/worktree, implementation summary, automated evidence, changed files or PR link, steps to run/open/test, expected outcome, and pass/fail/needs-rework controls.
+- Requirement status must be ledger-derived with explicit parent FR rollups; selected-scope run acceptance is not whole-product completion.
+
+Architecture docs updated for this doctrine:
+
+- `docs/architecture/core-philosophy.md`
+- `docs/architecture/fr-ac-verification-contract.md`
+- `docs/architecture/planning-agent-decision-contract.md`
 
 ## Recent UI Work Completed
 
@@ -805,9 +833,21 @@ Tracked improvement backlog from the last run:
 
 ## Next Slice To Implement
 
-Name: Phase 10B Verification, then Phase 9 Clean Real-Run Rebaseline
+Name: Phase 10C-2 Requirement Ledger And Human Verification
 
-Goal: verify the new Super Overseer focus path across the broader suite, then rerun the real full-product smoke with child idle timeout and focus inspection available.
+Phase 10C-1 implemented the first enforceable layer: `VerificationObligation` type/storage, planner-derived obligations from source text, `slice.created`/`planner.decision` obligation summaries, dispatch preflight, read-only worker/reviewer prompt sections, criterion-level verifier evidence, and additive `/api/coverage` obligation fields.
+
+Next recommended implementation steps:
+
+- distinguish `human_input_required` from `human_verification_required` in state and API payloads
+- add a human verification packet artifact generator
+- add parent FR rollup semantics so coverage can explain direct FR vs child AC completion
+- decide whether the requirement ledger stays derived for one more slice or becomes a persisted table now
+- update the Coverage tab to show obligation status, verification mode, and human path
+
+After Phase 10C-2, rerun Phase 9 clean real-run rebaseline.
+
+Previous next goal: verify the new Super Overseer focus path across the broader suite, then rerun the real full-product smoke with child idle timeout and focus inspection available.
 
 Next practical slices:
 

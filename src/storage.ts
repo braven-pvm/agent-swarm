@@ -14,6 +14,7 @@ import type {
   LeaseRecord,
   SliceRecord,
   SourceRecord,
+  VerificationObligation,
 } from "./types.js";
 
 type Row = Record<string, unknown>;
@@ -90,6 +91,7 @@ export class SwarmStore {
         scope_json text not null,
         out_of_scope_json text not null,
         expected_evidence_json text,
+        verification_obligations_json text,
         unblock_targets_json text,
         verification_requirements_json text not null,
         created_at text not null,
@@ -203,6 +205,7 @@ export class SwarmStore {
     this.ensureColumn("slices", "minimum_meaningful_outcome", "text");
     this.ensureColumn("slices", "ac_sized_exception_reason", "text");
     this.ensureColumn("slices", "expected_evidence_json", "text");
+    this.ensureColumn("slices", "verification_obligations_json", "text");
     this.ensureColumn("slices", "unblock_targets_json", "text");
     this.ensureColumn("agent_runs", "role", "text");
     this.ensureColumn("agent_runs", "entity_type", "text");
@@ -336,10 +339,19 @@ export class SwarmStore {
   }
 
   insertSlice(slice: SliceRecord): void {
+    const verificationObligations =
+      Array.isArray(slice.verificationObligations)
+        ? slice.verificationObligations
+        : legacyVerificationObligations({
+            frAcRefs: slice.frAcRefs,
+            sourceRefs: slice.sourceRefs,
+            expectedEvidence: slice.expectedEvidence,
+            createdAt: slice.createdAt,
+          });
     this.db
       .prepare(
-        `insert into slices (id, lane_id, target_id, title, status, source_refs_json, fr_ac_refs_json, delivery_question, work_package_type, minimum_meaningful_outcome, ac_sized_exception_reason, scope_json, out_of_scope_json, expected_evidence_json, unblock_targets_json, verification_requirements_json, created_at, updated_at)
-         values (@id, @laneId, @targetId, @title, @status, @sourceRefsJson, @frAcRefsJson, @deliveryQuestion, @workPackageType, @minimumMeaningfulOutcome, @acSizedExceptionReason, @scopeJson, @outOfScopeJson, @expectedEvidenceJson, @unblockTargetsJson, @verificationRequirementsJson, @createdAt, @updatedAt)`,
+        `insert into slices (id, lane_id, target_id, title, status, source_refs_json, fr_ac_refs_json, delivery_question, work_package_type, minimum_meaningful_outcome, ac_sized_exception_reason, scope_json, out_of_scope_json, expected_evidence_json, verification_obligations_json, unblock_targets_json, verification_requirements_json, created_at, updated_at)
+         values (@id, @laneId, @targetId, @title, @status, @sourceRefsJson, @frAcRefsJson, @deliveryQuestion, @workPackageType, @minimumMeaningfulOutcome, @acSizedExceptionReason, @scopeJson, @outOfScopeJson, @expectedEvidenceJson, @verificationObligationsJson, @unblockTargetsJson, @verificationRequirementsJson, @createdAt, @updatedAt)`,
       )
       .run({
         ...slice,
@@ -349,6 +361,7 @@ export class SwarmStore {
         outOfScopeJson: JSON.stringify(slice.outOfScope),
         acSizedExceptionReason: slice.acSizedExceptionReason ?? null,
         expectedEvidenceJson: JSON.stringify(slice.expectedEvidence),
+        verificationObligationsJson: JSON.stringify(verificationObligations),
         unblockTargetsJson: JSON.stringify(slice.unblockTargets),
         verificationRequirementsJson: JSON.stringify(slice.verificationRequirements),
       });
@@ -709,14 +722,20 @@ function mapLane(row: Row): LaneRecord {
 
 function mapSlice(row: Row): SliceRecord {
   const verificationRequirements = JSON.parse(String(row.verification_requirements_json)) as string[];
+  const frAcRefs = JSON.parse(String(row.fr_ac_refs_json)) as string[];
+  const sourceRefs = JSON.parse(String(row.source_refs_json)) as SliceRecord["sourceRefs"];
+  const expectedEvidence =
+    row.expected_evidence_json === null || row.expected_evidence_json === undefined
+      ? verificationRequirements
+      : (JSON.parse(String(row.expected_evidence_json)) as string[]);
   return {
     id: String(row.id),
     laneId: String(row.lane_id),
     targetId: String(row.target_id),
     title: String(row.title),
     status: row.status as SliceRecord["status"],
-    sourceRefs: JSON.parse(String(row.source_refs_json)),
-    frAcRefs: JSON.parse(String(row.fr_ac_refs_json)),
+    sourceRefs,
+    frAcRefs,
     deliveryQuestion:
       row.delivery_question === null || row.delivery_question === undefined
         ? "What approved FR/AC behavior does this slice advance?"
@@ -735,10 +754,16 @@ function mapSlice(row: Row): SliceRecord {
         : String(row.ac_sized_exception_reason),
     scope: JSON.parse(String(row.scope_json)),
     outOfScope: JSON.parse(String(row.out_of_scope_json)),
-    expectedEvidence:
-      row.expected_evidence_json === null || row.expected_evidence_json === undefined
-        ? verificationRequirements
-        : (JSON.parse(String(row.expected_evidence_json)) as string[]),
+    expectedEvidence,
+    verificationObligations:
+      row.verification_obligations_json === null || row.verification_obligations_json === undefined
+        ? legacyVerificationObligations({
+            frAcRefs,
+            sourceRefs,
+            expectedEvidence,
+            createdAt: String(row.created_at),
+          })
+        : (JSON.parse(String(row.verification_obligations_json)) as VerificationObligation[]),
     unblockTargets:
       row.unblock_targets_json === null || row.unblock_targets_json === undefined
         ? []
@@ -747,6 +772,37 @@ function mapSlice(row: Row): SliceRecord {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
+}
+
+function legacyVerificationObligations(input: {
+  frAcRefs: string[];
+  sourceRefs: SliceRecord["sourceRefs"];
+  expectedEvidence: string[];
+  createdAt: string;
+}): VerificationObligation[] {
+  const source = input.sourceRefs[0];
+  return input.frAcRefs.map((ref, index) => ({
+    ref,
+    sourceRef: source?.hash ?? source?.uri,
+    sourceUri: source?.uri,
+    sourceTitle: source?.title,
+    sourceText: ref,
+    sourceContext: source?.title ?? source?.uri,
+    mode: "automated",
+    responsibleParty: "deterministic-verifier",
+    criteria: [
+      {
+        id: `${ref}.legacy-result`,
+        expectedOutcome: input.expectedEvidence[index] ?? `Behavior evidence proving ${ref}.`,
+        evidenceRequired: ["worker_evidence", "review_result", "verification_command"],
+        acceptanceThreshold: "worker coverage, review, and deterministic verification all pass",
+      },
+    ],
+    createdBy: "legacy-migration",
+    createdAt: input.createdAt,
+    immutable: true,
+    guidance: ["Legacy obligation synthesized from expectedEvidence for compatibility."],
+  }));
 }
 
 function mapLease(row: Row): LeaseRecord {

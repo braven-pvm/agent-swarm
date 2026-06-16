@@ -11,7 +11,15 @@ import {
   sourceTags,
 } from "./source-index.js";
 import type { SwarmStore } from "./storage.js";
-import type { DependencyEdge, LaneRecord, LeaseRecord, SliceRecord, SourceRecord, SourceRef } from "./types.js";
+import type {
+  DependencyEdge,
+  LaneRecord,
+  LeaseRecord,
+  SliceRecord,
+  SourceRecord,
+  SourceRef,
+  VerificationObligation,
+} from "./types.js";
 
 export interface PullSliceResult {
   lane: LaneRecord;
@@ -159,6 +167,7 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
     lane,
     targetId: target.id,
     source,
+    sourceText: text,
     selectedRefs,
     now,
   });
@@ -192,6 +201,7 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
       payload: {
         reason: "MVP planner selected the next unleased FR/AC-like references from the first registered source.",
         frAcRefs: selectedRefs,
+        verificationObligations: summarizeVerificationObligations(slice.verificationObligations),
         laneId: lane.id,
       },
     }),
@@ -210,6 +220,7 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
         acSizedExceptionReason: slice.acSizedExceptionReason,
         selectedScope: slice.frAcRefs,
         sourceRefs: [source.id],
+        verificationObligations: summarizeVerificationObligations(slice.verificationObligations),
         dependenciesConsidered: dependencies.map((dependency) => dependency.target),
         readinessEvidence: [],
         protocolRules: ["require_fr_ac_scope", "require_expected_evidence_before_dispatch"],
@@ -276,6 +287,7 @@ function createSlice(input: {
   lane: LaneRecord;
   targetId: string;
   source: SourceRecord;
+  sourceText: string;
   selectedRefs: string[];
   now: string;
 }): SliceRecord {
@@ -286,7 +298,13 @@ function createSlice(input: {
     title: input.source.title,
     hash: input.source.hash,
   };
-  const expectedEvidence = input.selectedRefs.map((ref) => `Behavior evidence proving ${ref}.`);
+  const verificationObligations = buildVerificationObligations({
+    source: input.source,
+    sourceText: input.sourceText,
+    refs: input.selectedRefs,
+    now: input.now,
+  });
+  const expectedEvidence = verificationObligations.map((obligation) => obligation.criteria[0]?.expectedOutcome ?? `Behavior evidence proving ${obligation.ref}.`);
   const meaningfulWork = inferMeaningfulWork(input.source, input.selectedRefs);
   return {
     id: makeId("slice"),
@@ -303,6 +321,7 @@ function createSlice(input: {
     scope: input.selectedRefs.map((ref) => `Implement behavior required by ${ref}.`),
     outOfScope: ["Do not mutate source specs.", "Do not implement unrelated FR/ACs."],
     expectedEvidence,
+    verificationObligations,
     unblockTargets: inferUnblockTargets(input.source, input.selectedRefs),
     verificationRequirements: [
       "Run the target test command if configured.",
@@ -311,6 +330,67 @@ function createSlice(input: {
     createdAt: input.now,
     updatedAt: input.now,
   };
+}
+
+function buildVerificationObligations(input: {
+  source: SourceRecord;
+  sourceText: string;
+  refs: string[];
+  now: string;
+}): VerificationObligation[] {
+  return input.refs.map((ref) => {
+    const sourceMatch = findSourceTextForRef(input.sourceText, ref);
+    return {
+      ref,
+      sourceRef: input.source.id,
+      sourceUri: input.source.uri,
+      sourceTitle: input.source.title,
+      sourceText: sourceMatch.text,
+      sourceContext: sourceMatch.context,
+      mode: "automated",
+      responsibleParty: "deterministic-verifier",
+      criteria: [
+        {
+          id: `${ref}.result`,
+          expectedOutcome: sourceMatch.text,
+          evidenceRequired: ["worker_evidence", "review_result", "verification_command"],
+          acceptanceThreshold: "worker coverage, review, and deterministic verification all pass",
+        },
+      ],
+      createdBy: "planner",
+      createdAt: input.now,
+      immutable: true,
+      guidance: ["Do not mutate source specs.", "Map worker/reviewer/verifier evidence to this exact FR/AC text."],
+    };
+  });
+}
+
+function findSourceTextForRef(sourceText: string, ref: string): { text: string; context?: string } {
+  const lines = sourceText.split(/\r?\n/);
+  const normalizedRef = ref.toUpperCase();
+  let context: string | undefined;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+    if (heading) context = heading[1].trim();
+    if (trimmed.toUpperCase().includes(normalizedRef)) {
+      return {
+        text: trimmed.replace(/^[-*]\s*/, ""),
+        context,
+      };
+    }
+  }
+  return { text: `Behavior required by ${ref}.`, context };
+}
+
+function summarizeVerificationObligations(obligations: VerificationObligation[]): Record<string, unknown>[] {
+  return obligations.map((obligation) => ({
+    ref: obligation.ref,
+    mode: obligation.mode,
+    responsibleParty: obligation.responsibleParty,
+    criteriaCount: obligation.criteria.length,
+    immutable: obligation.immutable,
+  }));
 }
 
 function inferMeaningfulWork(

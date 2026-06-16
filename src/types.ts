@@ -123,6 +123,7 @@ export interface SliceRecord {
   scope: string[];
   outOfScope: string[];
   expectedEvidence: string[];
+  verificationObligations: VerificationObligation[];
   unblockTargets: string[];
   verificationRequirements: string[];
   createdAt: string;
@@ -177,7 +178,46 @@ export interface EvidenceRecord {
   createdAt: string;
 }
 
-export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "overridden";
+export type VerificationObligationMode = "automated" | "reviewer" | "human_verification_required" | "hybrid";
+
+export interface VerificationCriterion {
+  id: string;
+  expectedOutcome: string;
+  evidenceRequired: string[];
+  acceptanceThreshold: string;
+}
+
+export interface VerificationObligation {
+  ref: string;
+  sourceRef?: string;
+  sourceUri?: string;
+  sourceTitle?: string;
+  sourceText: string;
+  sourceContext?: string;
+  mode: VerificationObligationMode;
+  responsibleParty: string;
+  criteria: VerificationCriterion[];
+  createdBy: string;
+  createdAt: string;
+  immutable: boolean;
+  guidance: string[];
+}
+
+export type FrAcVerificationStatus =
+  | "passed"
+  | "failed"
+  | "missing_evidence"
+  | "awaiting_human_verification"
+  | "human_input_required"
+  | "overridden";
+
+export interface VerificationCriterionResult {
+  criterionId: string;
+  status: FrAcVerificationStatus;
+  expectedOutcome: string;
+  actualOutcome: string;
+  evidenceIds: string[];
+}
 
 export interface FrAcVerificationResult {
   ref: string;
@@ -185,6 +225,7 @@ export interface FrAcVerificationResult {
   evidenceIds: string[];
   proof: string;
   verifiedBy: string;
+  criteriaResults?: VerificationCriterionResult[];
 }
 
 export interface EscalationRecord {

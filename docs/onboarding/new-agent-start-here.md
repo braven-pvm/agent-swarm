@@ -1,6 +1,6 @@
 # New Agent Start Here
 
-Last updated: 2026-06-12
+Last updated: 2026-06-15
 
 This repository is an agentic development harness prototype. It exists to coordinate autonomous implementation agents against approved immutable requirements at scale, while keeping planning, work, verification, evidence, recovery, and progress visible.
 
@@ -28,7 +28,11 @@ The harness is not a spec authoring system. Implementation agents may interpret 
 - Source specs are immutable inside the implementation harness.
 - Every slice must trace to source refs and FR/AC refs where available.
 - Verification is measured against FR/ACs, not against agent confidence.
+- No executable slice without harness-owned verification obligations for every included FR/AC.
 - No slice should be accepted without evidence.
+- Workers may not create, edit, weaken, or approve the verification obligations used to accept their own work.
+- Human input required blocks the affected FR/AC/slice/dependencies; human verification required may proceed to implementation but cannot be accepted until the human result is recorded.
+- Requirement, slice, sprint, and product rollups must derive from the requirement ledger, not chat memory or final agent claims.
 - Planner decisions must be visible as events/checkpoints, not hidden in chat.
 - Frontend/UI work should not be served as real production work until required backend FR/ACs are accepted, unless the protocol explicitly allows mock/stub work.
 - Sub-agents may write structured findings directly to harness state.
@@ -69,14 +73,17 @@ The current prototype supports:
 - lightweight spec search
 - domain summaries and `domains inspect`
 - dynamic slice pulling with domain/tag/source filters
+- planner-created verification obligations for every served FR/AC ref, derived from source text and stored on the slice
 - lane creation and reuse
 - FR/AC leases
+- worker/reviewer dispatch gates that block slices with missing or malformed verification obligations
 - dependency-gated slice serving
 - low-signal work warning escalation
 - model-agnostic worker dispatch (fixture, codex, claude drivers) via cross-spawn (Windows `.cmd`/`.ps1` shim support; prompts passed via stdin to survive `.cmd` newline truncation; `--setting-sources` emitted as a joined token to survive `.cmd` empty-arg dropping); Claude workers carry a default tool allowlist (`Edit Write Read Glob Grep Bash`) for build/test commands
 - worker JSONL event ingestion
 - heartbeats and agent-run records
 - verifier gates using worker-result evidence and FR/AC coverage
+- verifier evidence includes criterion-level expected/actual results tied to verification obligations
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters via `swarm review`
 - reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
 - visible overseer dispatch (fixture, codex, claude) through the driver registry via `swarm orchestrate`
@@ -100,6 +107,7 @@ The current prototype supports:
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, same-session revive, restart fallback, and configurable child idle timeout supervision
 - durable worker/reviewer/revive prompt artifacts, `swarm inspect run/slice` focus packets, overseer `actionableState.focusQueue`, bounded overseer inspect commands, and supervised-recovery focus artifacts for stalled, failed, blocked, or high-retry diagnosis
+- `/api/coverage` exposes obligation presence, mode, responsible party, criteria count, and expected outcomes additively
 - latest-only role/entity checkpoints
 - role-specific resume packets
 - local read-only web viewer served by `swarm serve`
@@ -141,7 +149,7 @@ git diff --check
 Expected current result:
 
 ```text
-npm test -> 103/103 passing
+npm test -> 108/108 passing
 git diff --check -> clean
 ```
 
@@ -185,6 +193,7 @@ Use `--port 0` if a fixed port is busy.
 1. Read this file and `docs/onboarding/current-project-memory.md`.
 2. Run `git status --short` and preserve unrelated dirty work.
 3. Read the relevant architecture page before editing:
+   - core doctrine: `docs/architecture/core-philosophy.md`
    - source/spec work: `docs/architecture/domain-source-management.md`
    - planner behavior: `docs/architecture/planning-agent-decision-contract.md`
    - verification: `docs/architecture/fr-ac-verification-contract.md`

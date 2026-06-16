@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildDomainSummaries } from "./domains.js";
-import { buildOverseerFocusQueue } from "./focus.js";
+import { buildAgentFocusQueue, buildOverseerFocusQueue } from "./focus.js";
 import { swarmDir } from "./paths.js";
 import { reviewResultSchema, type ReviewResult } from "./schemas.js";
 import { readSourceText } from "./source-adapter.js";
@@ -317,7 +317,14 @@ export interface CoverageRef {
   targetId?: string;
   targetName?: string;
   worktree?: string;
-  verification?: "passed" | "failed" | "missing_evidence" | "overridden";
+  verification?: "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_input_required" | "overridden";
+  obligation?: {
+    status: "present" | "missing";
+    mode?: string;
+    responsibleParty?: string;
+    criteriaCount: number;
+    expectedOutcomes: string[];
+  };
   reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
   proof?: string;
   evidenceIds?: string[];
@@ -521,6 +528,11 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
         nextAction: dependencyBlocks ? "wait_for_dependency" : "pull_slice",
         lastChangedAt: maxIso([attribution.sourceUpdatedAt, ...relatedDependencies.map((item) => item.updatedAt)]),
         dependencies: coverageDependencies(store, relatedDependencies),
+        obligation: {
+          status: "missing",
+          criteriaCount: 0,
+          expectedOutcomes: [],
+        },
       };
     }
     const lease = leases
@@ -528,6 +540,7 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
       .at(-1);
     const { evidence, frAcResults, reviewResult } = sliceEvidence(owning.id);
     const frAcResult = frAcResults.find((item) => item.ref === ref);
+    const obligation = owning.verificationObligations.find((item) => item.ref === ref);
     const reviewFinding = reviewResult?.frAcFindings.find((item) => item.ref === ref);
     const lane = lanes.find((item) => item.id === owning.laneId);
     const target = targets.find((item) => item.id === owning.targetId);
@@ -600,6 +613,19 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
         createdAt: item.createdAt,
         ref: item.ref,
       })),
+      obligation: obligation
+        ? {
+            status: "present",
+            mode: obligation.mode,
+            responsibleParty: obligation.responsibleParty,
+            criteriaCount: obligation.criteria.length,
+            expectedOutcomes: obligation.criteria.map((criterion) => criterion.expectedOutcome),
+          }
+        : {
+            status: "missing",
+            criteriaCount: 0,
+            expectedOutcomes: [],
+          },
     };
     if (frAcResult) {
       coverageRef.verification = frAcResult.status;
@@ -1207,6 +1233,7 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
   // Runs buildSliceFocusPacket for each active slice with the overseer's modest
   // limits; a focus failure must never break the snapshot, so default to [].
   let focusQueue: ReturnType<typeof buildOverseerFocusQueue> = [];
+  let agentFocusQueue: ReturnType<typeof buildAgentFocusQueue> = [];
   try {
     focusQueue = buildOverseerFocusQueue({
       store,
@@ -1214,10 +1241,16 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
       snapshot: { slices: snapshot.slices },
       cli: focusCli(),
     });
+    agentFocusQueue = buildAgentFocusQueue({
+      store,
+      workspace,
+      cli: focusCli(),
+    });
   } catch {
     focusQueue = [];
+    agentFocusQueue = [];
   }
-  return { ...snapshot, focusQueue };
+  return { ...snapshot, focusQueue, agentFocusQueue };
 }
 
 function focusCli(): string {

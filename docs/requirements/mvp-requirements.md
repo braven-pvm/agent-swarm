@@ -52,6 +52,8 @@ Completion must be proven by evidence, not agent claims. Structural/pattern chec
 
 Preferred evidence includes tests, runtime checks, API calls, browser flows, screenshots, visual diffs, contract checks, logs, and explicit AC-to-evidence mapping.
 
+Every FR/AC in an executable slice must have an expected outcome before implementation starts. The expected outcome is derived by the planner/overseer from immutable source text and stored as a harness verification obligation. Passing commands are accepted only when they prove those expected outcomes.
+
 ### FR/AC-centered proof
 
 FRs and ACs are the harness measurement unit. Slices, dependencies, planner decisions, worker prompts, verifier gates, evidence, status, reports, and downstream readiness should all trace back to immutable FR/AC refs wherever the source material provides them.
@@ -68,6 +70,13 @@ Every accepted slice should be able to answer:
 - which downstream slices or lanes were unblocked
 
 If any FR/AC ref in a slice lacks required proof, the slice remains blocked, repairing, or review-needed. The harness should not complete the underlying FR/AC lease until the missing proof is supplied or an explicit protocol-governed escalation/override is recorded.
+
+The default doctrine is:
+
+- no executable slice without a verification plan
+- no accepted work without per-ref evidence
+- no downstream readiness from unverified or human-pending prerequisites
+- no requirement, slice, sprint, or product rollup from chat memory or agent confidence alone
 
 ## MVP Scope
 
@@ -137,6 +146,8 @@ Reviews code, risks, regressions, test adequacy, and spec alignment.
 - `Heartbeat`: lightweight liveness/state signal for an agent or lane.
 - `Evidence`: proof attached to a slice or FR/AC.
 - `Gate`: verification requirement and result.
+- `VerificationObligation`: harness-owned expected outcome, verifier responsibility, and evidence requirement for a specific FR/AC in a slice. It is derived from immutable source text before worker dispatch.
+- `RequirementStatus`: authoritative per-FR/AC lifecycle state derived from leases, evidence, review, verification, human input, and acceptance gates.
 - `StatusUpdate`: write-back payload sent through a status sink to Linear/files/Notion/etc.
 - `Protocol`: project-level policy for agent roles, prompts, allowed actions, verification cadence, gates, and review/merge behavior.
 - `DerivedCapability`: planning-agent inferred functionality derived from completed/signed-off FR/ACs and slice metadata. It is optional planning state, not a human-authored catalog.
@@ -154,12 +165,17 @@ Each served slice should include:
 - implementation goal
 - explicit scope
 - explicit out-of-scope
+- immutable verification obligations for every included FR/AC
 - expected verification evidence
 - suggested commands/tests
 - allowed protocol actions
 - report URL once created
 
 Each slice contract should center its scope around FR/AC refs. A slice may contain multiple FR/ACs, but each included ref must have a verification expectation. The worker prompt, verifier prompt, generated report, and status sink summary should all carry the same FR/AC scope so the lifecycle cannot drift from the approved requirements.
+
+The harness should refuse default implementation dispatch for a slice whose included refs lack verification obligations. Diagnostic or exploration-only work may be allowed by protocol, but it must be marked as diagnostic and cannot complete FR/AC leases.
+
+Workers receive verification obligations as read-only input. They may add tests, probes, artifacts, implementation notes, and evidence links, but they may not change the responsible verifier, expected outcome, evidence requirement, or acceptance threshold.
 
 ## Source Adapter Behavior
 
@@ -355,6 +371,13 @@ Verification disagreement should start as a `blocker`. Agents may resolve it wit
 
 Spec ambiguity goes directly to `human_required`. Agents must not invent or mutate specs to resolve ambiguous requirements.
 
+The harness must distinguish two human paths:
+
+- `human_input_required`: the requirement, expected outcome, business decision, or acceptance criteria are unclear. Block the affected FR/AC, slice, and downstream dependencies until the spec/input concern is resolved outside the normal implementation flow.
+- `human_verification_required`: the requirement is clear and implementable, but final acceptance requires a human check. Agents may implement and gather supporting automated evidence, but the FR/AC remains unaccepted until the human verification result is recorded.
+
+Human verification work must produce a review packet with exact FR/AC text, source context, implementation summary, automated evidence, changed files or PR link, how to run/open/test the result, and the expected outcome the human should compare against.
+
 `human_required` should block progression, closure, and new scope decisions for the affected scope, but it does not automatically stop already-running agents unless the protocol or escalation explicitly says to halt.
 
 `critical` should stop in-flight agents for the affected scope immediately.
@@ -370,6 +393,10 @@ Escalation clearance model:
 The planning agent may clear operational planning escalations it raised, but it should not erase independent quality, verification, or spec concerns.
 
 Each FR/AC has one authoritative status. The harness should not model partial implementation of a single FR/AC across multiple active slices. A slice may cover multiple FR/ACs, but an individual FR/AC should not be split across concurrent slices.
+
+Requirement status should be derived from a harness requirement ledger, not from worker claims. The ledger should track at minimum: current status, status reason, owning slice when leased, verification obligation, evidence, verifier/reviewer/human result, active blocker or human path, and last changed time.
+
+Parent FR rollups must be explicit. A parent FR with direct behavior needs its own verification obligation; a parent FR that only groups child ACs may roll up from child AC status. The rollup rule must be visible so the dashboard can distinguish selected-scope acceptance from whole-product completion.
 
 The spec server is responsible for preventing duplicate active work. It should enforce one active slice lease per FR/AC globally so two orchestrators cannot work the same FR/AC concurrently.
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { SwarmStore } from "../dist/storage.js";
+import { buildCoverage } from "../dist/observability.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -226,6 +227,119 @@ test("manual checkpoint refresh keeps latest checkpoint per role and entity", ()
   assert.match(shown, /Payload:/);
 });
 
+test("planner creates read-only verification obligations that flow through prompts, coverage, and verifier evidence", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-obligation-flow-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  let store = new SwarmStore(workspace);
+  let slice = store.listSlices().find((item) => item.id === sliceId);
+  let events = store.listEvents();
+  store.close();
+  assert.ok(slice);
+  assert.equal(slice.verificationObligations.length, 3);
+  assert.deepEqual(
+    slice.verificationObligations.map((item) => item.ref),
+    slice.frAcRefs,
+  );
+  assert.equal(slice.verificationObligations[0].immutable, true);
+  assert.match(slice.verificationObligations[0].sourceText, /AC-INV-001\.1/);
+  assert.match(slice.verificationObligations[0].criteria[0].expectedOutcome, /AC-INV-001\.1/);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "slice.created" &&
+        event.entityId === sliceId &&
+        Array.isArray(event.payload.verificationObligations) &&
+        event.payload.verificationObligations.length === 3,
+    ),
+  );
+
+  store = new SwarmStore(workspace);
+  const coverageBefore = buildCoverage(store);
+  store.close();
+  const coveredRef = coverageBefore.refs.find((item) => item.ref === "AC-INV-001.1");
+  assert.equal(coveredRef.obligation.status, "present");
+  assert.equal(coveredRef.obligation.criteriaCount, 1);
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "obligation-worker"]);
+  runSwarm(workspace, ["review", sliceId, "--driver", "fixture", "--actor", "obligation-reviewer"]);
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "obligation-verifier"]);
+  assert.match(verifyOutput, /Verification passed/);
+
+  store = new SwarmStore(workspace);
+  slice = store.listSlices().find((item) => item.id === sliceId);
+  events = store.listEvents();
+  const commandEvidence = store.listEvidence(sliceId).filter((item) => item.kind === "command").at(-1);
+  store.close();
+  assert.equal(slice?.status, "accepted");
+  const workerStarted = events.find((event) => event.type === "worker.started" && event.payload.workerActor === "obligation-worker");
+  const reviewStarted = events.find((event) => event.type === "review.started" && event.payload.reviewerActor === "obligation-reviewer");
+  assert.ok(workerStarted?.payload.promptPath);
+  assert.ok(reviewStarted?.payload.promptPath);
+  assert.match(fs.readFileSync(String(workerStarted.payload.promptPath), "utf8"), /Verification obligations \(read-only\)/);
+  assert.match(fs.readFileSync(String(reviewStarted.payload.promptPath), "utf8"), /Judge evidence against the read-only verification obligations/);
+  assert.ok(commandEvidence);
+  const frAcResults = commandEvidence.payload.frAcResults;
+  assert.ok(Array.isArray(frAcResults));
+  assert.equal(frAcResults[0].criteriaResults[0].expectedOutcome, slice.verificationObligations[0].criteria[0].expectedOutcome);
+  assert.match(frAcResults[0].criteriaResults[0].actualOutcome, /covered/i);
+});
+
+test("worker dispatch blocks explicit slices with missing verification obligations", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-obligation-gate-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const db = new Database(path.join(workspace, ".swarm", "state.db"));
+  try {
+    db.prepare("update slices set verification_obligations_json = '[]' where id = ?").run(sliceId);
+  } finally {
+    db.close();
+  }
+
+  assert.throws(
+    () => runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "obligation-gate-worker"]),
+    /verificationObligations \(no obligations recorded\)/,
+  );
+});
+
 test("dispatch rejects AC-sized proof work without an exception reason", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-meaningful-gate-${process.pid}`);
   const target = path.join(workspace, "invoice-api");
@@ -257,15 +371,18 @@ test("dispatch rejects AC-sized proof work without an exception reason", () => {
   const dbPath = path.join(workspace, ".swarm", "state.db");
   const db = new Database(dbPath);
   try {
+    const selectedRef = slice.frAcRefs[0];
+    const selectedObligation = slice.verificationObligations.filter((item) => item.ref === selectedRef);
     db.prepare(
       `update slices
        set fr_ac_refs_json = ?,
+           verification_obligations_json = ?,
            work_package_type = 'proof_pack',
            minimum_meaningful_outcome = 'proves_cutover_or_readiness',
            unblock_targets_json = '[]',
            ac_sized_exception_reason = null
        where id = ?`,
-    ).run(JSON.stringify([slice.frAcRefs[0]]), sliceId);
+    ).run(JSON.stringify([selectedRef]), JSON.stringify(selectedObligation), sliceId);
   } finally {
     db.close();
   }

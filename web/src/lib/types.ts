@@ -12,8 +12,16 @@ export interface LeaseRecord { id: string; frAcRef: string; sliceId: string; lan
 export interface HeartbeatRecord { id: string; actor: string; state: HeartbeatState; detail?: string; entityType?: EntityType; entityId?: string; timestamp: string; }
 export interface AgentRunRecord { id: string; sliceId: string; role?: AgentRole; entityType?: EntityType; entityId?: string; actor: string; driver: string; status: "running" | "completed" | "failed" | "stale" | "released"; sessionId?: string; attempt: number; eventsPath?: string; resultPath?: string; stderrPath?: string; startedAt: string; updatedAt: string; }
 export interface EvidenceRecord { id: string; sliceId: string; kind: "command" | "worker_result" | "review_result" | "artifact" | "note"; summary: string; ref?: string; payload: Record<string, unknown>; createdAt: string; }
-export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "overridden";
-export interface FrAcVerificationResult { ref: string; status: FrAcVerificationStatus; evidenceIds: string[]; proof: string; verifiedBy: string; }
+export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_input_required" | "overridden";
+export interface VerificationCriterionResult { criterionId: string; status: FrAcVerificationStatus; expectedOutcome: string; actualOutcome: string; evidenceIds: string[]; }
+export interface FrAcVerificationResult { ref: string; status: FrAcVerificationStatus; evidenceIds: string[]; proof: string; verifiedBy: string; criteriaResults?: VerificationCriterionResult[]; }
+export type VerificationObligationMode = "automated" | "reviewer" | "human_verification_required" | "hybrid";
+export interface VerificationCriterion { id: string; expectedOutcome: string; evidenceRequired: string[]; acceptanceThreshold: string; }
+export interface VerificationObligation {
+  ref: string; sourceRef?: string; sourceUri?: string; sourceTitle?: string; sourceText: string; sourceContext?: string;
+  mode: VerificationObligationMode; responsibleParty: string; criteria: VerificationCriterion[];
+  createdBy: string; createdAt: string; immutable: boolean; guidance: string[];
+}
 export interface EscalationRecord { id: string; level: "info" | "warning" | "blocker" | "human_required" | "critical"; status: "active" | "cleared"; entityType: EntityType; entityId: string; message: string; reason?: string; createdBy: string; clearedBy?: string; createdAt: string; updatedAt: string; }
 export interface DependencyEdge { id: string; fromType: "slice" | "lane"; fromId: string; target: string; reason: string; status: "pending" | "satisfied" | "blocked"; createdAt: string; updatedAt: string; }
 export type CheckpointRole = "planner" | "worker" | "verifier" | "reviewer" | "recovery" | "overseer";
@@ -26,6 +34,7 @@ export interface TargetRef { id: string; path: string; name: string; }
 export interface SliceWithDetail {
   id: string; laneId: string; targetId: string; title: string; status: SliceStatus;
   sourceRefs: unknown[]; frAcRefs: string[]; deliveryQuestion: string;
+  verificationObligations?: VerificationObligation[];
   leases: LeaseRecord[]; evidence: EvidenceRecord[]; frAcResults: FrAcVerificationResult[]; reviewResult?: ReviewResult; agentRuns: AgentRunRecord[];
   createdAt: string; updatedAt: string;
 }
@@ -53,6 +62,29 @@ export interface FocusItem {
   error?: string;
 }
 
+export interface AgentFocusItem {
+  reason: string;
+  runId: string;
+  actor: string;
+  role?: string;
+  status: string;
+  entityType?: string;
+  entityId?: string;
+  sliceId?: string;
+  inspectRunCommand: string;
+  heartbeatState?: string;
+  heartbeatAgeMs?: number;
+  promptPath?: string;
+  resultExists: boolean;
+  stderrExists: boolean;
+  eventStreamExists: boolean;
+  eventLineCount: number;
+  focusPriority: number;
+  lastCommand?: { command: string; status?: string; exitCode?: number; outputTail: string };
+  recommendedInterventions: string[];
+  error?: string;
+}
+
 export interface SnapshotResponse {
   workspace: string; runMode: RunMode; generatedAt: string;
   scenario?: string; phase?: string; turnCount?: number;   // scenario derivable in M1; phase/turn surfaced in M3 (— until then)
@@ -63,6 +95,7 @@ export interface SnapshotResponse {
   agentRuns: AgentRunRecord[]; heartbeats: HeartbeatRecord[];
   activeEscalations: EscalationRecord[]; checkpoints: CheckpointRecord[]; recentEvents: HarnessEvent[];
   focusQueue: FocusItem[];
+  agentFocusQueue: AgentFocusItem[];
   runObservability: RunObservabilitySummary;
 }
 
@@ -96,7 +129,8 @@ export interface CoverageRef {
   targetId?: string;
   targetName?: string;
   worktree?: string;
-  verification?: "passed" | "failed" | "missing_evidence" | "overridden";
+  verification?: FrAcVerificationStatus;
+  obligation?: { status: "present" | "missing"; mode?: string; responsibleParty?: string; criteriaCount: number; expectedOutcomes: string[] };
   reviewStatus?: "passed" | "failed" | "missing_evidence" | "uncertain";
   proof?: string;
   evidenceIds?: string[];
