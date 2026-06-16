@@ -47,6 +47,12 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-
 .agent-name { font-weight: 600; font-size: var(--fs-title); } .agent-role { color: var(--faint); } .muted { color: var(--muted); }
 .agent-now { color: var(--muted); font-size: var(--fs-meta); margin-top: var(--s1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .agent-next { color: var(--faint); font-size: var(--fs-meta); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* Per-agent focus: subtle amber attention pill + the engine's reason, shown only when this agent
+   carries a focus item (needs attention). Idle/healthy agents have none → nothing renders. */
+.agent-focus { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; font-size: var(--fs-meta); min-width: 0; }
+.agent-focus-pill { flex: none; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; background: rgba(214,161,60,.14); color: var(--amber); }
+.agent-focus-reason { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.agent-focus-fix { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Bound work: which slice + FR/AC refs + spec/domain this agent is on. */
 .agent-task { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; font-size: var(--fs-meta); min-width: 0; }
 .agent-task-glyph { flex: none; color: var(--faint); font-size: .9em; }
@@ -216,6 +222,20 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .cov-badge-blocked, .cov-badge-failed { background: rgba(239,107,97,.14); color: var(--red); }
 .cov-badge-not_started { background: rgba(255,255,255,.06); color: var(--muted); }
 .coverage select, .coverage .search { background: var(--bg); border: 1px solid var(--line-2); color: var(--ink); border-radius: 6px; padding: 4px 8px; }
+/* Obligation disclosure on the requirements table — caret cell + present/missing marker. */
+.cov-th-caret { width: 22px; }
+.cov-caret-cell { width: 22px; white-space: nowrap; color: var(--faint); }
+.cov-row-obl { cursor: pointer; }
+.cov-row-obl:hover td, .cov-row-expanded td { background: var(--surface-2); }
+.cov-obl-marker { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--blue); vertical-align: middle; margin-right: 4px; }
+.cov-obl-marker.missing { background: var(--amber); }
+.cov-caret { font-size: .85em; }
+/* Accessible button wrapper for the obligation caret cell — keyboard-operable. */
+.cov-obl-btn { display: inline-flex; align-items: center; background: none; border: none; padding: 0; cursor: pointer; color: var(--faint); font: inherit; line-height: 1; }
+.cov-obl-btn:hover { color: var(--muted); }
+.cov-row-expanded .cov-obl-btn { color: var(--muted); }
+.cov-obl-row td { background: var(--bg); padding: 0; }
+.cov-obl-row td:last-child { padding: var(--s2) var(--s3); }
 /* ── Specs — "Spec Build Map" ────────────────────────────────────────────
    Coverage-joined: same status colors reused in the card bar, the ledger, and
    inline in the prose. All scoped under .specs-route. Reuses cov-badge-*,
@@ -332,6 +352,37 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 /* inline-in-prose chips sit on the text baseline */
 .spec-md .spec-ref { margin: 0 1px; }
 
+/* Ledger ref + its obligation disclosure: chip and toggle on one line; when expanded,
+   the ObligationView drops below on its own (full-width) line within the unit. */
+.spec-ref-unit { display: inline-flex; flex-direction: column; gap: 4px; }
+/* When expanded, break this unit onto its own full-width row so the ObligationView
+   reads as a clean band spanning the family's width, not a squeezed strip. */
+.spec-ref-unit.expanded { flex-basis: 100%; width: 100%; }
+.spec-ref-unit.expanded .obl { width: 100%; }
+.spec-ref-row { display: inline-flex; align-items: center; gap: 4px; }
+.spec-obl-toggle { display: inline-flex; align-items: center; gap: 3px; background: none; border: none; padding: 0 2px; color: var(--faint); font-size: var(--fs-eyebrow); cursor: pointer; line-height: 1.5; }
+.spec-obl-toggle:hover, .spec-obl-toggle.open { color: var(--muted); }
+.spec-obl-caret { font-size: .85em; }
+.spec-ref-unit .obl { margin-bottom: 2px; }
+
+/* ── Verification obligation summary (ObligationView) — reused in the ledger
+   and the Coverage table. Compact dark inset; mode chip is subtle + glyphed so
+   color is never the sole signal. */
+.obl { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s3); display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-body); }
+.obl-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.obl-mode { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
+.obl-mode-glyph { font-size: .9em; opacity: .85; }
+.obl-mode-auto { background: rgba(255,255,255,.06); color: var(--muted); }
+.obl-mode-reviewer { background: rgba(91,157,255,.14); color: var(--blue); }
+.obl-mode-human { background: rgba(214,161,60,.16); color: var(--amber); }
+.obl-mode-hybrid { background: rgba(167,139,250,.16); color: var(--violet); }
+.obl-party { font-size: var(--fs-meta); }
+.obl-criteria-head { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+.obl-outcomes { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 2px; }
+.obl-outcomes li { color: var(--ink); }
+.obl-missing { flex-direction: row; align-items: center; gap: 5px; color: var(--amber); }
+.obl-missing-glyph { font-size: .9em; }
+
 .spec-body-divider { display: flex; align-items: center; padding: var(--s2) var(--s4) 0; border-top: 1px solid var(--line); margin-top: var(--s1); }
 .spec-body-divider .run-subhead { margin: var(--s2) 0 0; }
 
@@ -356,6 +407,12 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .agent-now .now-target { font-size: .85em; }
 .agent-section { margin-top: 12px; }
 .agent-section h4 { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+/* Slice report — rendered markdown in a scrollable dark inset (inspector slice branch). */
+.sl-report { margin-top: 4px; max-height: 340px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s3); overflow-wrap: anywhere; }
+/* 2b. Focus — per-agent triage (reason + interventions + last command). Faint amber accent. */
+.ag-focus { border: 1px solid rgba(214,161,60,.35); border-radius: var(--radius); padding: var(--s2) var(--s3); background: rgba(214,161,60,.06); }
+.ag-focus-reason { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; color: var(--ink); font-size: var(--fs-body); }
+.ag-focus-status { font-size: 10px; margin-left: auto; }
 /* 0. "Working on" — the slice this agent's latest run is bound to. */
 .ag-working { border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s3); margin-bottom: 8px; background: var(--surface-2); display: flex; flex-direction: column; gap: 5px; }
 .ag-working-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }

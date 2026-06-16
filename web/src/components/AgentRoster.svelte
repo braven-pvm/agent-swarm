@@ -69,6 +69,14 @@
           </div>
         {/if}
       {/if}
+      {#if row.focusReason}
+        {@const topFix = row.recommendedInterventions?.[0]}
+        <div class="agent-focus" title={row.focusReason}>
+          <span class="agent-focus-pill">⚑ focus</span>
+          <span class="agent-focus-reason">{row.focusReason}</span>
+          {#if topFix}<span class="agent-focus-fix muted" title={topFix}> · {topFix}</span>{/if}
+        </div>
+      {/if}
       {#if row.next}<div class="agent-next" title={row.next}>next: {row.next}</div>{/if}
       {#if state === "stalled"}<div class="dead-warn" title="A live run has not emitted a signal recently — the process may be stalled.">⚠ live run silent {shortAge(age)} — may be stalled</div>{/if}
     </button>

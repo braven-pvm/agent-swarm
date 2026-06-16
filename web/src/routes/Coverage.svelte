@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import { statusLabel } from "~/lib/format";
+  import ObligationView from "~/components/ObligationView.svelte";
   let { store, seed = "" }: { store: ConsoleStore; seed?: string } = $props();
   let q = $state(""); let statusFilter = $state("all");
   // Reactive seed: follows `seed` on every navigation change (App sets it; manual
@@ -53,6 +54,15 @@
   });
   const STATUSES = ["all","done","in_progress","blocked","failed","not_started"];
   const C = 2 * Math.PI * 46;
+
+  // ── Per-row obligation disclosure (collapsed by default) ───────────────
+  // Rows that carry an obligation summary ("what must be proven") get a caret in
+  // the first cell + a subtle present/missing marker; expanding reveals the
+  // ObligationView in a detail row that spans the table.
+  let expandedRef = $state<string | null>(null);
+  function toggleRow(ref: string) {
+    expandedRef = expandedRef === ref ? null : ref;
+  }
 </script>
 <section class="route coverage">
   {#if !cov}
@@ -148,16 +158,46 @@
       </div>
       <div class="cov-table-scroll">
         <table class="cov-table">
-          <thead><tr><th>Requirement</th><th>Domain</th><th>Status</th><th>Slice</th><th>Verification</th></tr></thead>
+          <thead><tr><th class="cov-th-caret" aria-label="Expand"></th><th>Requirement</th><th>Domain</th><th>Status</th><th>Slice</th><th>Verification</th></tr></thead>
           <tbody>
             {#each rows as r (r.ref)}
-              <tr class="cov-row cov-{r.status}">
+              {@const obl = r.obligation}
+              {@const expanded = expandedRef === r.ref}
+              <tr
+                class="cov-row cov-{r.status}"
+                class:cov-row-obl={!!obl}
+                class:cov-row-expanded={expanded}
+              >
+                <td class="cov-caret-cell">
+                  {#if obl}
+                    <button
+                      type="button"
+                      class="cov-obl-btn"
+                      aria-expanded={expanded}
+                      title="Toggle obligation"
+                      onclick={() => toggleRow(r.ref)}
+                    >
+                      <span
+                        class="cov-obl-marker"
+                        class:missing={obl.status === "missing"}
+                        aria-hidden="true"
+                      ></span>
+                      <span class="cov-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+                    </button>
+                  {/if}
+                </td>
                 <td class="mono">{r.ref}</td>
                 <td>{r.domain}</td>
                 <td><span class="cov-badge cov-badge-{r.status}">{statusLabel(r.status)}</span></td>
                 <td class="mono muted" title={r.sliceId ?? ""}>{r.sliceId ? r.sliceId.slice(-8) : "—"}</td>
                 <td class="muted">{r.verification ?? r.reviewStatus ?? "—"}</td>
               </tr>
+              {#if obl && expanded}
+                <tr class="cov-obl-row">
+                  <td></td>
+                  <td colspan="5"><ObligationView obligation={obl} /></td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>

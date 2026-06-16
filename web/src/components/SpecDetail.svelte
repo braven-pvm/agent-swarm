@@ -12,6 +12,7 @@
   import { renderMarkdown, linkifyRefs, injectHeadingIds, highlightFind } from "~/lib/markdown";
   import type { SourceRecord, CoverageRef } from "~/lib/types";
   import RefChip from "~/components/RefChip.svelte";
+  import ObligationView from "~/components/ObligationView.svelte";
 
   let {
     source,
@@ -81,6 +82,27 @@
   function toggleStatus(s: RefStatus) {
     statusFilter = statusFilter === s ? null : s;
   }
+
+  // ── Per-ref obligation disclosure (collapsed by default) ───────────────
+  // The obligation summary ("what must be proven") lives on the CoverageRef. We
+  // resolve it from the same source-scoped refMap and let an operator expand a
+  // single ref's ledger row to reveal it inline; only refs that carry one get the
+  // affordance. The RefChip itself still navigates to Coverage — the toggle is a
+  // separate control beside it.
+  let expandedRef = $state<string | null>(null);
+  function obligationFor(ref: string): CoverageRef["obligation"] | undefined {
+    return refMap.get(ref.toUpperCase())?.obligation;
+  }
+  function toggleObligation(ref: string) {
+    expandedRef = expandedRef === ref.toUpperCase() ? null : ref.toUpperCase();
+  }
+
+  // Reset expandedRef when the source/spec changes so a same-named ref from a
+  // previous spec is never shown pre-expanded in the new one.
+  $effect(() => {
+    void source.uri; // depend on the source identity
+    expandedRef = null;
+  });
 
   // A ref matches the active status filter when its (blocked|failed) collapse to "blocked".
   function matchesStatus(rec: CoverageRef | undefined): boolean {
@@ -353,7 +375,28 @@
           </div>
           <div class="spec-family-refs">
             {#each row.visible as r (r)}
-              <RefChip ref={r} record={refMap.get(r.toUpperCase()) ?? null} {onOpenRef} hit={!!find.trim() && r.toLowerCase().includes(find.trim().toLowerCase())} />
+              {@const obl = obligationFor(r)}
+              {@const expanded = expandedRef === r.toUpperCase()}
+              <span class="spec-ref-unit" class:expanded={expandedRef === r.toUpperCase()}>
+                <span class="spec-ref-row">
+                  <RefChip ref={r} record={refMap.get(r.toUpperCase()) ?? null} {onOpenRef} hit={!!find.trim() && r.toLowerCase().includes(find.trim().toLowerCase())} />
+                  {#if obl}
+                    <button
+                      type="button"
+                      class="spec-obl-toggle"
+                      class:open={expanded}
+                      aria-expanded={expanded}
+                      title={expanded ? "Hide obligation" : "Show obligation"}
+                      onclick={() => toggleObligation(r)}
+                    >
+                      <span class="spec-obl-caret">{expanded ? "▾" : "▸"}</span>obligation
+                    </button>
+                  {/if}
+                </span>
+                {#if obl && expanded}
+                  <ObligationView obligation={obl} />
+                {/if}
+              </span>
             {/each}
           </div>
         </div>

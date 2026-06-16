@@ -1,5 +1,6 @@
 import type {
   SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity, CoverageSummary,
+  AgentFocusItem,
 } from "~/lib/types";
 import { groupEscalations, type EscalationGroup } from "~/lib/format";
 
@@ -18,6 +19,11 @@ export interface AgentRosterRow {
   sliceId?: string;       // id of the slice the latest run is bound to (undefined for slice-less actors, e.g. overseer)
   sliceTitle?: string;    // title of that bound slice
   frAcRefs?: string[];    // FR/AC refs that slice owns
+  // Per-agent focus (engine triage): WHY this agent needs attention. Only set when a focus item
+  // matched this actor in snapshot.agentFocusQueue (the highest-priority item for the actor).
+  focusReason?: string;
+  recommendedInterventions?: string[];
+  focusPriority?: number;
 }
 
 export interface ProofChainRow {
@@ -65,6 +71,13 @@ export function createConsoleStore() {
         row.nowTarget = activity.target ?? undefined;
       }
     }
+    // Per-agent focus triage: keep the highest-focusPriority item per actor (the engine's reason
+    // this agent needs attention). Empty queue / no match for an actor → no focus on that row.
+    const focusByActor = new Map<string, AgentFocusItem>();
+    for (const item of snapshot.agentFocusQueue ?? []) {
+      const prev = focusByActor.get(item.actor);
+      if (!prev || item.focusPriority > prev.focusPriority) focusByActor.set(item.actor, item);
+    }
     // enrich: next-action from checkpoint (matched by createdBy), stall if heartbeat is old
     const nowMs = Date.now();
     for (const row of byActor.values()) {
@@ -87,6 +100,13 @@ export function createConsoleStore() {
           row.sliceTitle = slc.title;
           row.frAcRefs = slc.frAcRefs;
         }
+      }
+      // Attach per-agent focus (if any) — the reason + recommended interventions for this actor.
+      const focus = focusByActor.get(row.actor);
+      if (focus) {
+        row.focusReason = focus.reason;
+        row.recommendedInterventions = focus.recommendedInterventions;
+        row.focusPriority = focus.focusPriority;
       }
       // Stall only matters for a live run that has gone silent — a finished/absent run that hasn't
       // signalled in a while is idle, not stalled.

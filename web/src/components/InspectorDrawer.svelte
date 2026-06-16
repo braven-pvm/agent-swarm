@@ -22,6 +22,14 @@
   // Last-signal age + liveness for the selected agent.
   const sigAge = $derived(heartbeat ? Date.now() - Date.parse(heartbeat.timestamp) : Infinity);
   const level = $derived(livenessLevel(runStatus, sigAge));
+  // Per-agent focus triage: the highest-priority agentFocusQueue item for the selected actor (the
+  // reason it needs attention + recommended interventions). undefined when the queue has no match.
+  const agentFocus = $derived((() => {
+    if (sel?.kind !== "agent") return undefined;
+    const items = (store.snapshot?.agentFocusQueue ?? []).filter((f) => f.actor === sel.actor);
+    if (items.length === 0) return undefined;
+    return items.reduce((a, b) => (a.focusPriority >= b.focusPriority ? a : b));
+  })());
 
   function sliceById(id: string): SliceWithDetail | undefined {
     return store.snapshot?.slices.find((s) => s.id === id);
@@ -316,6 +324,41 @@
     return () => { cancelled = true; };
   });
 
+  // ---- Slice report: lazy-fetched markdown for the selected slice. ----
+  // Fetched on first open of the collapsible "Report" section (not on every slice click), with a
+  // stale-guard keyed to the selected slice id so switching slices mid-fetch never renders a stale
+  // report. States: idle (unopened), loading, error, ok (markdown, possibly empty → "no report").
+  let reportOpen = $state(false);
+  let reportMd = $state<string | null>(null);
+  let reportLoading = $state(false);
+  let reportError = $state(false);
+  let reportFetchedFor = $state<string | undefined>(undefined);
+  // Reset the report whenever the selected slice changes (or selection leaves a slice). Keyed to the
+  // slice id so re-renders for the SAME slice don't wipe an already-loaded report.
+  $effect(() => {
+    const id = sel?.kind === "slice" ? sel.id : undefined;
+    if (id === reportFetchedFor) return;
+    reportFetchedFor = id;
+    reportOpen = false;
+    reportMd = null;
+    reportLoading = false;
+    reportError = false;
+  });
+  function loadReport(sliceId: string) {
+    reportLoading = true;
+    reportError = false;
+    reportMd = null;
+    api.report(sliceId)
+      .then((md) => { if (sel?.kind === "slice" && sel.id === sliceId) reportMd = md; })
+      .catch(() => { if (sel?.kind === "slice" && sel.id === sliceId) reportError = true; })
+      .finally(() => { if (sel?.kind === "slice" && sel.id === sliceId) reportLoading = false; });
+  }
+  function toggleReport(sliceId: string) {
+    reportOpen = !reportOpen;
+    // Fetch on first open only (markdown not yet loaded and not currently loading).
+    if (reportOpen && reportMd === null && !reportLoading) loadReport(sliceId);
+  }
+
   // Defensive accessors over the nested packet (shape is server-owned).
   function pick(obj: unknown, path: string): unknown {
     let cur: unknown = obj;
@@ -363,6 +406,24 @@
           </div>
         {/each}
       </div>
+
+      <!-- Report — human-readable slice report, lazily fetched on first open. -->
+      <section class="agent-section">
+        <button class="run-act-toggle" onclick={() => toggleReport(slice.id)}>
+          {reportOpen ? "▾" : "▸"} Report
+        </button>
+        {#if reportOpen}
+          {#if reportLoading}
+            <p class="empty">Loading…</p>
+          {:else if reportError}
+            <p class="error">Could not load report</p>
+          {:else if reportMd && reportMd.trim().length > 0}
+            <div class="sl-report"><Markdown md={reportMd} /></div>
+          {:else}
+            <p class="empty">No report available</p>
+          {/if}
+        {/if}
+      </section>
     {:else if sel.kind === "agent"}
       <!-- 0. "Working on" — the slice this agent's latest run is bound to. Skipped when no slice. -->
       {#if workingSlice}
@@ -420,9 +481,41 @@
         {/if}
       </div>
 
+      <!-- 2b. Focus — the engine's per-agent triage. Rendered only when this agent has a focus item. -->
+      {#if agentFocus}
+        {@const lastCmd = agentFocus.lastCommand}
+        <section class="agent-section ag-focus">
+          <h4>Focus</h4>
+          <div class="ag-focus-reason">
+            <span class="agent-focus-pill">⚑</span>
+            <span>{agentFocus.reason}</span>
+            <span class="verdict verdict-other ag-focus-status">{agentFocus.status}</span>
+          </div>
+          {#if agentFocus.recommendedInterventions.length > 0}
+            <div class="run-subhead">Recommended interventions</div>
+            <ul class="run-fixes">{#each agentFocus.recommendedInterventions as fix}<li>{fix}</li>{/each}</ul>
+          {/if}
+          {#if lastCmd}
+            <div class="run-subhead">Last command</div>
+            <div class="focus-cmd">
+              <code title={lastCmd.command}>{prettifyTarget(lastCmd.command)}</code>
+              {#if lastCmd.status != null}
+                <span class="exit">{lastCmd.status}</span>
+              {/if}
+              {#if lastCmd.exitCode != null}
+                <span class="exit" class:bad={lastCmd.exitCode !== 0}>exit {lastCmd.exitCode}</span>
+              {/if}
+            </div>
+            {#if lastCmd.outputTail}
+              <pre class="json" style="max-height:160px">{lastCmd.outputTail}</pre>
+            {/if}
+          {/if}
+        </section>
+      {/if}
+
       <!-- 3. Runs — what it HAS DONE. Collapsible per-run cards, newest first. -->
       {#if historyLoading && resolvedRuns.length === 0}
-        <p class="empty">loading…</p>
+        <p class="empty">Loading…</p>
       {:else if resolvedRuns.length > 0}
         <section class="agent-section">
           <h4>Runs</h4>
@@ -539,9 +632,9 @@
         <!-- 4. Agents with no slice runs (e.g. overseer): full grouped activity + markers. -->
         <section class="agent-section">
           {#if historyLoading}
-            <p class="empty">loading activity…</p>
+            <p class="empty">Loading activity…</p>
           {:else if noRunActivity.length === 0 && noRunMarkers.length === 0}
-            <p class="empty">no recorded activity for this agent.</p>
+            <p class="empty">No recorded activity for this agent.</p>
           {:else}
             <button class="run-act-toggle" onclick={() => (noRunActOpen = !noRunActOpen)}>
               {noRunActOpen ? "▾" : "▸"} Activity ({noRunActivity.reduce((n, g) => n + g.count, 0)} action{noRunActivity.reduce((n, g) => n + g.count, 0) === 1 ? "" : "s"})
@@ -576,9 +669,9 @@
     {:else if sel.kind === "focusSlice"}
       <div class="focus-packet">
         {#if focusLoading}
-          <p class="empty">loading…</p>
+          <p class="empty">Loading…</p>
         {:else if focusError}
-          <p class="error">failed to load focus packet — {focusError}</p>
+          <p class="error">Failed to load focus packet — {focusError}</p>
         {:else if focusPacket}
           {@const sliceObj = pick(focusPacket, "slice")}
           {@const sliceTitle = asStr(pick(sliceObj, "title")) ?? asStr(pick(focusPacket, "slice.title")) ?? sel.id}
@@ -671,15 +764,15 @@
           </button>
           {#if openRawPacket}<pre class="json">{JSON.stringify(focusPacket, null, 2)}</pre>{/if}
         {:else}
-          <p class="empty">no packet.</p>
+          <p class="empty">No packet.</p>
         {/if}
       </div>
     {:else if sel.kind === "focusRun"}
       <div class="focus-packet">
         {#if focusLoading}
-          <p class="empty">loading…</p>
+          <p class="empty">Loading…</p>
         {:else if focusError}
-          <p class="error">failed to load focus packet — {focusError}</p>
+          <p class="error">Failed to load focus packet — {focusError}</p>
         {:else if focusPacket}
           {@const run = pick(focusPacket, "run")}
           {@const runRole = asStr(pick(run, "role")) ?? "—"}
@@ -788,7 +881,7 @@
           </button>
           {#if openRawPacket}<pre class="json">{JSON.stringify(focusPacket, null, 2)}</pre>{/if}
         {:else}
-          <p class="empty">no packet.</p>
+          <p class="empty">No packet.</p>
         {/if}
       </div>
     {/if}
