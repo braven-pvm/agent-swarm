@@ -871,6 +871,8 @@ Phase 10C-2E defines the compact status-sink ledger contract without implementin
 
 Phase 10C-2F adds the local human-action API for UI handoff: `GET /api/human-actions`, `POST /api/escalations/:id/clear`, and `POST /api/human-verify`. The queue derives from active escalations and `/api/coverage` ledger state, exposes focus/source/packet links plus allowed action templates, and returns refreshed queue state after writes. The Command Bridge server is now local trusted control, not purely read-only. See `docs/architecture/human-action-api.md`.
 
+Phase 10C-2G CLI rebaseline/product-probe hardening: a fresh real run was launched through `node dist\cli.js smoke live-agent full` after reset-first and `swarm serve` on `127.0.0.1:4319`. Run `LAR-20260617T190112-live-agent-smoke-none-20932` accepted 5 slices and reached `19/83` coverage, then blocked final product readiness correctly. The generated app passed tests and printed `http://127.0.0.1:4321`, while the harness had assigned/probed a random `PORT` URL (`http://127.0.0.1:59808` in this run). `scripts/run-live-agent-demo.mjs` now records `assignedManualUrl`, parses local URLs printed by `npm start`, retries probes against the printed URL, records `probeUrlSource`/`observedStartUrls`, and reports the effective `commands.manualUrl`. Focused regression `full-product readiness probes the URL printed by npm start when PORT is ignored` passed.
+
 Clean 100%-coverage real run confirmed:
 
 - Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`
@@ -886,8 +888,9 @@ Clean 100%-coverage real run confirmed:
 
 The next recommended implementation steps for Phase 10C-2 are:
 
-- validate the derived-ledger Coverage UI against a fresh real or focused smoke run
-- validate the compact status-sink ledger summary against a fresh real or focused smoke run
+- rerun a clean real full-product smoke through the CLI with printed-URL fallback in place
+- confirm product readiness no longer blocks on assigned-vs-printed URL mismatch
+- validate the derived-ledger Coverage UI and compact status-sink ledger summary against that fresh run
 - wire `buildStatusSinkLedgerSummary()` into the first concrete file/Linear status sink when that sink is implemented
 
 Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and confirmed by the next real full-product smoke. Phase 10C-2A implements derived requirement-ledger semantics and parent FR rollups. Phase 10C-2B implements human verification packet artifacts and awaiting-human coverage links. Phase 10C-2C implements human result recording/sign-off. Phase 10C-2D implements the derived-ledger persistence decision and UI consumption of the ledger/rollup/packet/result fields. Phase 10C-2E implements the compact outbound ledger summary contract for future status sinks while keeping `/api/coverage` canonical.

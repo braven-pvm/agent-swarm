@@ -926,6 +926,66 @@ test("full-product mode coordinates backend and dashboard through product readin
   assert.equal(manifest.liveRun.productReadiness.passed, true);
 });
 
+test("full-product readiness probes the URL printed by npm start when PORT is ignored", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-full-product-printed-url-${process.pid}-${Date.now()}`);
+  const fakeCodexScript = writeFakeLiveCodex();
+  const printedPort = allocateTestPort();
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      liveDemo,
+      "--workspace",
+      workspace,
+      "--driver",
+      "codex",
+      "--reset",
+      "--mode",
+      "full-product",
+      "--max-turns",
+      "80",
+      "--max-runtime-seconds",
+      "240",
+      "--execute-limit",
+      "3",
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        SWARM_CODEX_COMMAND: process.execPath,
+        SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+        TEST_SWARM_CLI: cli,
+        SWARM_FAKE_DASHBOARD_IGNORES_PORT: "true",
+        SWARM_FAKE_DASHBOARD_FIXED_START_PORT: String(printedPort),
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const summary = JSON.parse(output);
+  const startResult = summary.productReadiness.commandResults.start;
+  const expectedPrintedUrl = `http://127.0.0.1:${printedPort}`;
+
+  assert.equal(summary.finalOutcome, "accepted");
+  assert.equal(summary.productReadiness.passed, true);
+  assert.equal(startResult.passed, true);
+  assert.equal(startResult.probeUrlSource, "npm_start_output");
+  assert.equal(startResult.manualUrl, expectedPrintedUrl);
+  assert.notEqual(startResult.assignedManualUrl, expectedPrintedUrl);
+  assert.ok(startResult.observedStartUrls.includes(expectedPrintedUrl));
+  assert.equal(summary.productReadiness.commands.manualUrl, expectedPrintedUrl);
+  assert.equal(summary.productReadiness.commands.assignedManualUrl, startResult.assignedManualUrl);
+
+  const probeArtifact = JSON.parse(fs.readFileSync(summary.artifacts.productProbe, "utf8"));
+  assert.equal(probeArtifact.passed, true);
+  assert.equal(probeArtifact.probeUrlSource, "npm_start_output");
+  assert.equal(probeArtifact.manualUrl, expectedPrintedUrl);
+  assert.equal(probeArtifact.assignedManualUrl, startResult.assignedManualUrl);
+  assert.equal(probeArtifact.probes.ui.assignedManualUrl, startResult.assignedManualUrl);
+  assert.equal(probeArtifact.probes.ui.assignedUrlProbe.passed, false);
+});
+
 test("full-product mode turns runtime readiness blockers into visible follow-up work", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-full-product-readiness-feedback-${process.pid}-${Date.now()}`);
   const fakeCodexScript = writeFakeLiveCodex();
@@ -1148,6 +1208,24 @@ function assertRunHistory(summary, expectedHistoryRoot) {
   assert.equal(archivedSummary.outcomeClassification.code, summary.outcomeClassification.code);
 }
 
+function allocateTestPort() {
+  const output = execFileSync(
+    process.execPath,
+    [
+      "-e",
+      `const net = require("node:net");
+const server = net.createServer();
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  console.log(address.port);
+  server.close();
+});`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  return Number(output);
+}
+
 function writeFakeLiveCodex() {
   const fakeCodexDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-live-runner-"));
   const scriptPath = path.join(fakeCodexDir, "fake-live-codex.mjs");
@@ -1174,6 +1252,8 @@ const schemaPath = schemaIndex >= 0 ? args[schemaIndex + 1] : "";
 const cli = process.env.TEST_SWARM_CLI;
 const fault = process.env.SWARM_LIVE_FAULT || "none";
 const delayDashboardStart = process.env.SWARM_FAKE_DELAY_DASHBOARD_START === "true";
+const ignoreDashboardStartPort = process.env.SWARM_FAKE_DASHBOARD_IGNORES_PORT === "true";
+const fixedDashboardStartPort = process.env.SWARM_FAKE_DASHBOARD_FIXED_START_PORT || "4321";
 const workerCountPath = ${JSON.stringify(workerCountPath)};
 const reviewCountPath = ${JSON.stringify(reviewCountPath)};
 const rawPrompt = readStdin() || (args.at(-1) ?? "");
@@ -1348,7 +1428,11 @@ if (schemaPath.includes("overseer-decision")) {
   if (isDashboardSlice) {
     const omitStart = delayDashboardStart && !isProductRuntimeSlice && !hasExistingStartScript();
     console.log(JSON.stringify({ type: "item.started", item: { type: "file_change", path: "src/server.js" } }));
-    writeDashboardImplementation({ omitStart });
+    writeDashboardImplementation({
+      omitStart,
+      ignoreStartPort: ignoreDashboardStartPort,
+      fixedStartPort: fixedDashboardStartPort,
+    });
     if (outputPath) {
       fs.writeFileSync(outputPath, JSON.stringify({
         status: "passed",
@@ -1757,6 +1841,9 @@ function isDashboardSliceRecord(slice) {
 
 function writeDashboardImplementation(options = {}) {
   const omitStart = Boolean(options.omitStart);
+  const ignoreStartPort = Boolean(options.ignoreStartPort);
+  const fixedStartPort = options.fixedStartPort ?? "4321";
+  const portExpression = ignoreStartPort ? JSON.stringify(fixedStartPort) : "process.env.PORT || 4321";
   const packageJson = {
     name: "invoice-dashboard-fixture",
     version: "0.1.0",
@@ -1848,7 +1935,7 @@ function withCustomer(invoice) {
 import { getDashboardModel, getInvoice, getSummary, listInvoices, markInvoicePaid, formatCurrency } from "./dashboard.js";
 
 const host = process.env.HOST || "127.0.0.1";
-const port = Number(process.env.PORT || 4321);
+const port = Number(\${portExpression});
 
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", "http://localhost");

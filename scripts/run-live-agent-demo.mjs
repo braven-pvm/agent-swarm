@@ -3107,7 +3107,8 @@ function inspectProductReadiness({ runCommands }) {
       install: "npm install",
       test: "npm test",
       start: "npm start",
-      manualUrl,
+      manualUrl: startResult.manualUrl ?? manualUrl,
+      assignedManualUrl: startResult.assignedManualUrl ?? manualUrl,
     },
     probeIsolation,
     commandResults: {
@@ -3508,6 +3509,14 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
   const cwd = options.cwd ?? dashboardTarget;
   const probeIsolation = options.probeIsolation;
   const probeUrl = new URL(manualUrl);
+  let effectiveManualUrl = manualUrl;
+  let probeUrlSelection = {
+    assignedManualUrl: manualUrl,
+    manualUrl,
+    probeUrlSource: "assigned",
+    observedStartUrls: [],
+    reason: "The assigned harness probe URL responded.",
+  };
   try {
     fs.writeSync(outputFd, `$ npm start\n\n`);
     fs.writeSync(outputFd, `cwd: ${cwd}\n`);
@@ -3523,20 +3532,40 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
       },
     });
 
-    const uiProbe = waitForHttp(`${manualUrl}/`, {
+    let uiProbe = waitForHttp(`${effectiveManualUrl}/`, {
       label: "dashboard-html",
       expectText: "Invoice Operations Dashboard",
       timeoutMs: 7000,
     });
+    if (!uiProbe.passed) {
+      probeUrlSelection = selectPrintedProbeUrl(outputPath, manualUrl);
+      if (probeUrlSelection.manualUrl !== manualUrl) {
+        fs.writeSync(
+          outputFd,
+          `\nAssigned probe URL ${manualUrl} did not respond; retrying URL printed by npm start: ${probeUrlSelection.manualUrl}\n`,
+        );
+        const assignedUrlProbe = uiProbe;
+        effectiveManualUrl = probeUrlSelection.manualUrl;
+        uiProbe = {
+          ...waitForHttp(`${effectiveManualUrl}/`, {
+            label: "dashboard-html",
+            expectText: "Invoice Operations Dashboard",
+            timeoutMs: 7000,
+          }),
+          assignedManualUrl: manualUrl,
+          assignedUrlProbe,
+        };
+      }
+    }
     const apiProbe = uiProbe.passed
-      ? waitForHttp(`${manualUrl}/api/summary`, {
+      ? waitForHttp(`${effectiveManualUrl}/api/summary`, {
           label: "dashboard-summary-api",
           expectJsonFields: ["invoiceCount", "openTotalCents"],
           timeoutMs: 3000,
         })
       : { passed: false, reason: "Skipped API probe because UI probe failed." };
     const markPaidProbe = apiProbe.passed
-      ? runMarkPaidProbe(manualUrl)
+      ? runMarkPaidProbe(effectiveManualUrl)
       : { passed: false, reason: "Skipped mark-paid workflow because summary API probe failed." };
     const probeArtifact = {
       generatedAt: new Date().toISOString(),
@@ -3544,7 +3573,10 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
       cwd,
       productTarget: dashboardTarget,
       probeIsolation,
-      manualUrl,
+      manualUrl: effectiveManualUrl,
+      assignedManualUrl: manualUrl,
+      probeUrlSource: probeUrlSelection.probeUrlSource,
+      observedStartUrls: probeUrlSelection.observedStartUrls,
       passed: uiProbe.passed && apiProbe.passed && markPaidProbe.passed,
       probes: {
         ui: uiProbe,
@@ -3559,7 +3591,10 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
       command: "npm start",
       attempted: true,
       passed: uiProbe.passed && apiProbe.passed && markPaidProbe.passed,
-      manualUrl,
+      manualUrl: effectiveManualUrl,
+      assignedManualUrl: manualUrl,
+      probeUrlSource: probeUrlSelection.probeUrlSource,
+      observedStartUrls: probeUrlSelection.observedStartUrls,
       outputPath,
       probeOutputPath,
       probeMarkdownPath,
@@ -3577,6 +3612,62 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
       terminateProcessTree(child);
     }
     fs.closeSync(outputFd);
+  }
+}
+
+function selectPrintedProbeUrl(outputPath, assignedManualUrl) {
+  let output = "";
+  try {
+    output = fs.readFileSync(outputPath, "utf8");
+  } catch {
+    return {
+      assignedManualUrl,
+      manualUrl: assignedManualUrl,
+      probeUrlSource: "assigned",
+      observedStartUrls: [],
+      reason: "npm start output could not be read, so the assigned harness URL was used.",
+    };
+  }
+  const observedStartUrls = extractLocalHttpOrigins(output);
+  const assignedOrigin = normalizeUrlOrigin(assignedManualUrl);
+  const printedUrl = [...observedStartUrls].reverse().find((url) => url !== assignedOrigin);
+  if (printedUrl) {
+    return {
+      assignedManualUrl,
+      manualUrl: printedUrl,
+      probeUrlSource: "npm_start_output",
+      observedStartUrls,
+      reason: "The app printed a different local URL than the harness-assigned PORT/HOST URL.",
+    };
+  }
+  return {
+    assignedManualUrl,
+    manualUrl: assignedOrigin,
+    probeUrlSource: "assigned",
+    observedStartUrls,
+    reason: "No alternate local URL was printed by npm start.",
+  };
+}
+
+function extractLocalHttpOrigins(output) {
+  const urls = [];
+  const pattern = /https?:\/\/(?:127\.0\.0\.1|localhost):\d+(?:\/[^\s'"`<>)\]]*)?/gi;
+  for (const match of output.matchAll(pattern)) {
+    const origin = normalizeUrlOrigin(match[0]);
+    if (origin && !urls.includes(origin)) {
+      urls.push(origin);
+    }
+  }
+  return urls;
+}
+
+function normalizeUrlOrigin(value) {
+  try {
+    const url = new URL(value);
+    if (!["127.0.0.1", "localhost"].includes(url.hostname)) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
   }
 }
 
