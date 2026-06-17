@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
+  import type { CoverageRef, ReviewFinding } from "~/lib/types";
   import { statusLabel } from "~/lib/format";
-  import ObligationView from "~/components/ObligationView.svelte";
+  import RequirementDetail from "~/components/RequirementDetail.svelte";
   let { store, seed = "" }: { store: ConsoleStore; seed?: string } = $props();
   let q = $state(""); let statusFilter = $state("all");
   // Reactive seed: follows `seed` on every navigation change (App sets it; manual
@@ -55,13 +56,36 @@
   const STATUSES = ["all","done","in_progress","blocked","failed","not_started"];
   const C = 2 * Math.PI * 46;
 
-  // ── Per-row obligation disclosure (collapsed by default) ───────────────
-  // Rows that carry an obligation summary ("what must be proven") get a caret in
-  // the first cell + a subtle present/missing marker; expanding reveals the
-  // ObligationView in a detail row that spans the table.
+  // ── Per-row requirement disclosure (collapsed by default) ──────────────
+  // Any ref with detail (proof OR evidence OR obligation OR a reviewer finding) gets
+  // a caret in the first cell; expanding reveals the full expected-vs-actual picture
+  // (RequirementDetail) in a detail row that spans the table.
   let expandedRef = $state<string | null>(null);
   function toggleRow(ref: string) {
     expandedRef = expandedRef === ref ? null : ref;
+  }
+
+  // A ref is expandable when it carries ANY detail worth a verdict/proof/evidence panel —
+  // essentially every indexed (done) ref. Refs with nothing but a bare status are not.
+  function hasDetail(r: CoverageRef): boolean {
+    return !!(
+      r.obligation ||
+      r.proof ||
+      (r.evidence?.length ?? 0) > 0 ||
+      r.reviewStatus ||
+      r.verification ||
+      findingFor(r)
+    );
+  }
+
+  // Resolve the richest per-AC reviewer finding for a ref: coverage row → owning slice
+  // (via sliceId) → its reviewResult.frAcFindings, matched case-insensitively (findings
+  // key on the UPPERCASE ref). Undefined when no slice / no review / no matching finding.
+  function findingFor(r: CoverageRef): ReviewFinding | undefined {
+    if (!r.sliceId) return undefined;
+    const slice = store.snapshot?.slices.find((s) => s.id === r.sliceId);
+    const want = r.ref.toUpperCase();
+    return slice?.reviewResult?.frAcFindings.find((f) => f.ref.toUpperCase() === want);
   }
 </script>
 <section class="route coverage">
@@ -162,25 +186,26 @@
           <thead><tr><th class="cov-th-caret" aria-label="Expand"></th><th>Requirement</th><th>Domain</th><th>Status</th><th>Slice</th><th>Verification</th></tr></thead>
           <tbody>
             {#each rows as r (r.ref)}
+              {@const detail = hasDetail(r)}
               {@const obl = r.obligation}
               {@const expanded = expandedRef === r.ref}
               <tr
                 class="cov-row cov-{r.status}"
-                class:cov-row-obl={!!obl}
+                class:cov-row-obl={detail}
                 class:cov-row-expanded={expanded}
               >
                 <td class="cov-caret-cell">
-                  {#if obl}
+                  {#if detail}
                     <button
                       type="button"
                       class="cov-obl-btn"
                       aria-expanded={expanded}
-                      title="Toggle obligation"
+                      title={expanded ? "Hide detail" : "Show detail"}
                       onclick={() => toggleRow(r.ref)}
                     >
                       <span
                         class="cov-obl-marker"
-                        class:missing={obl.status === "missing"}
+                        class:missing={obl?.status === "missing"}
                         aria-hidden="true"
                       ></span>
                       <span class="cov-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
@@ -193,10 +218,10 @@
                 <td class="mono muted" title={r.sliceId ?? ""}>{r.sliceId ? r.sliceId.slice(-8) : "—"}</td>
                 <td class="muted">{r.verification ?? r.reviewStatus ?? "—"}</td>
               </tr>
-              {#if obl && expanded}
+              {#if detail && expanded}
                 <tr class="cov-obl-row">
                   <td></td>
-                  <td colspan="5"><ObligationView obligation={obl} /></td>
+                  <td colspan="5"><RequirementDetail ref={r} finding={findingFor(r)} /></td>
                 </tr>
               {/if}
             {/each}

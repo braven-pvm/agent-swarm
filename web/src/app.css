@@ -373,7 +373,7 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .cov-obl-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; background: none; border: none; padding: 4px; cursor: pointer; color: var(--faint); font: inherit; line-height: 1; }
 .cov-obl-btn:hover { color: var(--muted); }
 .cov-row-expanded .cov-obl-btn { color: var(--muted); }
-.cov-obl-row td { background: var(--bg); padding: 0; }
+.cov-obl-row td { background: var(--panel); padding: 0; }
 .cov-obl-row td:last-child { padding: var(--s2) var(--s3); }
 /* ── Specs — "Spec Build Map" ────────────────────────────────────────────
    Coverage-joined: same status colors reused in the card bar, the ledger, and
@@ -483,11 +483,20 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .spec-ledger { padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
 .spec-ledger-head { margin: 0; }
 .spec-family { display: flex; flex-direction: column; gap: 5px; }
-.spec-family-head { display: flex; align-items: center; gap: var(--s2); }
+/* Family header is the collapse control: caret + name + progress mini-bar + done/total
+   + a worst-status glyph. Full-width button (keyboard + global :focus-visible ring). */
+.spec-family-head { display: flex; align-items: center; gap: var(--s2); width: 100%; background: none; border: none; padding: 3px 4px; margin: 0 -4px; border-radius: var(--radius); cursor: pointer; text-align: left; color: inherit; font: inherit; }
+.spec-family-head:hover { background: rgba(255,255,255,.04); }
+.spec-family-caret { flex: none; font-size: .8em; color: var(--muted); width: .9em; }
 .spec-family-name { margin: 0; flex: none; }
 .spec-family-bar { flex: 1; height: 4px; min-height: 4px; max-width: 160px; background: rgba(255,255,255,.10); }
 .spec-family-count { flex: none; font-size: var(--fs-eyebrow); }
-.spec-family-refs { display: flex; flex-wrap: wrap; gap: 4px; }
+.spec-family-status { flex: none; display: inline-flex; align-items: center; font-size: var(--fs-meta); margin-left: auto; }
+.spec-family-status.cov-badge-done { color: var(--green); }
+.spec-family-status.cov-badge-in_progress { color: var(--blue); }
+.spec-family-status.cov-badge-blocked, .spec-family-status.cov-badge-failed { color: var(--red); }
+.spec-family-status.cov-badge-not_started, .spec-family-status.spec-ref-unindexed { color: var(--muted); }
+.spec-family-refs { display: flex; flex-wrap: wrap; gap: 4px; padding-left: calc(.9em + var(--s2)); }
 
 /* Reference chip — reuses cov-badge-* tones; clickable; glyph + mono ref */
 .spec-ref { display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; border: 1px solid transparent; cursor: pointer; line-height: 1.5; vertical-align: baseline; }
@@ -499,23 +508,22 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 /* inline-in-prose chips sit on the text baseline */
 .spec-md .spec-ref { margin: 0 1px; }
 
-/* Ledger ref + its obligation disclosure: chip and toggle on one line; when expanded,
-   the ObligationView drops below on its own (full-width) line within the unit. */
-.spec-ref-unit { display: inline-flex; flex-direction: column; gap: 4px; }
-/* When expanded, break this unit onto its own full-width row so the ObligationView
-   reads as a clean band spanning the family's width, not a squeezed strip. */
+/* Ledger ref + its chip-as-expander detail. The chip IS the toggle: clicking it
+   opens that ref's RequirementDetail inline as a full-width band beneath the chip
+   cloud. Collapsed units sit inline in the wrap; an expanded one breaks onto its
+   own full-width row so the detail reads as a clean band, not a squeezed strip. */
+.spec-ref-unit { display: inline-flex; flex-direction: column; gap: var(--s2); }
 .spec-ref-unit.expanded { flex-basis: 100%; width: 100%; }
-.spec-ref-unit.expanded .obl { width: 100%; }
 .spec-ref-row { display: inline-flex; align-items: center; gap: 4px; }
-.spec-obl-toggle { display: inline-flex; align-items: center; gap: 3px; min-height: 28px; background: none; border: none; padding: 4px 8px; color: var(--muted); font-size: var(--fs-eyebrow); cursor: pointer; line-height: 1.5; }
-.spec-obl-toggle:hover, .spec-obl-toggle.open { color: var(--muted); }
-.spec-obl-caret { font-size: .85em; }
-.spec-ref-unit .obl { margin-bottom: 2px; }
+/* The expanded chip reads as the open header of its band (steady emphasis ring). */
+.spec-ref.expanded { box-shadow: inset 0 0 0 1px currentColor; }
+.spec-ref-detail { width: 100%; }
+.spec-ref-detail .rq { margin-top: 2px; }
 
-/* ── Verification obligation summary (ObligationView) — reused in the ledger
-   and the Coverage table. Compact dark inset; mode chip is subtle + glyphed so
-   color is never the sole signal. */
-.obl { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s3); display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-body); }
+/* ── Verification obligation summary (ObligationView) — the "Expected" panel
+   inside RequirementDetail (ledger + Coverage table). Compact dark inset; mode
+   chip is subtle + glyphed so color is never the sole signal. */
+.obl { background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-body); }
 .obl-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .obl-mode { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
 .obl-mode-glyph { font-size: .9em; opacity: .85; }
@@ -529,6 +537,45 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .obl-outcomes li { color: var(--ink); }
 .obl-missing { flex-direction: row; align-items: center; gap: 5px; color: var(--amber); }
 .obl-missing-glyph { font-size: .9em; }
+
+/* ── RequirementDetail — the expected-vs-actual panel reused in the Coverage
+   table detail row and the Spec ledger. A static detail container (no heavy
+   border); each section is an eyebrow sub-head + --muted body, with proof and
+   finding prose in quiet insets and evidence rows carrying kind-tinted badges. */
+.rq { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s1) 0; }
+.rq-section { display: flex; flex-direction: column; gap: var(--s2); }
+.rq-eyebrow { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+
+/* Verdict — two independent gate badges (glyph + colour + label); colour never alone. */
+.rq-verdict { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.rq-gate { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
+.rq-gate-label { font-weight: 600; opacity: .8; margin-right: 1px; }
+.rq-gate-glyph { font-size: .9em; }
+.rq-gate-pass { background: rgba(92,184,122,.14); color: var(--green); }
+.rq-gate-fail { background: rgba(239,107,97,.14); color: var(--red); }
+.rq-gate-warn { background: rgba(214,161,60,.16); color: var(--amber); }
+.rq-gate-neutral { background: rgba(255,255,255,.06); color: var(--muted); }
+.rq-verifiers { font-size: var(--fs-meta); }
+
+/* Proof + reviewer-finding prose: quiet dark inset, rendered markdown (inline code). */
+.rq-proof, .rq-finding { background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+.rq-proof .md, .rq-finding .md { font-size: var(--fs-body); color: var(--muted); max-width: none; }
+.rq-citations { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-meta); color: var(--muted); }
+.rq-citations li { color: var(--muted); }
+
+/* Evidence trail — kind-tinted badge + truncating summary. */
+.rq-evidence { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s2); }
+.rq-ev-row { display: flex; align-items: baseline; gap: var(--s2); font-size: var(--fs-body); min-width: 0; }
+.rq-ev-kind { flex: none; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
+.rq-ev-review { background: rgba(91,157,255,.14); color: var(--blue); }
+.rq-ev-command { background: rgba(92,184,122,.14); color: var(--green); }
+.rq-ev-worker { background: rgba(167,139,250,.16); color: var(--violet); }
+.rq-ev-other { background: rgba(255,255,255,.06); color: var(--muted); }
+.rq-ev-summary { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rq-more { align-self: flex-start; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 3px var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
+.rq-more:hover { background: var(--surface-2); color: var(--ink); }
+.rq-open { align-self: flex-start; background: none; border: none; padding: 0; color: var(--blue); font-size: var(--fs-meta); cursor: pointer; }
+.rq-open:hover { text-decoration: underline; }
 
 .spec-body-divider { display: flex; align-items: center; padding: var(--s2) var(--s4) 0; border-top: 1px solid var(--line); margin-top: var(--s1); }
 .spec-body-divider .run-subhead { margin: var(--s2) 0 0; }

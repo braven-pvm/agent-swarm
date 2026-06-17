@@ -178,7 +178,7 @@
       {:else if detailError}
         <div class="error">{detailError}</div>
       {:else if detailSource && detailMarkdown !== null}
-        <SpecDetail source={detailSource} markdown={detailMarkdown} refMap={detailRefMap} {onOpenRef} />
+        <SpecDetail source={detailSource} markdown={detailMarkdown} refMap={detailRefMap} slices={store.snapshot?.slices ?? []} {onOpenRef} />
       {/if}
     </div>
   </div>

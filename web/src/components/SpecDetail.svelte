@@ -6,24 +6,28 @@
     groupRefsByFamily,
     countRefStatuses,
     refTone,
+    worstStatus,
     parseHeadings,
     type RefStatus,
   } from "~/lib/format";
   import { renderMarkdown, linkifyRefs, injectHeadingIds, highlightFind } from "~/lib/markdown";
-  import type { SourceRecord, CoverageRef } from "~/lib/types";
+  import type { SourceRecord, CoverageRef, SliceWithDetail, ReviewFinding } from "~/lib/types";
   import RefChip from "~/components/RefChip.svelte";
-  import ObligationView from "~/components/ObligationView.svelte";
+  import RequirementDetail from "~/components/RequirementDetail.svelte";
 
   let {
     source,
     markdown,
     refMap,
+    slices = [],
     onOpenRef,
   }: {
     source: SourceRecord;
     markdown: string;
     /** UPPERCASE ref → CoverageRef for refs owned by THIS source (empty when coverage is null). */
     refMap: Map<string, CoverageRef>;
+    /** snapshot.slices — used to resolve the per-AC reviewer finding for an expanded ref. */
+    slices?: SliceWithDetail[];
     onOpenRef?: (ref: string) => void;
   } = $props();
 
@@ -83,18 +87,26 @@
     statusFilter = statusFilter === s ? null : s;
   }
 
-  // ── Per-ref obligation disclosure (collapsed by default) ───────────────
-  // The obligation summary ("what must be proven") lives on the CoverageRef. We
-  // resolve it from the same source-scoped refMap and let an operator expand a
-  // single ref's ledger row to reveal it inline; only refs that carry one get the
-  // affordance. The RefChip itself still navigates to Coverage — the toggle is a
-  // separate control beside it.
+  // ── Per-ref detail disclosure (chip-as-expander) ───────────────────────
+  // Clicking a RefChip toggles that ref's RequirementDetail inline as a full-width
+  // band beneath the family's chip cloud — the chip IS the expander here (no separate
+  // obligation toggle). Only one ref is open per spec. The cross-link to Coverage now
+  // lives INSIDE RequirementDetail ("View in coverage →"); the chip itself never
+  // navigates in this surface.
   let expandedRef = $state<string | null>(null);
-  function obligationFor(ref: string): CoverageRef["obligation"] | undefined {
-    return refMap.get(ref.toUpperCase())?.obligation;
-  }
-  function toggleObligation(ref: string) {
+  function toggleRef(ref: string) {
     expandedRef = expandedRef === ref.toUpperCase() ? null : ref.toUpperCase();
+  }
+
+  // Resolve the richest per-AC reviewer finding for a ref: coverage row → owning slice
+  // (via sliceId) → its reviewResult.frAcFindings, matched case-insensitively (findings
+  // key on the UPPERCASE ref). Undefined when no slice / no review / no matching finding.
+  function findingFor(ref: string): ReviewFinding | undefined {
+    const rec = refMap.get(ref.toUpperCase());
+    if (!rec?.sliceId) return undefined;
+    const slice = slices.find((s) => s.id === rec.sliceId);
+    const want = ref.toUpperCase();
+    return slice?.reviewResult?.frAcFindings.find((f) => f.ref.toUpperCase() === want);
   }
 
   // Reset expandedRef when the source/spec changes so a same-named ref from a
@@ -103,6 +115,35 @@
     void source.uri; // depend on the source identity
     expandedRef = null;
   });
+
+  // ── Per-family roll-up (collapsible, attention-first) ──────────────────
+  // Default state is attention-first: a family with ANY incomplete ref starts
+  // EXPANDED; an all-done family starts COLLAPSED to just its summary row. A click
+  // records a component-local override that wins over the default. An active find
+  // query or status filter force-expands any family with matching refs (so a search
+  // hit is never hidden inside a collapsed all-done family).
+  let familyOverride = $state<Record<string, boolean>>({});
+
+  // Clear overrides on spec change so the attention-first default reasserts per spec.
+  $effect(() => {
+    void source.uri;
+    familyOverride = {};
+  });
+
+  function familyHasIncomplete(counts: { done: number; total: number }): boolean {
+    return counts.done < counts.total;
+  }
+  // open by default when the family has incomplete work; an override flips it.
+  function familyOpen(family: string, counts: { done: number; total: number }): boolean {
+    const filtering = !!find.trim() || !!statusFilter;
+    if (filtering) return true; // a matching ref exists (familyRows already filtered) → reveal it
+    if (family in familyOverride) return familyOverride[family];
+    return familyHasIncomplete(counts);
+  }
+  function toggleFamily(family: string, counts: { done: number; total: number }) {
+    const current = family in familyOverride ? familyOverride[family] : familyHasIncomplete(counts);
+    familyOverride = { ...familyOverride, [family]: !current };
+  }
 
   // A ref matches the active status filter when its (blocked|failed) collapse to "blocked".
   function matchesStatus(rec: CoverageRef | undefined): boolean {
@@ -116,13 +157,15 @@
     return !q || ref.toLowerCase().includes(q);
   }
 
-  // Per-family rendering rows with counts + filtered ref lists.
+  // Per-family rendering rows with counts, the worst status (for the header glyph),
+  // and the filter-narrowed ref list.
   const familyRows = $derived.by(() =>
     families
       .map((g) => {
         const fc = countRefStatuses(g.refs, refMap);
+        const worst = worstStatus(g.refs.map((r) => refMap.get(r.toUpperCase())?.status));
         const visible = g.refs.filter((r) => matchesStatus(refMap.get(r.toUpperCase())) && matchesFind(r));
-        return { family: g.family, counts: fc, allRefs: g.refs, visible };
+        return { family: g.family, counts: fc, worst, allRefs: g.refs, visible };
       })
       .filter((row) => row.visible.length > 0),
   );
@@ -366,8 +409,16 @@
       <p class="empty">No requirements match the current filter.</p>
     {:else}
       {#each familyRows as row (row.family)}
-        <div class="spec-family">
-          <div class="spec-family-head">
+        {@const open = familyOpen(row.family, row.counts)}
+        {@const tone = refTone(row.worst)}
+        <div class="spec-family" class:collapsed={!open}>
+          <button
+            type="button"
+            class="spec-family-head"
+            aria-expanded={open}
+            onclick={() => toggleFamily(row.family, row.counts)}
+          >
+            <span class="spec-family-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
             <span class="run-subhead spec-family-name">{row.family}</span>
             <span class="cov-domain-bar spec-family-bar">
               <span class="spec-seg seg-done" style="width:{fpct(row.counts.done, row.counts.total)}%"></span>
@@ -376,33 +427,34 @@
               <span class="spec-seg seg-none" style="width:{fpct(row.counts.notStarted + (row.counts.total - row.counts.indexed), row.counts.total)}%"></span>
             </span>
             <span class="cov-count spec-family-count">{row.counts.done}/{row.counts.total}</span>
-          </div>
-          <div class="spec-family-refs">
-            {#each row.visible as r (r)}
-              {@const obl = obligationFor(r)}
-              {@const expanded = expandedRef === r.toUpperCase()}
-              <span class="spec-ref-unit" class:expanded={expandedRef === r.toUpperCase()}>
-                <span class="spec-ref-row">
-                  <RefChip ref={r} record={refMap.get(r.toUpperCase()) ?? null} {onOpenRef} hit={!!find.trim() && r.toLowerCase().includes(find.trim().toLowerCase())} />
-                  {#if obl}
-                    <button
-                      type="button"
-                      class="spec-obl-toggle"
-                      class:open={expanded}
-                      aria-expanded={expanded}
-                      title={expanded ? "Hide obligation" : "Show obligation"}
-                      onclick={() => toggleObligation(r)}
-                    >
-                      <span class="spec-obl-caret">{expanded ? "▾" : "▸"}</span>obligation
-                    </button>
+            <span class="spec-family-status {tone.cls}" title={tone.label}>
+              <span class="spec-ref-glyph">{tone.glyph}</span>
+            </span>
+          </button>
+          {#if open}
+            <div class="spec-family-refs">
+              {#each row.visible as r (r)}
+                {@const expanded = expandedRef === r.toUpperCase()}
+                {@const rec = refMap.get(r.toUpperCase()) ?? null}
+                <span class="spec-ref-unit" class:expanded>
+                  <span class="spec-ref-row">
+                    <RefChip
+                      ref={r}
+                      record={rec}
+                      onToggle={toggleRef}
+                      {expanded}
+                      hit={!!find.trim() && r.toLowerCase().includes(find.trim().toLowerCase())}
+                    />
+                  </span>
+                  {#if expanded && rec}
+                    <div class="spec-ref-detail">
+                      <RequirementDetail ref={rec} finding={findingFor(r)} {onOpenRef} />
+                    </div>
                   {/if}
                 </span>
-                {#if obl && expanded}
-                  <ObligationView obligation={obl} />
-                {/if}
-              </span>
-            {/each}
-          </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/each}
     {/if}
