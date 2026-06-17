@@ -56,7 +56,18 @@
     if (!resizing) return;
     resizing = false;
     document.body.classList.remove("cb-resizing");
+    persistWidth();
+  }
+  function persistWidth() {
     localStorage.setItem("cb.agentsWidth", String(Math.round(agentsW)));
+  }
+  // Keyboard resize: nudge the roster column 16px per arrow press, clamped to the
+  // same 180..560 bounds as the drag, and persisted the same way.
+  function onResizerKey(e: KeyboardEvent) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    agentsW = clamp(agentsW + (e.key === "ArrowLeft" ? -16 : 16));
+    persistWidth();
   }
 
   onMount(() => {
@@ -100,12 +111,22 @@
       onpointerleave={endResize}
     >
       <AgentRoster {store} onSelect={(actor) => store.select({ kind: "agent", actor })} />
+      <!-- Focusable window-splitter: role="separator" + aria-valuenow + tabindex=0 + arrow
+           keys is the canonical WAI-ARIA resize pattern, so it is interactive by design. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         class="col-resizer"
         class:resizing={resizing}
         role="separator"
         aria-orientation="vertical"
+        aria-label="Resize agent roster column"
+        aria-valuenow={Math.round(agentsW)}
+        aria-valuemin={180}
+        aria-valuemax={560}
+        tabindex="0"
         onpointerdown={startResize}
+        onkeydown={onResizerKey}
       ></div>
       <div class="center">
         <WorkBoard {store} onSelect={(id) => store.select({ kind: "slice", id })} />

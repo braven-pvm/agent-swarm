@@ -39,8 +39,8 @@ describe("FocusRail", () => {
     const { getByText, getAllByText, container } = render(FocusRail, { props: { store, onZoomSlice: () => {}, onZoomRun: () => {} } });
     expect(getByText("Invoice export")).toBeTruthy();
     const chipText = Array.from(container.querySelectorAll(".focus-reason")).map((el) => el.textContent?.trim());
-    expect(chipText).toContain("blocked");              // reason chip
-    expect(chipText).toContain("command_failed");       // reason chip
+    expect(chipText).toContain("Blocked");              // reason chip (humanized)
+    expect(chipText).toContain("Command failed");       // reason chip (humanized)
     expect(getByText("↻ 3")).toBeTruthy();              // retry chip
     expect(getByText("exit 1")).toBeTruthy();           // failing command exit
     expect(getByText(/inspect the failing run/)).toBeTruthy();

@@ -9,8 +9,8 @@
 <section class="route">
   <h2>Run history <span class="muted">({runs.length})</span></h2>
   <div class="compare-bar">
-    <select bind:value={left}><option value="">left…</option>{#each runs as r}<option value={r.runId}>{r.runId}</option>{/each}</select>
-    <select bind:value={right}><option value="">right…</option>{#each runs as r}<option value={r.runId}>{r.runId}</option>{/each}</select>
+    <select bind:value={left} aria-label="Compare run (left)"><option value="">Left run…</option>{#each runs as r}<option value={r.runId}>{r.runId}</option>{/each}</select>
+    <select bind:value={right} aria-label="Compare run (right)"><option value="">Right run…</option>{#each runs as r}<option value={r.runId}>{r.runId}</option>{/each}</select>
     <button onclick={compare} disabled={!left || !right}>Compare</button>
   </div>
   {#if comparison}<pre class="json">{JSON.stringify(comparison.interpretation ?? comparison, null, 2)}</pre>{/if}

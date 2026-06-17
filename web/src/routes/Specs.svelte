@@ -131,7 +131,8 @@
   <h2 class="spec-page-title">Specs</h2>
   <div class="specs-layout">
     <div class="specs-sidebar">
-      <input class="search" placeholder="Find title, domain, uri, tag, or ref…" bind:value={q} />
+      <label class="sr-only" for="specs-search">Find specs</label>
+      <input id="specs-search" class="search" placeholder="Find title, domain, uri, tag, or ref…" bind:value={q} />
       <div class="spec-facets">
         {#each FACETS as f}
           <button type="button" class="spec-facet" class:active={facet === f.key} onclick={() => (facet = f.key)}>{f.label}</button>

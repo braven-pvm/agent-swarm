@@ -199,6 +199,19 @@ export function extractFrAcRefs(text: string): string[] {
   return [...new Set(matches.map((m) => m.toUpperCase()))].sort();
 }
 
+/**
+ * Humanize a snake_case / kebab enum token into a sentence-case label: split on
+ * _ or -, lowercase every word, then capitalize the first letter of the first
+ * word only ('command_failed' → 'Command failed', 'run_stale' → 'Run stale',
+ * 'turn_started' → 'Turn started'). Empty/blank → "".
+ */
+export function humanizeToken(s: string): string {
+  const words = (s ?? "").trim().split(/[_-]+/).filter(Boolean);
+  if (words.length === 0) return "";
+  const joined = words.map((w) => w.toLowerCase()).join(" ");
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
 /** Sentence-case display label for a coverage status string. First word capitalized only. */
 export function statusLabel(status: string): string {
   switch (status) {

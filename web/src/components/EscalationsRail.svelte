@@ -7,6 +7,9 @@
     if (count > 1) expanded = { ...expanded, [key]: !expanded[key] };  // toggle to reveal siblings
     else onSelect(firstId);
   }
+  // Severity glyph so the warning-vs-blocker distinction is never carried by the
+  // coloured left border alone (matches the ObservabilityCallout ⚠ / ✕ pattern).
+  const levelGlyph = (level: string) => (level === "warning" ? "⚠" : "✕");
 </script>
 
 <section class="rail rail-right">
@@ -14,6 +17,7 @@
   {#each groups as g (g.key)}
     <button class="esc esc-{g.level}" onclick={() => onGroup(g.key, g.instances[0].id, g.count)}>
       <div class="esc-head">
+        <span class="esc-glyph" aria-hidden="true">{levelGlyph(g.level)}</span>
         <span class="esc-level">{g.level}</span>
         {#if g.count > 1}<span class="esc-count">×{g.count} {expanded[g.key] ? "▾" : "▸"}</span>{/if}
       </div>

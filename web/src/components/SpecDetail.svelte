@@ -275,8 +275,9 @@
         <span class="spec-uri mono faint" title={source.uri}>{prettifyTarget(source.uri)}</span>
       </div>
     </div>
-    <div class="spec-masthead-readout mono">
-      {counts.done}/{counts.indexed || counts.total} done · {pct}%
+    <div class="spec-masthead-readout">
+      <div class="spec-masthead-pct mono">{pct}%</div>
+      <div class="spec-masthead-frac mono">{counts.done}/{counts.indexed || counts.total} done</div>
     </div>
   </header>
 
@@ -326,14 +327,17 @@
       <div class="spec-find">
         <input
           class="search spec-find-input"
+          aria-label="Find in spec"
           placeholder="Find in spec…"
           bind:value={find}
           onkeydown={onFindKey}
         />
         {#if findDebounced.trim()}
           <span class="spec-find-count mono">{hits.length ? hitIndex + 1 : 0} / {hits.length}</span>
-          <button type="button" class="spec-find-nav" onclick={prevHit} disabled={!hits.length} title="Previous (Shift+Enter)">↑</button>
-          <button type="button" class="spec-find-nav" onclick={nextHit} disabled={!hits.length} title="Next (Enter)">↓</button>
+        {/if}
+        {#if hits.length > 0}
+          <button type="button" class="spec-find-nav" onclick={prevHit} title="Previous (Shift+Enter)">↑</button>
+          <button type="button" class="spec-find-nav" onclick={nextHit} title="Next (Enter)">↓</button>
         {/if}
       </div>
       {#if toc.length}

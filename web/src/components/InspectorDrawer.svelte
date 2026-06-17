@@ -539,6 +539,7 @@
                     {/if}
                     <div class="run-meta">
                       <span class="muted">risk: {r.review.stubOrHardcodeRisk}</span>
+                      <span class="muted"> · quality: {r.review.qualityGate.status}</span>
                       <span class="muted"> · source-mutation: {r.review.sourceMutationDetected ? "yes" : "no"}</span>
                       {#if r.review.testAssessment}
                         <button class="run-act-toggle" onclick={() => toggleTestNotes(r.run.id)} title="toggle full test assessment">
@@ -548,6 +549,17 @@
                     </div>
                     {#if r.review.testAssessment && openTestNotes.has(r.run.id)}
                       <div class="run-testnote muted">{r.review.testAssessment}</div>
+                    {/if}
+                    {#if r.review.qualityGate.summary || r.review.qualityGate.blockingConcerns.length > 0 || r.review.qualityGate.residualRisks.length > 0}
+                      <div class="run-testnote muted">
+                        quality: {r.review.qualityGate.summary}
+                        {#if r.review.qualityGate.blockingConcerns.length > 0}
+                          · blockers: {r.review.qualityGate.blockingConcerns.join("; ")}
+                        {/if}
+                        {#if r.review.qualityGate.residualRisks.length > 0}
+                          · residual: {r.review.qualityGate.residualRisks.join("; ")}
+                        {/if}
+                      </div>
                     {/if}
 
                     {#if r.review.frAcFindings.length > 0}
@@ -734,7 +746,7 @@
                 {#each lrfFailureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
               </div>
             {:else}
-              <div class="focus-pk-meta muted" style="font-style:italic">no failure classes</div>
+              <div class="focus-pk-meta muted">No failure classes</div>
             {/if}
             {#if lrfLastCmd}
               {@const lrfCmdRaw = asStr(pick(lrfLastCmd, "command"))}
@@ -820,13 +832,13 @@
               {#each failureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
             </div>
           {:else}
-            <div class="focus-pk-meta muted" style="font-style:italic">no failure classes</div>
+            <div class="focus-pk-meta muted">No failure classes</div>
           {/if}
 
           <!-- Recommended interventions -->
           {#if recs.length > 0}
             <div class="run-subhead">Recommended interventions</div>
-            <ul class="run-fixes" style="font-style:italic;color:var(--muted)">{#each recs as r}<li>{r}</li>{/each}</ul>
+            <ul class="run-fixes" style="color:var(--muted)">{#each recs as r}<li>{r}</li>{/each}</ul>
           {/if}
 
           <!-- Last command -->

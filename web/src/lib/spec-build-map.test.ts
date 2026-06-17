@@ -9,6 +9,7 @@ import {
   slugify,
   parseHeadings,
   statusLabel,
+  humanizeToken,
 } from "~/lib/format";
 import { linkifyRefs, injectHeadingIds, highlightFind, renderMarkdown } from "~/lib/markdown";
 
@@ -40,6 +41,20 @@ describe("statusLabel", () => {
     expect(statusLabel("not_indexed")).toBe("Not indexed");
     expect(statusLabel("bogus")).toBe("Not indexed");
     expect(statusLabel("")).toBe("Not indexed");
+  });
+});
+
+describe("humanizeToken", () => {
+  it("turns snake_case enum tokens into sentence case", () => {
+    expect(humanizeToken("command_failed")).toBe("Command failed");
+    expect(humanizeToken("run_stale")).toBe("Run stale");
+    expect(humanizeToken("turn_started")).toBe("Turn started");
+    expect(humanizeToken("ready_for_review")).toBe("Ready for review");
+  });
+  it("handles single words, kebab-case, and blank input", () => {
+    expect(humanizeToken("blocked")).toBe("Blocked");
+    expect(humanizeToken("high-retry")).toBe("High retry");
+    expect(humanizeToken("")).toBe("");
   });
 });
 

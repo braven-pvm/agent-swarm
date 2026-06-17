@@ -68,8 +68,8 @@
         <span class="spec-seg seg-none" style="width:{pct(counts.notStarted + (counts.total - counts.indexed))}%"></span>
       {/if}
     </span>
-    <span class="cov-count" class:cov-ok={allDone} class:cov-muted={counts.total === 0}>
-      {counts.done}/{counts.total}
+    <span class="cov-count" class:cov-muted={counts.total === 0}>
+      <span class="cov-count-done" class:cov-ok={allDone}>{counts.done}</span>/{counts.total}
     </span>
     <span class="spec-worst cov-badge {worst ? worstTone.cls : 'spec-ref-unindexed'}">
       <span class="spec-ref-glyph">{worst ? worstTone.glyph : "◌"}</span>{worst ? worstTone.label : "Not indexed"}

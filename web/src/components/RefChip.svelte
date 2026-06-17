@@ -37,15 +37,22 @@
   }
 </script>
 
-<button
-  type="button"
-  class="spec-ref {tone.cls}"
-  class:dim
-  class:find-hit={hit}
-  data-ref={ref}
-  disabled={unindexed}
-  {title}
-  onclick={click}
->
-  <span class="spec-ref-glyph">{tone.glyph}</span>{ref}
-</button>
+{#if unindexed}
+  <!-- Unindexed refs are not navigable: render as a non-interactive span so they
+       leave the tab order instead of being a dead disabled button. -->
+  <span class="spec-ref {tone.cls}" class:dim class:find-hit={hit} data-ref={ref} {title}>
+    <span class="spec-ref-glyph">{tone.glyph}</span>{ref}
+  </span>
+{:else}
+  <button
+    type="button"
+    class="spec-ref {tone.cls}"
+    class:dim
+    class:find-hit={hit}
+    data-ref={ref}
+    {title}
+    onclick={click}
+  >
+    <span class="spec-ref-glyph">{tone.glyph}</span>{ref}
+  </button>
+{/if}

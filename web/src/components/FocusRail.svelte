@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { FocusItem } from "~/lib/types";
+  import { humanizeToken } from "~/lib/format";
 
   let {
     store,
@@ -51,13 +52,13 @@
         <span class="prio-dot {priorityClass(item.focusPriority)}" title="priority {item.focusPriority}"></span>
         <span class="focus-title">{truncate(item.title || item.sliceId, 40)}</span>
         <span class="focus-id muted">SLICE-{shortId(item.sliceId)}</span>
-        <span class="focus-status muted">{item.status}</span>
+        <span class="focus-status muted">{humanizeToken(item.status)}</span>
       </button>
 
       {#if chips.length > 0 || item.retryCount > 1}
         <div class="focus-reasons">
           {#each chips as c}
-            <span class="focus-reason {reasonClass(c)}">{c}</span>
+            <span class="focus-reason {reasonClass(c)}">{humanizeToken(c)}</span>
           {/each}
           {#if item.retryCount > 1}
             <span class="focus-reason reason-amber">↻ {item.retryCount}</span>
@@ -69,7 +70,7 @@
         {@const run = item.latestRun}
         <button class="focus-run" onclick={() => onZoomRun(run.id)} title="zoom run focus">
           <span class="focus-run-line">
-            {run.role ? `${run.role} ` : ""}{run.actor} · {run.status}
+            {run.role ? `${run.role} ` : ""}{run.actor} · {humanizeToken(run.status)}
             {#if run.heartbeatAgeMs != null}
               <span class="muted"> · {Math.round(run.heartbeatAgeMs / 1000)}s</span>
             {/if}

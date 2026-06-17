@@ -152,8 +152,9 @@
     <!-- E. Requirements table -->
     <div class="cov-panel cov-table-panel">
       <div class="cov-filters">
-        <input class="search" placeholder="Filter refs / domain / slice…" bind:value={q} />
-        <select bind:value={statusFilter}>{#each STATUSES as s}<option value={s}>{s === "all" ? "All" : statusLabel(s)}</option>{/each}</select>
+        <label class="sr-only" for="cov-filter">Filter requirements</label>
+        <input id="cov-filter" class="search" placeholder="Filter refs / domain / slice…" bind:value={q} />
+        <select bind:value={statusFilter} aria-label="Filter by status">{#each STATUSES as s}<option value={s}>{s === "all" ? "All" : statusLabel(s)}</option>{/each}</select>
         <span class="muted cov-count-shown">{rows.length} shown</span>
       </div>
       <div class="cov-table-scroll">
