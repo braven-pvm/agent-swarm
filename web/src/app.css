@@ -805,3 +805,70 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .truth-warning  { background: rgba(214,161,60,.14); color: var(--amber); }
 .truth-danger   { background: rgba(239,107,97,.14); color: var(--red); }
 .truth-neutral  { background: rgba(255,255,255,.06); color: var(--muted); }
+
+/* ── Human Action queue (right-rail) ─────────────────────────────────────
+   First write surface. Cards reuse the .esc vocabulary: a coloured left border
+   carries severity, but NEVER alone — every card pairs the bar with a kind glyph
+   in the same severity colour AND the humanized kind text, so the warning-vs-danger
+   distinction survives the squint test and colour-blind reading. */
+.rail-actions .rail-title { display: flex; align-items: center; gap: 6px; }
+.ha-count { color: var(--red); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ha-empty { font-size: var(--fs-meta); margin: 0; }
+.ha-card { display: block; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line-3); border-radius: var(--radius); padding: var(--s3); margin-bottom: var(--s2); color: var(--ink); cursor: pointer; }
+.ha-card:hover { background: var(--surface-2); }
+.ha-danger  { border-left: 3px solid var(--red); }
+.ha-warning { border-left: 3px solid var(--amber); }
+.ha-info    { border-left: 3px solid var(--blue); }
+.ha-head { display: flex; align-items: center; gap: 5px; }
+.ha-glyph { flex: none; font-size: .9em; font-weight: 600; }
+.ha-danger  .ha-glyph { color: var(--red); }
+.ha-warning .ha-glyph { color: var(--amber); }
+.ha-info    .ha-glyph { color: var(--blue); }
+.ha-kind { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.ha-title { color: var(--ink); font-size: var(--fs-body); font-weight: 600; margin-top: var(--s1); line-height: 1.3; }
+.ha-summary { color: var(--muted); font-size: var(--fs-meta); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ha-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: var(--s2); }
+.ha-ref { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-eyebrow); color: var(--muted); background: rgba(255,255,255,.06); border-radius: 6px; padding: 0 5px; }
+
+/* ── Human Action detail + resolution form (inspector drawer) ──────────────
+   The required reason/notes IS the only friction — no confirm dialog. Labels sit
+   above inputs (tight to their own field); field borders use --line-3 (>=3:1);
+   the global :focus-visible ring applies to the textarea/radios/button. One solid
+   accent primary button per form (verb+noun). Errors surface inline above nothing,
+   right before the button, in --red. */
+.ha-detail-head { display: flex; align-items: center; gap: var(--s2); }
+.ha-detail-kind { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.ha-detail-title { margin: var(--s2) 0 0; font-size: var(--fs-h); font-weight: 600; color: var(--ink); line-height: 1.3; }
+.ha-detail-summary { color: var(--ink); font-size: var(--fs-body); margin: var(--s2) 0 0; }
+.kv-list { margin: var(--s3) 0 0; display: flex; flex-direction: column; gap: 2px; }
+.kv-list .kv { display: flex; align-items: baseline; gap: 6px; }
+.kv-list .kv code { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-meta); color: var(--ink); }
+.ha-links { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ha-link { color: var(--accent); font-size: var(--fs-meta); text-decoration: underline; }
+.ha-link:hover { color: var(--ink); }
+.ha-noresolve { font-size: var(--fs-meta); margin: var(--s3) 0 0; }
+.ha-form { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s4); }
+.ha-field { display: flex; flex-direction: column; gap: var(--s1); border: none; padding: 0; margin: 0; }
+.ha-label { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0; }
+.ha-req { color: var(--muted); }
+.ha-textarea { background: var(--bg); border: 1px solid var(--line-3); color: var(--ink); border-radius: 6px; padding: var(--s2); font: inherit; font-size: var(--fs-body); resize: vertical; min-height: 56px; }
+.ha-textarea::placeholder { color: var(--muted); }
+.ha-textarea:disabled { opacity: .5; cursor: not-allowed; }
+.ha-radios { gap: 4px; }
+.ha-radio { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); color: var(--ink); cursor: pointer; }
+.ha-radio input { accent-color: var(--accent); cursor: pointer; }
+.ha-error { color: var(--red); padding: 0; font-size: var(--fs-meta); margin: 0; }
+/* Primary = solid blue fill + white text, one per form. --accent (#5b9dff) is tuned as text-on-dark,
+   so the fill uses a darker blue that carries white at AA: #2563eb = 5.17:1 (hover #1d4ed8 = 6.70:1).
+   Disabled is a real, visible no-op state (validation/in-flight), not a hidden control. */
+.ha-primary { align-self: flex-start; background: #2563eb; color: #fff; border: 1px solid #2563eb; border-radius: 6px; padding: 8px var(--s4); font: inherit; font-size: var(--fs-body); font-weight: 600; cursor: pointer; min-height: 40px; }
+.ha-primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+.ha-primary:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ── StatusBar action chip ────────────────────────────────────────────────
+   Severity-toned (red if any danger, else amber), clickable to open the top action.
+   Glyph + text + colour; reuses the .chip footprint. */
+.chip.ha-chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font: inherit; font-size: var(--fs-meta); }
+.chip.ha-chip-danger  { color: var(--red);   border-color: rgba(239,107,97,.4); }
+.chip.ha-chip-warning { color: var(--amber); border-color: rgba(214,161,60,.4); }
+.chip.ha-chip:hover { background: var(--surface-2); }

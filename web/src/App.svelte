@@ -8,9 +8,11 @@
   import WorkBoard from "~/components/WorkBoard.svelte";
   import OverseerTimeline from "~/components/OverseerTimeline.svelte";
   import EscalationsRail from "~/components/EscalationsRail.svelte";
+  import HumanActionsRail from "~/components/HumanActionsRail.svelte";
   import FocusRail from "~/components/FocusRail.svelte";
   import InspectorDrawer from "~/components/InspectorDrawer.svelte";
   import ObservabilityCallout from "~/components/ObservabilityCallout.svelte";
+  import { fetchHumanActions } from "~/lib/human-actions";
 
   const store = createConsoleStore();
   let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
@@ -33,6 +35,10 @@
   let resizing = $state(false);
 
   async function refresh() {
+    // The Human Action queue polls alongside snapshot/coverage (and re-runs after every write via
+    // onResolved), but a failed queue fetch must never stop the snapshot from hydrating — so it
+    // gets its own independent fetch + swallow rather than riding the Promise.all.
+    fetchHumanActions().then(store.setHumanActions).catch(() => {});
     try {
       const [snap, cov] = await Promise.all([api.snapshot(200), api.coverage().catch(() => null)]);
       store.hydrate(snap);
@@ -133,6 +139,7 @@
         <OverseerTimeline {store} onSelect={(eventId) => store.select({ kind: "overseerTurn", eventId })} />
       </div>
       <div class="right-rail">
+        <HumanActionsRail {store} onSelect={(id) => store.selectAction(id)} />
         <FocusRail
           {store}
           onZoomSlice={(id) => store.select({ kind: "focusSlice", id })}
@@ -140,7 +147,7 @@
         />
         <EscalationsRail {store} onSelect={(id) => store.select({ kind: "escalation", id })} />
       </div>
-      <InspectorDrawer {store} />
+      <InspectorDrawer {store} onResolved={refresh} />
     </main>
   {:else if route === "specs"}
     {#await import("~/routes/Specs.svelte") then m}<m.default {store} onOpenRef={openCoverageFiltered} />{:catch}<div class="error">Route failed to load.</div>{/await}

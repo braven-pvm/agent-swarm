@@ -3,6 +3,7 @@ import type {
   AgentFocusItem, CheckpointRecord,
 } from "~/lib/types";
 import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
+import type { HumanActionQueue } from "~/lib/human-actions";
 
 export interface AgentRosterRow {
   actor: string;
@@ -143,8 +144,19 @@ export function createConsoleStore() {
   let connected = $state(false);
   let selected = $state<SelectedEntity | null>(null);
   let coverage = $state<CoverageSummary | null>(null);
+  // Human Action queue — the operator's write surface. Polled alongside snapshot/coverage and
+  // replaced wholesale after every write (the server returns the refreshed queue).
+  let humanActions = $state<HumanActionQueue | null>(null);
+  // A SEPARATE selection channel for queue actions, kept OUT of the SelectedEntity union so we
+  // never touch user-owned types.ts. selectAction(id) opens an action in the inspector and clears
+  // the entity selection; select(entity) clears this; either way only one thing is selected.
+  let selectedActionId = $state<string | null>(null);
 
   const escalationGroups = $derived<EscalationGroup[]>(snapshot ? groupEscalations(snapshot.activeEscalations) : []);
+
+  // The action currently open in the inspector, resolved from the live queue by id. Returns null
+  // when nothing is selected OR when a resolved action has dropped out of the refreshed queue.
+  const selectedAction = $derived(humanActions?.actions?.find((a) => a.id === selectedActionId) ?? null);
 
   const agents = $derived.by<AgentRosterRow[]>(() => {
     if (!snapshot) return [];
@@ -244,10 +256,16 @@ export function createConsoleStore() {
     get overseerCheckpointSummary() { return overseerCheckpointSummary; },
     get overseerLog() { return overseerLog; },
     get coverage() { return coverage; },
+    get humanActions() { return humanActions; },
+    get selectedAction() { return selectedAction; },
     hydrate(s: SnapshotResponse) { snapshot = s; },
     setConnected(v: boolean) { connected = v; },
-    select(entity: SelectedEntity | null) { selected = entity; },
+    // Selecting an entity clears any open action, so only one inspector body shows at a time.
+    select(entity: SelectedEntity | null) { selected = entity; selectedActionId = null; },
+    // Selecting an action clears the entity selection (same mutual-exclusion rule).
+    selectAction(id: string | null) { selectedActionId = id; selected = null; },
     setCoverage(c: CoverageSummary) { coverage = c; },
+    setHumanActions(q: HumanActionQueue) { humanActions = q; },
     invalidate() { /* App re-fetches snapshot and calls hydrate(); see App.svelte */ },
     applyEvent(event: HarnessEvent) {
       if (!snapshot) return;

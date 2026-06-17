@@ -5,8 +5,11 @@
   import { api } from "~/lib/api";
   import Markdown from "~/components/Markdown.svelte";
   import OverseerTurnDetail from "~/components/OverseerTurnDetail.svelte";
-  let { store }: { store: ConsoleStore } = $props();
+  import HumanActionDetail from "~/components/HumanActionDetail.svelte";
+  let { store, onResolved = () => {} }: { store: ConsoleStore; onResolved?: () => void } = $props();
   const sel = $derived(store.selected);
+  // A queue action open for resolution takes priority over any entity 'sel' branch below.
+  const selectedAction = $derived(store.selectedAction);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
   const chain = $derived(sel?.kind === "slice" ? store.proofChainFor(sel.id) : []);
   // Current heartbeat state for the selected agent.
@@ -386,14 +389,20 @@
   }
 </script>
 
-{#if sel}
+{#if sel || selectedAction}
   <aside class="inspector">
     <div class="inspector-head">
-      <strong>{sel.kind}{slice ? ` · ${slice.id}` : sel.kind === "agent" ? ` · ${sel.actor}` : sel.kind === "focusSlice" || sel.kind === "focusRun" ? ` · ${sel.id}` : ""}</strong>
+      <strong>
+        {#if selectedAction}Action required
+        {:else if sel}{sel.kind}{slice ? ` · ${slice.id}` : sel.kind === "agent" ? ` · ${sel.actor}` : sel.kind === "focusSlice" || sel.kind === "focusRun" ? ` · ${sel.id}` : ""}{/if}
+      </strong>
+      <!-- store.select(null) clears BOTH selections (it nulls selectedActionId per the store). -->
       <button class="close" onclick={() => store.select(null)}>✕</button>
     </div>
 
-    {#if sel.kind === "slice" && slice}
+    {#if selectedAction}
+      <HumanActionDetail {store} action={selectedAction} {onResolved} />
+    {:else if sel?.kind === "slice" && slice}
       <h4>{cleanSliceTitle(slice.title)} · {slice.status}<span class="muted"> · {formatDuration((["accepted","closed"].includes(slice.status) ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt))}</span></h4>
       <div class="proof">
         {#each chain as row (row.ref)}
@@ -425,7 +434,7 @@
           {/if}
         {/if}
       </section>
-    {:else if sel.kind === "agent"}
+    {:else if sel?.kind === "agent"}
       <!-- 0. "Working on" — the slice this agent's latest run is bound to. Skipped when no slice. -->
       {#if workingSlice}
         <div class="ag-working">
@@ -672,13 +681,13 @@
           {/if}
         </section>
       {/if}
-    {:else if sel.kind === "escalation" && escalation}
+    {:else if sel?.kind === "escalation" && escalation}
       <div class="esc-level esc-{escalation.level}">{escalation.level}</div>
       <p>{escalation.message}</p>
       {#if escalation.reason}<p class="muted">{escalation.reason}</p>{/if}
-    {:else if sel.kind === "overseerTurn" && overseerEvent}
+    {:else if sel?.kind === "overseerTurn" && overseerEvent}
       <OverseerTurnDetail event={overseerEvent} />
-    {:else if sel.kind === "focusSlice"}
+    {:else if sel?.kind === "focusSlice"}
       <div class="focus-packet">
         {#if focusLoading}
           <p class="empty">Loading…</p>
@@ -779,7 +788,7 @@
           <p class="empty">No packet.</p>
         {/if}
       </div>
-    {:else if sel.kind === "focusRun"}
+    {:else if sel?.kind === "focusRun"}
       <div class="focus-packet">
         {#if focusLoading}
           <p class="empty">Loading…</p>

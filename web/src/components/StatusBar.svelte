@@ -11,6 +11,17 @@
     const earliest = snap.agentRuns.reduce((min, r) => (r.startedAt < min ? r.startedAt : min), snap.agentRuns[0].startedAt);
     return formatDuration(Date.now() - Date.parse(earliest));
   })());
+
+  // Human Action queue chip: count + most-severe tone. Clicking opens the first (most-severe)
+  // action — the server queue is sorted danger → warning → info, so actions[0] is the top one.
+  const actionQueue = $derived(store.humanActions);
+  const actionList = $derived(actionQueue?.actions ?? []);
+  const actionCount = $derived(actionQueue?.totals?.total ?? actionList.length);
+  const actionTone = $derived(actionList.some((a) => a.severity === "danger") ? "danger" : "warning");
+  function openTopAction() {
+    const first = actionList[0];
+    if (first) store.selectAction(first.id);
+  }
 </script>
 
 <header class="statusbar">
@@ -34,6 +45,11 @@
     {/each}
     {#if snap?.focusQueue?.length}
       <span class="chip focus-chip" title="slices needing attention">⚑ focus {snap.focusQueue.length}</span>
+    {/if}
+    {#if actionCount > 0}
+      <button class="chip ha-chip ha-chip-{actionTone}" title="open the most urgent action" onclick={openTopAction}>
+        ⚑ {actionCount} action{actionCount === 1 ? "" : "s"}
+      </button>
     {/if}
     <span class="sb-stat">uptime {uptime}</span>
   </span>
