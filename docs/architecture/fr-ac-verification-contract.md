@@ -92,6 +92,7 @@ Worker:
 Reviewer:
 
 - checks implementation and evidence quality against obligations
+- records a structured Sleuth Review Gate for real-world implementation fitness
 - may run commands and inspect files under the active protocol
 - may raise `repair_required`, `blocker`, or `human_input_required`
 - may not convert missing proof into accepted state
@@ -237,6 +238,26 @@ Required evidence shape:
 }
 ```
 
+## Sleuth Review Gate
+
+Independent review must verify meaning and implementation quality, not only that FR/AC boxes have evidence attached. Each reviewer result includes a first-class `qualityGate` that evaluates these dimensions:
+
+- `runtime_path`: the delivered code is wired into the path users or downstream systems will actually exercise.
+- `stub_or_hardcode`: the behavior is not fake-only, fixture-shaped, skeleton-backed, or hardcoded around the test.
+- `test_meaningfulness`: tests and probes prove behavior against expected outcomes, not only existence, counts, static text, or no-exception paths.
+- `error_handling`: expected failure, empty, invalid, retry, or edge paths are handled where the requirement implies them.
+- `integration_fit`: the implementation composes cleanly with adjacent modules, APIs, persistence, UI state, and protocol expectations.
+- `maintainability`: the code is understandable enough to extend without hiding accidental debt or scope drift.
+- `real_world_readiness`: no blocker remains that would make the slice unfit for the intended local/product/runtime use.
+
+The gate status is:
+
+- `passed`: no blocking concerns and no failed/high-risk dimensions.
+- `warning`: non-blocking residual risk exists and is explicitly recorded.
+- `failed`: a material behavior gap, hollow proof, fake/stub behavior, unproven runtime path, unsafe integration, or readiness blocker exists.
+
+Reviewer findings can add context and repair recommendations, but the gate is not commentary. A failed gate, any `blockingConcerns`, any failed dimension, or any high-risk dimension blocks acceptance.
+
 ## Acceptance Gate
 
 Verification may mark a slice accepted only when:
@@ -245,11 +266,12 @@ Verification may mark a slice accepted only when:
 2. every in-scope FR/AC ref has an immutable verification obligation
 3. worker evidence exists where required
 4. independent review passed when required by protocol
-5. required command/browser/API/visual checks pass
-6. every in-scope FR/AC ref has `passed`, `human_verified`, or protocol-authorized `overridden` result
-7. no included ref is `human_input_required`
-8. no required human verification remains pending
-9. active blockers for the slice/refs are cleared or properly overridden
+5. the review `qualityGate` passed or has only accepted non-blocking warnings
+6. required command/browser/API/visual checks pass
+7. every in-scope FR/AC ref has `passed`, `human_verified`, or protocol-authorized `overridden` result
+8. no included ref is `human_input_required`
+9. no required human verification remains pending
+10. active blockers for the slice/refs are cleared or properly overridden
 
 Only then may the harness:
 
@@ -281,6 +303,7 @@ Reviewer:
 - validates implementation/evidence quality against each obligation
 - may run normal project commands and tools allowed by protocol
 - records findings directly in harness state
+- records the Sleuth Review Gate dimensions and blocks fake-ready or hollow-proof work
 
 Verifier:
 
@@ -310,16 +333,17 @@ Implemented:
 - verification blocks acceptance and reports missing refs when coverage is incomplete
 - FR/AC coverage is visible in `swarm report`, `observe`, JSON snapshots, `/api/coverage`, and rendered slice reports in the web viewer
 - E2E coverage proves verification refuses acceptance when a worker omits one in-scope AC
+- reviewer results include a structured Sleuth Review Gate, reviewer prompts require it, verifier acceptance blocks failed/high-risk quality gates, and reports/UI expose the gate summary
 
 Next hardening:
 
-- add explicit verification obligations to slice creation state
-- add an obligation preflight gate before worker dispatch
 - prevent worker-authored outputs from mutating obligation criteria/responsible party
 - add a requirement status ledger with status reasons and rollup rules
 - generate human verification packets for refs marked `human_verification_required`
 - distinguish `human_input_required` from `human_verification_required` in state, UI, and status sinks
 - make parent FR rollups explicit so coverage reflects real completion state
 - make per-ref obligation/evidence status easier to scan in the web viewer without opening the full slice report
+- make Sleuth Review Gate thresholds protocol-configurable where projects need stricter or looser residual-risk handling
+- expose quality dimensions and blocking concerns as first-class UI/API fields, not only in slice reports
 - add browser/screenshot tests proving coverage and human verification surfaces are visible in the management UI
 - add richer evidence previews where artifacts are linked

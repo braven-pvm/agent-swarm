@@ -2,7 +2,7 @@
 
 Date: 2026-06-12
 
-Status: Phase 10B Super Overseer focus-packet foundation and Phase 10C-1 verification-obligation foundation are implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, stale-run recovery fault, context-handoff fault, low-signal/proof-churn fault, supervised-revive fault, live-run artifact index, outcome classifier, run history, run comparison, web viewer history/artifact detail, full-product readiness blocking, backend-to-dashboard continuation, dashboard worker/reviewer execution, final dashboard start probing, structured product probe artifacts, resettable full-product smoke command, reviewer/deterministic-verifier handoff guidance, compact actionable overseer state packets, calibrated full-product limits, explicit dashboard dependency-gate readiness evidence, source pull queues, dependency preflight, artifact-backed overseer prompts, visible runtime-readiness feedback slices, reset-first lifecycle, final target snapshots, reviewer tooling, product workflow probes, isolated product-readiness probe workspaces, quiet-agent visibility, child idle timeout supervision, same-session revive, reset related-process cleanup, safe-directory path normalization, warning-restatement suppression, wrapped API response handling, operational coverage fields, run/slice focus packets, planner-created verification obligations, obligation dispatch preflight, read-only obligation prompts, criterion-level verifier evidence, and coverage obligation fields are in place or being verified. The next engine-room phases are Phase 10C-2 requirement ledger/human verification and then Phase 9 clean real-run rebaseline.
+Status: Phase 10B Super Overseer focus-packet foundation and Phase 10C-1 verification-obligation foundation are implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, stale-run recovery fault, context-handoff fault, low-signal/proof-churn fault, supervised-revive fault, live-run artifact index, outcome classifier, run history, run comparison, web viewer history/artifact detail, full-product readiness blocking, backend-to-dashboard continuation, dashboard worker/reviewer execution, final dashboard start probing, structured product probe artifacts, resettable full-product smoke command, reviewer/deterministic-verifier handoff guidance, compact actionable overseer state packets, calibrated full-product limits, explicit dashboard dependency-gate readiness evidence, source pull queues, dependency preflight, artifact-backed overseer prompts, visible runtime-readiness feedback slices, reset-first lifecycle, final target snapshots, reviewer tooling, product workflow probes, isolated product-readiness probe workspaces, quiet-agent visibility, child idle timeout supervision, same-session revive, reset related-process cleanup, safe-directory path normalization, warning-restatement suppression, wrapped API response handling, operational coverage fields, run/slice focus packets, planner-created verification obligations, obligation dispatch preflight, read-only obligation prompts, criterion-level verifier evidence, coverage obligation fields, full-product coverage-completion slices, product-spec coverage packs, and the structured Sleuth Review Gate are in place. The clean real full-product rebaseline `LAR-20260616T171831-live-agent-smoke-none-48036` reached `83/83` indexed refs, passed product readiness, and accepted. The next checkpoint is Phase 10C-2 requirement ledger/human verification.
 
 ## Why This Matters
 
@@ -281,6 +281,21 @@ Reviewer/verifier output schema:
   "testAssessment": "string",
   "sourceMutationDetected": false,
   "stubOrHardcodeRisk": "none|low|medium|high",
+  "qualityGate": {
+    "status": "passed|warning|failed",
+    "summary": "string",
+    "dimensions": [
+      {
+        "dimension": "runtime_path|stub_or_hardcode|test_meaningfulness|error_handling|integration_fit|maintainability|real_world_readiness",
+        "status": "passed|warning|failed|not_applicable",
+        "risk": "none|low|medium|high",
+        "evidence": ["evidence-id-or-path"],
+        "finding": "string"
+      }
+    ],
+    "blockingConcerns": ["string"],
+    "residualRisks": ["string"]
+  },
   "requiredFixes": ["string"],
   "escalations": [
     {
@@ -294,6 +309,8 @@ Reviewer/verifier output schema:
 
 The reviewer should not mutate implementation code unless a project protocol explicitly asks for reviewer-side repair. It may use the normal configured project tools and commands to inspect code, run targeted checks, and gather evidence. Immutable source specs must not be edited and remain protected by source-hash checks.
 
+The structured Sleuth Review Gate is a first-class reviewer responsibility. It checks whether the slice is actually fit for the real target path, not merely whether evidence fields exist. The gate dimensions are `runtime_path`, `stub_or_hardcode`, `test_meaningfulness`, `error_handling`, `integration_fit`, `maintainability`, and `real_world_readiness`.
+
 ### 7. Acceptance Gate Composition
 
 Do not let live smoke acceptance be only "tests passed."
@@ -305,6 +322,7 @@ worker result exists
   + deterministic command evidence passes
   + every FR/AC has coverage
   + reviewer/verifier status is accepted
+  + reviewer qualityGate has no failed/high-risk dimensions or blocking concerns
   + no active blocker/human_required/critical escalation
   + source specs unchanged
   = accepted
@@ -1263,9 +1281,9 @@ Status: implemented.
 
 Changes:
 
-- full-product defaults increased from 16 turns / 1200s / 30 agent runs to 40 turns / 2700s / 60 agent runs
+- full-product defaults increased from 16 turns / 1200s / 30 agent runs to 40 turns / 2700s / 60 agent runs in Phase 8C-6, then to 80 turns / 7200 seconds / 20 slices / 150 agent runs in Phase 10C-1C so coverage-completion packs can reach 100% without a false timeout
 - `npm run demo:live-agent:full` and `npm run smoke:live-agent:full` now use the calibrated limits
-- reset manifest records `fullProductMode.maxTurns = 40`, `maxAgentRuns = 60`, and `maxRuntimeMinutes = 45`
+- reset manifest originally recorded `fullProductMode.maxTurns = 40`, `maxAgentRuns = 60`, and `maxRuntimeMinutes = 45`; Phase 10C-1C updates the active manifest to `maxTurns = 80`, `maxAgentRuns = 150`, `maxSlices = 20`, and `maxRuntimeMinutes = 120`
 - product readiness now records a dashboard dependency gate:
   - declared `Depends-On` refs from `invoice-dashboard/specs/invoice-dashboard.md`
   - accepted dependency refs
@@ -1944,7 +1962,7 @@ Next implementation slice:
 
 #### Phase 10C: Verification Obligations Foundation
 
-Status: Phase 10C-1 implemented; later 10C slices remain planned.
+Status: Phase 10C-1 implemented; Phase 10C-1A full-product coverage gate implemented; Phase 10C-1B full-product coverage-completion loop implemented; Phase 10C-1C product-spec coverage-pack hardening implemented and confirmed by clean real run `LAR-20260616T171831-live-agent-smoke-none-48036` with `83/83` indexed refs done; Phase 10C-1D Sleuth Review Gate hardening implemented; later 10C slices remain planned.
 
 Goal:
 
@@ -1953,6 +1971,23 @@ Make "no executable slice without a verification plan" enforceable by harness st
 ```
 
 This phase exists because the accepted full-product smoke and `15/83` global coverage exposed a core product distinction: selected-scope acceptance can be valid, but global FR/AC completion must be derived from explicit per-ref verification state. A product, sprint, slice, or dependency cannot be considered complete because an agent says so, a broad command passed, or a UI smoke looked good.
+
+Phase 10C-1A closed the immediate truth gap: in full-product mode, product readiness passing is necessary but not sufficient. The live runner records `finalCoverageGate` with incomplete counts, sample refs such as `AC-API-001.*`, top incomplete domains, and the exact blocker reason.
+
+Phase 10C-1B closes the execution gap: when product readiness passes but indexed coverage is partial, the runner creates normal visible coverage-completion slices for remaining refs instead of stopping immediately. Those slices receive immutable verification obligations derived from the source text, active leases, dependencies, and `coverage_completion.slice_created` events. Final full-product acceptance is now allowed only after the coverage gate reaches 100%; otherwise the run still blocks with `outcomeClassification.code = "coverage_incomplete"` when no completion work is available or bounds stop the loop.
+
+Phase 10C-1C hardens the first live calibration of that loop. A real run reached product readiness but collapsed the remaining product spec into a single 65-ref proof pack; the reviewer correctly rejected it because `AC-QA-001.5` had only static inline-script checks, not an executed UI model/browser/DOM workflow. Coverage completion now splits the product spec into coherent packs:
+
+- `api-data`
+- `ui-summary-table`
+- `ui-detail-mark-paid`
+- `qa-interaction`
+- `local-usability`
+- `smoke-acceptance`
+
+Each pack is a normal visible slice with pack key/label in runner turns and `coverage_completion.slice_created` events. Product-pack obligations include explicit guidance that static HTML/script presence is not enough for UI/QA interaction refs; `AC-QA-001.5` requires executed filter/detail/mark-paid refresh proof. Focused fake-Codex E2E proves the normal and delayed-readiness full-product paths can now finish accepted with `83/83` indexed refs done. The clean real run on 2026-06-16 confirmed the same end state with real agents: `13` accepted slices, `56` agent runs, `13` deterministic verifier runs, product readiness passed, generated dashboard tests passed `20/20`, and final coverage was `83/83`.
+
+Phase 10C-1D makes the independent reviewer a real sleuth instead of a pass-through evidence reader. Reviewer output now includes a structured `qualityGate` with dimensions for runtime path, stub/hardcode risk, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness. The reviewer prompt requires this gate, slice reports/UI expose it, and deterministic verification blocks acceptance when the gate fails, has blocking concerns, or reports high-risk/failed dimensions.
 
 Doctrine:
 
@@ -1971,7 +2006,9 @@ Engine acceptance criteria:
 - worker result handling ignores or rejects attempts to mutate immutable obligation fields
 - reviewer/verifier prompts include obligation summaries and require expected-vs-actual evidence [10C-1 implemented for worker/reviewer prompts and verifier evidence]
 - verifier output records criterion-level pass/fail/missing results tied to obligation criteria [10C-1 implemented]
+- reviewer output includes a structured Sleuth Review Gate and acceptance blocks failed/high-risk implementation-quality findings [10C-1D implemented]
 - requirement coverage/status is derived from accepted evidence plus obligation state, not worker claims alone
+- full-product final acceptance is blocked unless indexed FR/AC coverage is complete [10C-1A/10C-1C implemented]
 - `human_input_required` and `human_verification_required` are distinct statuses in events, coverage, reports, and UI API payloads
 - human verification packet artifacts can be generated for refs that need human acceptance
 - parent FR rollups can explain direct FR status vs child AC completion
@@ -1990,9 +2027,10 @@ Suggested implementation order:
 2. Generate obligations during slice creation from source refs/sections and FR/AC text.
 3. Add deterministic obligation preflight before dispatch.
 4. Thread obligations into worker/reviewer/verifier prompts and focus packets.
-5. Extend evidence and coverage builders with criterion-level expected/actual results.
-6. Add human verification packet generation and statuses.
-7. Add parent FR rollup rules.
-8. Run focused tests, then a real full-product smoke rebaseline.
+5. Require reviewer quality gates for semantic/runtime fitness.
+6. Extend evidence and coverage builders with criterion-level expected/actual results.
+7. Add human verification packet generation and statuses.
+8. Add parent FR rollup rules.
+9. Run focused tests, then a real full-product smoke rebaseline.
 
-Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 6F proves a stalled child worker can be killed visibly, revived by session id, and still pass normal review/verification gates before acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Phase 8A prevents backend-only acceptance from masquerading as product completion. Phase 8B proves the full-product path can continue into a dashboard lane and accept only after dashboard verification plus local start/API probes. Phase 8C-1 gives full-product acceptance structured product evidence and a resettable real-agent command. Phase 8C-2 proved real agents can run but exposed reviewer-loop blocking around command policy. Phase 8C-3 proved the reviewer fix worked and backend reached deterministic acceptance, then exposed overseer prompt/state drift. Phase 8C-4 adds compact actionable overseer state and direct prompt delivery. Phase 8C-5 proved compact state fixed active-slice dispatch, but exposed real-run budget/dependency visibility gaps. Phase 8C-6 calibrates the budget and makes missing dashboard dependency refs explicit. Phase 8C-7 proved the lower-level planner blocks premature dashboard work but exposed missing orchestration-priority guidance. Phase 8C-8 adds source pull queues and dependency preflight. Phase 8C-9 proved accepted backend dependencies unlock dashboard work and exposed Windows prompt-length failure. Phase 8C-10 moves overseer launch to artifact-backed prompts and gets the dashboard slice accepted. Phase 8C-11 turns final product-readiness blockers into visible runtime-capability work. Phase 8C-12 proved the real runtime-capability work can complete and exposed stale escalation and child-process lifecycle issues. Phase 8C-13 proved the full real run can accept after reviewer rework and product runtime repair, then hardened stale-warning cleanup for real overseer wording. Phase 8C-14 confirmed the hardening in a fresh real full-product run: accepted product readiness, no failed assertions, and no stale active escalations. Phase 8C-15 preserves the terminal workspace after completion and archives final target snapshots so later reset-first runs do not erase the only runnable product copy. Phase 8C-16 lets reviewers use normal tooling, adds workflow-level product proof, removes the live npm shell-warning path, clears stale reviewer diagnostics after product acceptance, and improves agent signal visibility. Phase 8C-17 adds supervised quiet-child recovery and cleaner heartbeat semantics. Phase 8C-18 proved the real harness can produce a runnable product again and hardened reset cleanup, safe-directory guidance, warning amplification, and product probe isolation before the next confirmation run. Phase 8C-19 proved the final gate can block cleanly on product readiness while all implementation slices are accepted, then hardened the mark-paid workflow probe for wrapped API response shapes. Phase 10A turns coverage into actionable requirements state. Phase 10B starts the Super Overseer zoom-in layer with durable prompts and run/slice focus packets. Phase 10C makes verification obligations and requirement-ledger rollups the next engine-room foundation.
+Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, clear, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 6F proves a stalled child worker can be killed visibly, revived by session id, and still pass normal review/verification gates before acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Phase 8A prevents backend-only acceptance from masquerading as product completion. Phase 8B proves the full-product path can continue into a dashboard lane and accept only after dashboard verification plus local start/API probes. Phase 8C-1 gives full-product acceptance structured product evidence and a resettable real-agent command. Phase 8C-2 proved real agents can run but exposed reviewer-loop blocking around command policy. Phase 8C-3 proved the reviewer fix worked and backend reached deterministic acceptance, then exposed overseer prompt/state drift. Phase 8C-4 adds compact actionable overseer state and direct prompt delivery. Phase 8C-5 proved compact state fixed active-slice dispatch, but exposed real-run budget/dependency visibility gaps. Phase 8C-6 calibrates the budget and makes missing dashboard dependency refs explicit. Phase 8C-7 proved the lower-level planner blocks premature dashboard work but exposed missing orchestration-priority guidance. Phase 8C-8 adds source pull queues and dependency preflight. Phase 8C-9 proved accepted backend dependencies unlock dashboard work and exposed Windows prompt-length failure. Phase 8C-10 moves overseer launch to artifact-backed prompts and gets the dashboard slice accepted. Phase 8C-11 turns final product-readiness blockers into visible runtime-capability work. Phase 8C-12 proved the real runtime-capability work can complete and exposed stale escalation and child-process lifecycle issues. Phase 8C-13 proved the full real run can accept after reviewer rework and product runtime repair, then hardened stale-warning cleanup for real overseer wording. Phase 8C-14 confirmed the hardening in a fresh real full-product run: accepted product readiness, no failed assertions, and no stale active escalations. Phase 8C-15 preserves the terminal workspace after completion and archives final target snapshots so later reset-first runs do not erase the only runnable product copy. Phase 8C-16 lets reviewers use normal tooling, adds workflow-level product proof, removes the live npm shell-warning path, clears stale reviewer diagnostics after product acceptance, and improves agent signal visibility. Phase 8C-17 adds supervised quiet-child recovery and cleaner heartbeat semantics. Phase 8C-18 proved the real harness can produce a runnable product again and hardened reset cleanup, safe-directory guidance, warning amplification, and product probe isolation before the next confirmation run. Phase 8C-19 proved the final gate can block cleanly on product readiness while all implementation slices are accepted, then hardened the mark-paid workflow probe for wrapped API response shapes. Phase 10A turns coverage into actionable requirements state. Phase 10B starts the Super Overseer zoom-in layer with durable prompts and run/slice focus packets. Phase 10C makes verification obligations and requirement-ledger rollups the next engine-room foundation. Phase 10C-1D adds the structured Sleuth Review Gate so independent reviewers block fake-ready, hollow-proof, stub-backed, or runtime-unfit implementation even when per-ref evidence is present.

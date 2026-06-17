@@ -84,10 +84,10 @@ const manifest = {
   fullProductMode: {
     plannedCommand: "npm run smoke:live-agent:full",
     productSpec: path.relative(repoRoot, sourceProductSpec).replace(/\\/g, "/"),
-    maxSlices: 12,
-    maxAgentRuns: 60,
-    maxRuntimeMinutes: 45,
-    maxTurns: 40,
+    maxSlices: 20,
+    maxAgentRuns: 150,
+    maxRuntimeMinutes: 120,
+    maxTurns: 80,
     childIdleTimeoutSeconds: liveSmokeChildIdleTimeoutSeconds,
   },
   targets: [

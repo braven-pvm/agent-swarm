@@ -34,7 +34,10 @@ test("live agent smoke reset creates a labeled resettable workspace", () => {
   assert.equal(manifest.sources.length, 3);
   assert.equal(manifest.fullProductMode.plannedCommand, "npm run smoke:live-agent:full");
   assert.ok(manifest.fullProductMode.productSpec.endsWith("live-smoke-invoice-dashboard-product-spec.md"));
-  assert.equal(manifest.fullProductMode.maxTurns, 40);
+  assert.equal(manifest.fullProductMode.maxTurns, 80);
+  assert.equal(manifest.fullProductMode.maxSlices, 20);
+  assert.equal(manifest.fullProductMode.maxAgentRuns, 150);
+  assert.equal(manifest.fullProductMode.maxRuntimeMinutes, 120);
   assert.equal(manifest.fullProductMode.childIdleTimeoutSeconds, 300);
   assert.equal(manifest.commands.fullProduct, "npm run demo:live-agent:full");
   assert.equal(manifest.commands.resetAndFullProduct, "npm run smoke:live-agent:full");

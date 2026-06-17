@@ -54,6 +54,30 @@ export const workerResultSchema = z.object({
 
 export type WorkerResult = z.infer<typeof workerResultSchema>;
 
+export const reviewQualityDimensionSchema = z.object({
+  dimension: z.enum([
+    "runtime_path",
+    "stub_or_hardcode",
+    "test_meaningfulness",
+    "error_handling",
+    "integration_fit",
+    "maintainability",
+    "real_world_readiness",
+  ]),
+  status: z.enum(["passed", "warning", "failed", "not_applicable"]),
+  risk: z.enum(["none", "low", "medium", "high"]),
+  evidence: z.array(z.string()),
+  finding: z.string(),
+});
+
+export const reviewQualityGateSchema = z.object({
+  status: z.enum(["passed", "warning", "failed"]),
+  summary: z.string(),
+  dimensions: z.array(reviewQualityDimensionSchema),
+  blockingConcerns: z.array(z.string()),
+  residualRisks: z.array(z.string()),
+});
+
 export const reviewResultSchema = z.object({
   status: z.enum(["accepted", "repair_required", "blocked", "human_required"]),
   summary: z.string(),
@@ -68,6 +92,13 @@ export const reviewResultSchema = z.object({
   testAssessment: z.string(),
   sourceMutationDetected: z.boolean(),
   stubOrHardcodeRisk: z.enum(["none", "low", "medium", "high"]),
+  qualityGate: reviewQualityGateSchema.default(() => ({
+    status: "passed",
+    summary: "Legacy review result did not include the structured Sleuth Review Gate.",
+    dimensions: [],
+    blockingConcerns: [],
+    residualRisks: [],
+  } as z.infer<typeof reviewQualityGateSchema>)),
   requiredFixes: z.array(z.string()),
   escalations: z.array(
     z.object({

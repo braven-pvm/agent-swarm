@@ -50,6 +50,7 @@ test("claude reviewer runs with normal configured tool access and applies the ou
     assert.ok(evidence);
     const reviewResult = JSON.parse(fs.readFileSync(run.resultPath, "utf8"));
     assert.equal(reviewResult.status, "accepted");
+    assert.equal(reviewResult.qualityGate.status, "passed");
 
     const reviewerEvents = store
       .listEvents()
@@ -114,6 +115,27 @@ console.log(JSON.stringify({
     testAssessment: "fixture tests present",
     sourceMutationDetected: false,
     stubOrHardcodeRisk: "none",
+    qualityGate: {
+      status: "passed",
+      summary: "fake claude reviewer found no structured quality risks",
+      dimensions: [
+        "runtime_path",
+        "stub_or_hardcode",
+        "test_meaningfulness",
+        "error_handling",
+        "integration_fit",
+        "maintainability",
+        "real_world_readiness"
+      ].map((dimension) => ({
+        dimension,
+        status: "passed",
+        risk: "none",
+        evidence: ["fixture evidence"],
+        finding: \`\${dimension} passed\`
+      })),
+      blockingConcerns: [],
+      residualRisks: []
+    },
     requiredFixes: [],
     escalations: [],
     recommendation: "accept"

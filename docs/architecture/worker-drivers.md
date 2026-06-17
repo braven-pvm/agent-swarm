@@ -65,7 +65,7 @@ Worker driver commands are spawned via `cross-spawn` (not `node:child_process.sp
 
 `SWARM_<DRIVER>_COMMAND` may point at a bare command, a `.cmd`/`.ps1` shim, or a full executable path.
 
-Claude **workers** receive a default `allowedTools` (`Edit Write Read Glob Grep Bash`) so they can implement and run build/test commands, matching Codex workers' `--sandbox workspace-write`. Claude **reviewers and overseer** stay read-only (`--permission-mode plan`, no tools) regardless of config.
+Claude **workers** receive a default `allowedTools` (`Edit Write Read Glob Grep Bash`) so they can implement and run build/test commands, matching Codex workers' `--sandbox workspace-write`. Claude **reviewers** follow the same non-read-only reviewer posture as other drivers and may use the target protocol's configured tools to inspect and run checks. The visible **overseer** remains read-only analysis (`--permission-mode plan`, no edit/tool allowlist); any execution it recommends is performed later by bounded harness commands.
 
 ## Manual live smoke (not part of npm test)
 

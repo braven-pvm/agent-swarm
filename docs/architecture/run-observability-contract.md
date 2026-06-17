@@ -12,7 +12,7 @@ The UI must not collapse these separate truths into one badge:
 - product-readiness proof
 - active harness concerns
 
-The key scenario is a successful live smoke run where the selected slices and product-readiness gate pass, while the broader registered product spec still has many not-started refs. That should read as "run accepted for selected scope" plus "coverage partial", not as "whole product complete".
+The key scenario is a live smoke run where product-readiness probes pass while the registered product spec still has not-started refs. For full-product mode this must not be accepted yet: the runner should create visible coverage-completion slices for remaining refs and continue. If no completion work is visible or bounds stop the loop, it must read as "product readiness passed, but final acceptance is blocked by incomplete FR/AC coverage." Selected-scope runs may still report accepted with partial global coverage, but full-product acceptance requires every indexed in-scope FR/AC ref to be done.
 
 ## Endpoints
 
@@ -31,7 +31,7 @@ Returns a UI-ready semantic summary:
 Important states:
 
 - `accepted_complete`: run accepted and every indexed FR/AC ref is done
-- `accepted_partial`: run accepted, but indexed FR/AC coverage is incomplete
+- `accepted_partial`: selected-scope run accepted, but indexed FR/AC coverage is incomplete; full-product runs should not end here
 - `not_accepted`: latest run ended blocked/human-required/etc.
 - `unknown`: no finalized run artifact exists yet
 
@@ -66,7 +66,7 @@ Recommended primary callout:
 - `runObservability.outcomeVsCoverage.headline`
 - `runObservability.outcomeVsCoverage.detail`
 
-For an accepted run with partial coverage, the UI should show a warning-style callout even when all active slices are accepted and active escalations are zero.
+For an in-progress full-product run with partial coverage, the UI should show the active coverage-completion slice(s) as normal work. For a terminal full-product run with partial coverage, the UI should show a blocked/not-accepted callout even when product readiness passed and all active slices are accepted. The expected terminal classifier is `coverage_incomplete`.
 
 ## Run Summary Artifacts
 
@@ -76,5 +76,14 @@ For an accepted run with partial coverage, the UI should show a warning-style ca
 - `summary.coverage.interpretation`
 - `summary.coverage.byDomain`
 - `summary.outcomeVsCoverage`
+- `summary.finalCoverageGate` for full-product runs after product readiness passes; accepted only when this gate passes, otherwise used to drive visible completion slices or terminal `coverage_incomplete`
+
+Coverage-completion turns and `coverage_completion.slice_created` events may include:
+
+- `coveragePackKey`: stable machine key for product-spec completion packs, such as `api-data`, `ui-summary-table`, `ui-detail-mark-paid`, `qa-interaction`, `local-usability`, or `smoke-acceptance`
+- `coveragePackLabel`: human-readable pack label
+- `frAcRefs` / `refs`: exact immutable refs leased by that completion slice
+
+The UI should prefer these fields over parsing long slice titles. A full-product run is not accepted until all indexed refs are done; a product-readiness pass with partial coverage is still an active or blocked coverage-completion state.
 
 Archived run summaries therefore preserve the outcome-vs-coverage distinction even when viewed outside the live server.

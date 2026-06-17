@@ -262,6 +262,17 @@ export function buildSliceReport(store: SwarmStore, sliceId: string): string {
           `- status: ${reviewResult.status}`,
           `- summary: ${reviewResult.summary}`,
           `- stub/hardcode risk: ${reviewResult.stubOrHardcodeRisk}`,
+          `- quality gate: ${reviewResult.qualityGate.status} (${reviewResult.qualityGate.summary})`,
+          ...(reviewResult.qualityGate.blockingConcerns.length > 0
+            ? reviewResult.qualityGate.blockingConcerns.map((item) => `- quality blocker: ${item}`)
+            : ["- quality blockers: none"]),
+          ...(reviewResult.qualityGate.residualRisks.length > 0
+            ? reviewResult.qualityGate.residualRisks.map((item) => `- residual quality risk: ${item}`)
+            : ["- residual quality risks: none"]),
+          ...reviewResult.qualityGate.dimensions.map(
+            (dimension) =>
+              `- quality ${dimension.dimension}: ${dimension.status}/${dimension.risk} (${dimension.finding})`,
+          ),
           `- recommendation: ${reviewResult.recommendation}`,
           ...(reviewResult.requiredFixes.length > 0
             ? reviewResult.requiredFixes.map((item) => `- required fix: ${item}`)

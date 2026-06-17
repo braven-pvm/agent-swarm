@@ -879,6 +879,29 @@ const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const schemaIndex = args.indexOf("--output-schema");
 const schemaPath = schemaIndex >= 0 ? args[schemaIndex + 1] : "";
 const refs = ["AC-INV-001.1", "AC-INV-001.2", "AC-INV-001.3"];
+function qualityGate() {
+  return {
+    status: "passed",
+    summary: "fake overseer reviewer quality gate passed",
+    dimensions: [
+      "runtime_path",
+      "stub_or_hardcode",
+      "test_meaningfulness",
+      "error_handling",
+      "integration_fit",
+      "maintainability",
+      "real_world_readiness"
+    ].map((dimension) => ({
+      dimension,
+      status: "passed",
+      risk: "none",
+      evidence: ["fake-review-evidence"],
+      finding: \`\${dimension} passed\`
+    })),
+    blockingConcerns: [],
+    residualRisks: []
+  };
+}
 
 console.log(JSON.stringify({
   type: "thread.started",
@@ -904,6 +927,7 @@ if (schemaPath.includes("review-result")) {
       testAssessment: "Worker evidence includes behavior-focused invoice query tests.",
       sourceMutationDetected: false,
       stubOrHardcodeRisk: "none",
+      qualityGate: qualityGate(),
       requiredFixes: [],
       escalations: [],
       recommendation: "Proceed to deterministic verification in the next acceptance phase."

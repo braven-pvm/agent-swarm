@@ -2,7 +2,7 @@
 
 Date: 2026-06-12
 
-Status: Phase 1 reset/run-mode setup through Phase 8C-18 real-agent rerun and immediate hardening are implemented or attempted as documented. The current hardening baseline is a real full-product smoke run that accepted with product readiness passed and produced a runnable Invoice Operations Dashboard; completed runs preserve terminal workspace state and archive final target snapshots before any later reset, and the live fault suite now covers same-session revive after a stalled child worker.
+Status: Phase 1 reset/run-mode setup through Phase 10C-1D hardening is implemented or attempted as documented. The clean real full-product run `LAR-20260616T171831-live-agent-smoke-none-48036` confirmed the current baseline can produce a runnable Invoice Operations Dashboard, prove product readiness, and continue into coherent coverage-completion packs until every indexed registered FR/AC ref is explicitly leased, obligated, verified, and accepted (`83/83`). Phase 10C-1D adds a structured Sleuth Review Gate so reviewer acceptance also proves implementation quality dimensions such as runtime path, stub/hardcode risk, test meaningfulness, integration fit, and real-world readiness.
 
 This demo is the resettable real-world smoke test for the harness. Unlike fixture demos, it must use a real Codex overseer/planner to coordinate real Codex workers and real Codex verifier/reviewer agents.
 
@@ -204,6 +204,8 @@ Current manual reviewer path after a slice exists:
 node dist\cli.js review <slice-id> --actor independent-reviewer --driver codex
 ```
 
+Reviewer results include per-FR/AC findings plus a structured Sleuth Review Gate. Deterministic verification blocks acceptance when the reviewer reports a failed gate, blocking concerns, failed dimensions, or high-risk dimensions.
+
 For CI-style coverage, `tests/review-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` runner path.
 
 For Phase 4, Phase 5A, and Phase 5B CI-style coverage, `tests/overseer-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` overseer, worker, and reviewer runner paths, including `--execute`, child dispatch, and command blocking.
@@ -283,7 +285,9 @@ The full-product summary includes:
 - `mode: "full-product"`
 - `phase: "phase-8-full-product-execution"`
 - `productReadiness`
-- `outcomeClassification.code: "accepted"` when dashboard verification, tests, and start/API probes pass
+- `outcomeClassification.code: "coverage_incomplete"` when dashboard verification, tests, and start/API probes pass but registered FR/AC coverage is still partial and no further completion work can run inside the bounds
+- `outcomeClassification.code: "accepted"` only when product readiness passes and indexed FR/AC coverage is complete
+- `coveragePackKey` / `coveragePackLabel` on coverage-completion turns and events for product-spec packs such as `api-data`, `ui-summary-table`, `ui-detail-mark-paid`, `qa-interaction`, `local-usability`, and `smoke-acceptance`
 - `outcomeClassification.code: "product_not_ready"` when bounded execution stops before the dashboard can be opened/probed
 - final commands and manual inspection URL
 
@@ -304,6 +308,8 @@ In full-product mode, the UI and final summary should also show:
 - local inspection URL
 - final product run/check status
 - product-readiness follow-up slices when final runtime blockers remain
+- coverage-completion slices when product readiness passes before all indexed refs are accepted
+- the specific coverage pack currently being worked, especially `qa-interaction` when `AC-QA-001.5` requires executed UI model/browser/DOM proof rather than static script checks
 - accepted and blocked FR/ACs by product area
 
 ## Expected Workspace

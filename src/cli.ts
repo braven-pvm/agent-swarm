@@ -3145,6 +3145,73 @@ function runFixtureReview(input: {
     testAssessment: "Fixture reviewer used existing harness evidence for deterministic assessment.",
     sourceMutationDetected,
     stubOrHardcodeRisk: "none",
+    qualityGate: {
+      status: sourceMutationDetected ? "failed" : "passed",
+      summary: sourceMutationDetected
+        ? "Source mutation prevents a trustworthy real-world review."
+        : "Fixture review found no structured quality risks in recorded harness evidence.",
+      dimensions: [
+        {
+          dimension: "runtime_path",
+          status: sourceMutationDetected ? "failed" : "passed",
+          risk: sourceMutationDetected ? "high" : "none",
+          evidence: evidenceIds,
+          finding: sourceMutationDetected
+            ? "Runtime behavior cannot be trusted while immutable source specs are mutated."
+            : "Fixture review relies on existing worker and command evidence for runtime path proof.",
+        },
+        {
+          dimension: "stub_or_hardcode",
+          status: "passed",
+          risk: "none",
+          evidence: evidenceIds,
+          finding: "No fixture-level stub or hardcode concern was raised by recorded evidence.",
+        },
+        {
+          dimension: "test_meaningfulness",
+          status: sourceMutationDetected ? "failed" : "passed",
+          risk: sourceMutationDetected ? "high" : "none",
+          evidence: evidenceIds,
+          finding: sourceMutationDetected
+            ? "Tests cannot be trusted against mutated immutable source inputs."
+            : "Recorded command/worker evidence is sufficient for the fixture review path.",
+        },
+        {
+          dimension: "error_handling",
+          status: "not_applicable",
+          risk: "none",
+          evidence: [],
+          finding: "No additional fixture-only error-handling concern.",
+        },
+        {
+          dimension: "integration_fit",
+          status: sourceMutationDetected ? "failed" : "passed",
+          risk: sourceMutationDetected ? "high" : "none",
+          evidence: evidenceIds,
+          finding: sourceMutationDetected
+            ? "Integration fit cannot be confirmed after source mutation."
+            : "Recorded evidence is coherent with the slice scope.",
+        },
+        {
+          dimension: "maintainability",
+          status: "not_applicable",
+          risk: "none",
+          evidence: [],
+          finding: "No additional fixture-only maintainability concern.",
+        },
+        {
+          dimension: "real_world_readiness",
+          status: sourceMutationDetected ? "failed" : "passed",
+          risk: sourceMutationDetected ? "high" : "none",
+          evidence: evidenceIds,
+          finding: sourceMutationDetected
+            ? "A mutated source spec blocks readiness."
+            : "No fixture-level readiness concern was raised.",
+        },
+      ],
+      blockingConcerns: sourceMutationDetected ? ["Immutable source mutation detected during review."] : [],
+      residualRisks: [],
+    },
     requiredFixes: sourceMutationDetected ? ["Restore immutable source spec files before continuing."] : [],
     escalations: sourceMutationDetected
       ? [{ level: "human_required", message: "Immutable source spec mutation detected during review." }]
@@ -3214,6 +3281,15 @@ ${input.slice.expectedEvidence.map((item) => `- ${item}`).join("\n")}
 Verification requirements:
 ${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
 
+Sleuth Review Gate:
+- In addition to FR/AC matching, judge whether this implementation is fit for real use inside the target project.
+- Return a structured qualityGate with exactly these dimensions: runtime_path, stub_or_hardcode, test_meaningfulness, error_handling, integration_fit, maintainability, real_world_readiness.
+- For each dimension, provide status passed|warning|failed|not_applicable, risk none|low|medium|high, concrete evidence, and a finding.
+- Mark the qualityGate failed when any dimension has a material behavior gap, high risk, fake-only/stubbed behavior, hollow tests, unproven runtime path, unsafe integration, or real-world readiness blocker.
+- Medium risks may remain warnings only when they are genuinely non-blocking and residualRisks explains why.
+- Put any acceptance-blocking quality concern in blockingConcerns and use blocked or repair_required rather than accepted.
+- The deterministic verifier will block acceptance when the qualityGate fails, has blockingConcerns, or contains high-risk/failed dimensions.
+
 Recorded harness evidence:
 ${evidenceLines}
 
@@ -3235,6 +3311,7 @@ Review rules:
 - Treat missing per-FR/AC evidence as a finding.
 - Judge evidence against the read-only verification obligations, not generic confidence or broad command success.
 - Treat stubs, hardcoded shortcuts, hollow tests, or unproven runtime paths as material risks.
+- Treat the Sleuth Review Gate as a first-class acceptance gate, not commentary.
 - Deterministic command verification is a separate harness gate after reviewer acceptance.
 - You may run npm test, node --test, git, shell, or other local inspection commands when useful and allowed by the configured driver/protocol.
 - If command execution is unavailable or a command fails for policy/environment reasons, record that limitation in testAssessment and judge the implementation using code inspection, source refs, worker result evidence, and recorded command evidence.
@@ -3318,10 +3395,21 @@ function applyReviewOutcome(input: {
   sourceMutationsAfter: SourceMutationFinding[];
 }): void {
   const sourceMutationDetected = input.result.sourceMutationDetected || input.sourceMutationsAfter.some((item) => item.mutated);
-  const effectiveStatus = sourceMutationDetected ? "human_required" : input.result.status;
+  const qualityBlockingReasons = reviewQualityBlockingReasons(input.result);
+  const effectiveStatus = sourceMutationDetected ? "human_required" : qualityBlockingReasons.length > 0 ? "blocked" : input.result.status;
 
   for (const escalation of input.result.escalations) {
     insertReviewEscalation(input.store, input.slice, input.actor, escalation.level, escalation.message, input.result.summary);
+  }
+  if (qualityBlockingReasons.length > 0) {
+    insertReviewEscalation(
+      input.store,
+      input.slice,
+      input.actor,
+      "blocker",
+      "Sleuth Review Gate blocked acceptance.",
+      qualityBlockingReasons.join("; "),
+    );
   }
   if (sourceMutationDetected) {
     insertReviewEscalation(
@@ -3479,12 +3567,36 @@ function readLatestReviewGate(
       evidenceId: reviewEvidence.id,
     };
   }
+  const qualityBlockingReasons = reviewQualityBlockingReasons(parsed.data);
+  if (qualityBlockingReasons.length > 0) {
+    return {
+      passed: false,
+      reason: `latest review quality gate failed: ${qualityBlockingReasons.join("; ")}`,
+      status: "blocked",
+      evidenceId: reviewEvidence.id,
+    };
+  }
   return {
     passed: true,
     reason: "latest review accepted",
     status: "accepted",
     evidenceId: reviewEvidence.id,
   };
+}
+
+function reviewQualityBlockingReasons(result: ReviewResult): string[] {
+  const gate = result.qualityGate;
+  const reasons: string[] = [];
+  if (gate.status === "failed") reasons.push(`qualityGate.status=${gate.status}`);
+  for (const concern of gate.blockingConcerns) {
+    if (concern.trim()) reasons.push(concern.trim());
+  }
+  for (const dimension of gate.dimensions) {
+    if (dimension.status === "failed" || dimension.risk === "high") {
+      reasons.push(`${dimension.dimension} ${dimension.status}/${dimension.risk}: ${dimension.finding}`);
+    }
+  }
+  return reasons;
 }
 
 function validateSliceDispatchContract(slice: SliceRecord): void {
@@ -5329,6 +5441,7 @@ function writeReviewResultSchema(schemaPath: string): void {
           "testAssessment",
           "sourceMutationDetected",
           "stubOrHardcodeRisk",
+          "qualityGate",
           "requiredFixes",
           "escalations",
           "recommendation",
@@ -5353,6 +5466,43 @@ function writeReviewResultSchema(schemaPath: string): void {
           testAssessment: { type: "string" },
           sourceMutationDetected: { type: "boolean" },
           stubOrHardcodeRisk: { type: "string", enum: ["none", "low", "medium", "high"] },
+          qualityGate: {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", "summary", "dimensions", "blockingConcerns", "residualRisks"],
+            properties: {
+              status: { type: "string", enum: ["passed", "warning", "failed"] },
+              summary: { type: "string" },
+              dimensions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["dimension", "status", "risk", "evidence", "finding"],
+                  properties: {
+                    dimension: {
+                      type: "string",
+                      enum: [
+                        "runtime_path",
+                        "stub_or_hardcode",
+                        "test_meaningfulness",
+                        "error_handling",
+                        "integration_fit",
+                        "maintainability",
+                        "real_world_readiness",
+                      ],
+                    },
+                    status: { type: "string", enum: ["passed", "warning", "failed", "not_applicable"] },
+                    risk: { type: "string", enum: ["none", "low", "medium", "high"] },
+                    evidence: { type: "array", items: { type: "string" } },
+                    finding: { type: "string" },
+                  },
+                },
+              },
+              blockingConcerns: { type: "array", items: { type: "string" } },
+              residualRisks: { type: "array", items: { type: "string" } },
+            },
+          },
           requiredFixes: { type: "array", items: { type: "string" } },
           escalations: {
             type: "array",

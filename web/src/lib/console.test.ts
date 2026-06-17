@@ -10,7 +10,7 @@ const baseSnapshot = (): SnapshotResponse => ({
     sourceRefs: [], frAcRefs: ["AC-INV-001.1"], deliveryQuestion: "",
     leases: [{ id: "LE1", frAcRef: "AC-INV-001.1", sliceId: "SLICE-1", laneId: "L1", status: "completed", createdAt: "", updatedAt: "" }],
     evidence: [], frAcResults: [{ ref: "AC-INV-001.1", status: "passed", evidenceIds: [], proof: "ok", verifiedBy: "v" }],
-    reviewResult: { status: "accepted", summary: "", frAcFindings: [{ ref: "AC-INV-001.1", status: "passed", evidence: ["spec says X", "test passes"], finding: "good" }], testAssessment: "", sourceMutationDetected: false, stubOrHardcodeRisk: "none", requiredFixes: [], escalations: [], recommendation: "" },
+    reviewResult: { status: "accepted", summary: "", frAcFindings: [{ ref: "AC-INV-001.1", status: "passed", evidence: ["spec says X", "test passes"], finding: "good" }], testAssessment: "", sourceMutationDetected: false, stubOrHardcodeRisk: "none", qualityGate: { status: "passed", summary: "quality passed", dimensions: [], blockingConcerns: [], residualRisks: [] }, requiredFixes: [], escalations: [], recommendation: "" },
     agentRuns: [], createdAt: "", updatedAt: "",
   }],
   dependencies: [], agentRuns: [{ id: "R1", sliceId: "SLICE-1", role: "worker", actor: "backend-worker", driver: "codex", status: "completed", attempt: 1, startedAt: "", updatedAt: "" }],

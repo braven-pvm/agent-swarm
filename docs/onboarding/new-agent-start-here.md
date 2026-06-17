@@ -1,6 +1,6 @@
 # New Agent Start Here
 
-Last updated: 2026-06-15
+Last updated: 2026-06-17
 
 This repository is an agentic development harness prototype. It exists to coordinate autonomous implementation agents against approved immutable requirements at scale, while keeping planning, work, verification, evidence, recovery, and progress visible.
 
@@ -31,6 +31,7 @@ The harness is not a spec authoring system. Implementation agents may interpret 
 - No executable slice without harness-owned verification obligations for every included FR/AC.
 - No slice should be accepted without evidence.
 - Workers may not create, edit, weaken, or approve the verification obligations used to accept their own work.
+- Independent review must include real-world implementation quality through the structured Sleuth Review Gate; failed/high-risk quality gates block acceptance.
 - Human input required blocks the affected FR/AC/slice/dependencies; human verification required may proceed to implementation but cannot be accepted until the human result is recorded.
 - Requirement, slice, sprint, and product rollups must derive from the requirement ledger, not chat memory or final agent claims.
 - Planner decisions must be visible as events/checkpoints, not hidden in chat.
@@ -86,6 +87,7 @@ The current prototype supports:
 - verifier evidence includes criterion-level expected/actual results tied to verification obligations
 - independent reviewer dispatch (fixture, codex, claude) through driver adapters via `swarm review`
 - reviewer JSONL event ingestion, heartbeats, `review_result` evidence, and review-gated verification
+- structured Sleuth Review Gate in reviewer results, prompts, reports, and verifier acceptance gating
 - visible overseer dispatch (fixture, codex, claude) through the driver registry via `swarm orchestrate`
 - overseer JSONL event ingestion, heartbeats, structured planning decisions, prompt artifacts, and overseer checkpoints
 - bounded overseer command execution through `swarm orchestrate --execute`
@@ -102,12 +104,13 @@ The current prototype supports:
 - live-run artifact index and outcome classification through `live-agent-run-artifacts/artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`
 - reset-resistant live-run history and comparison through `.swarm-demo/live-agent-run-history/` and `npm run demo:live-agent:compare`
 - web viewer History tab with archived live runs, latest-run comparison, and selected-run artifact index details
-- full-product mode through `npm run demo:live-agent:full` and resettable `npm run smoke:live-agent:full`, product readiness artifacts, backend-to-dashboard execution, structured dashboard HTML/API probes, product-readiness feedback slices, accepted completion, and bounded `product_not_ready` blocking
+- full-product mode through `npm run demo:live-agent:full` and resettable `npm run smoke:live-agent:full`, product readiness artifacts, backend-to-dashboard execution, structured dashboard HTML/API probes, product-readiness feedback slices, product-readiness proof, coherent coverage-completion packs for remaining registered FR/ACs, terminal `coverage_incomplete` blocking only when coverage cannot complete inside bounds, and bounded `product_not_ready` blocking
 - full-product escalation reconciliation so accepted runs clear stale dependency/planning blockers, cover real-overseer warning wording, and fail assertions if active blocker/human/critical escalations remain
 - reports, timelines, graph JSON/DOT, observe JSON, and terminal watch views
 - stale-run recovery scan, same-session revive, restart fallback, and configurable child idle timeout supervision
 - durable worker/reviewer/revive prompt artifacts, `swarm inspect run/slice` focus packets, overseer `actionableState.focusQueue`, bounded overseer inspect commands, and supervised-recovery focus artifacts for stalled, failed, blocked, or high-retry diagnosis
 - `/api/coverage` exposes obligation presence, mode, responsible party, criteria count, and expected outcomes additively
+- full-product final acceptance requires product readiness plus complete indexed FR/AC coverage; if readiness passes while refs remain incomplete, the runner creates coverage-completion slices before falling back to terminal `coverage_incomplete`. Product-spec completion is pack-based (`api-data`, `ui-summary-table`, `ui-detail-mark-paid`, `qa-interaction`, `local-usability`, `smoke-acceptance`), and `AC-QA-001.5` requires executed UI model/browser/DOM proof rather than static script checks.
 - latest-only role/entity checkpoints
 - role-specific resume packets
 - local read-only web viewer served by `swarm serve`
@@ -149,6 +152,8 @@ git diff --check
 Expected current result:
 
 ```text
+Clean real full-product run LAR-20260616T171831-live-agent-smoke-none-48036 -> accepted, coverage 83/83, product readiness passed
+Generated invoice dashboard npm test -> 20/20 passing
 npm test -> 108/108 passing
 git diff --check -> clean
 ```
@@ -221,7 +226,7 @@ Run-mode boundary:
 
 - `demo:web-observability`: fixture regression.
 - `demo:web-observability:codex`: scripted planning with real Codex workers.
-- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, Phase 6C stale-run recovery fault, Phase 6D context-handoff fault, Phase 6E low-signal/proof-churn fault, Phase 6F supervised-revive fault, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B full-product execution, Phase 8C-1 through Phase 8C-18 hardening are implemented or attempted as documented.
+- full live-agent overseer smoke: baseline loop implemented through Phase 5C; Phase 6A source-mutation fault, Phase 6B reviewer-repair fault, Phase 6C stale-run recovery fault, Phase 6D context-handoff fault, Phase 6E low-signal/proof-churn fault, Phase 6F supervised-revive fault, Phase 7A artifact index/outcome classification, Phase 7B-1 run history/comparison, Phase 7B-2 web history/artifact detail, Phase 8A full-product readiness blocking, Phase 8B full-product execution, Phase 8C-1 through Phase 8C-19 hardening, Phase 10B focus packets, Phase 10C-1 through 10C-1C coverage gating/completion packs, and Phase 10C-1D Sleuth Review Gate hardening are implemented or attempted as documented.
 - live smoke Phase 1 reset/run-mode setup: implemented with `npm run demo:live-agent:reset` and `npm run demo:live-agent:serve`.
 - live smoke Phase 2 reviewer runner: implemented with `swarm review <slice-id> --actor <actor> --driver codex`.
 - live smoke Phase 3 scripted worker+reviewer rehearsal: implemented with `npm run demo:live-agent:scripted`.
@@ -266,7 +271,7 @@ Run-mode boundary:
 - live smoke Phase 8C-5 real-agent calibration after compact state: executed with real Codex and blocked honestly with `product_not_ready`.
   Compact state worked: four backend slices reached accepted status with worker/reviewer/command evidence. The remaining blocker was not prompt drift; it was full-product budget and missing dashboard dependency refs (`AC-INV-002.2`, `AC-INV-003.1`) before dashboard work could legitimately start.
 - live smoke Phase 8C-6 full-product budget/dependency-gate hardening: implemented in `scripts/run-live-agent-demo.mjs`, `scripts/reset-live-agent-smoke.mjs`, `package.json`, `tests/live-agent-runner.e2e.test.js`, and `tests/live-agent-smoke-reset.e2e.test.js`.
-  Full-product defaults are now 40 turns, 2700 seconds, and 60 agent runs; product readiness now records declared/accepted/missing dashboard dependency refs and renders them in `product-readiness.md`.
+  Full-product defaults were raised for dependency-gate calibration here, and Phase 10C-1C later raises the active resettable full-product path to 80 turns, 7200 seconds, 20 slices, and 150 agent runs so 100% coverage packs can complete. Product readiness records declared/accepted/missing dashboard dependency refs and renders them in `product-readiness.md`.
 - live smoke Phase 8C-7/8C-8 orchestration dependency-gate lesson: real run `LAR-20260611T091057-live-agent-smoke-none-10516` accepted backend through `AC-INV-002.2`, then exposed that the overseer could still attempt a dashboard pull while `AC-INV-003.1` was missing. Phase 8C-8 adds `actionableState.nextSourcePullQueue`, `actionableState.blockedSourceQueue`, dependency preflight for overseer `slices pull`, and recoverable dependency-block handling in full-product mode.
 - live smoke Phase 8C-9/8C-10 prompt/runtime lesson: real run reached accepted backend dependencies, unlocked dashboard work, implemented and accepted dashboard slice `SLICE-cd4193e4`, and then product readiness blocked honestly on missing `npm start` / local URL probe. The hardening moved overseer Codex launches to a short artifact-backed prompt to avoid Windows `spawn ENAMETOOLONG`, compacted prompt state with `sliceSummary` and `agentRunSummary`, and updated fake live overseers to consume the compact prompt contract.
 - live smoke Phase 8C-11 product-readiness feedback: runtime readiness blockers now create a normal visible dashboard-target slice titled `Resolve invoice dashboard product readiness`, tied to immutable `AC-PROD-001.1` through `AC-PROD-001.4`. The slice records leases, planner decision, dependency, checkpoints, and `product_readiness.slice_created`, then goes through worker, reviewer, deterministic verification, and final product probes. The fake full-product E2E can simulate a dashboard model slice that passes tests while omitting `npm start`, then proves the feedback slice repairs runtime startup. Probe cleanup now terminates the Windows `npm start` process tree.
@@ -283,9 +288,12 @@ Run-mode boundary:
 - live smoke Phase 8C-19 real rerun/probe-shape hardening: real run `LAR-20260614T143508-live-agent-smoke-none-41428` accepted all implementation slices but blocked final product readiness because the mark-paid probe expected a raw invoice array. Artifact inspection showed the product had overdue invoices; the real API returned `{ invoices: [...] }` and `{ invoice: ... }`. The harness probe now accepts wrapped list/status payloads, and fake full-product E2E covers that shape. Verification passed with `npm test` 99/99 and `git diff --check` clean.
 - Phase 9 real-run rebaseline attempt on 2026-06-15: backend-first orchestration worked and coverage moved from `0/83` to `11/83`, but product-readiness exposed a real stalled-worker failure. The first product-readiness worker stopped emitting JSONL after editing `package.json`; manual child termination caused same-slice restart; the restarted worker surfaced a malformed inline PowerShell/Node `npm start` self-probe and went quiet after a blocked command. The run was intentionally stopped before outer max-runtime, so no final run summary exists. Immediate hardening now sets live-smoke target protocol `recovery.childIdleTimeoutSeconds: 300` during reset and enriches `/api/coverage` with status reason, next action, owner/actors, evidence, dependencies, escalations, and last-changed data.
 - Phase 10B Super Overseer focus-packet wiring: worker/reviewer/revive prompts are now persisted as artifacts and referenced from events. `swarm inspect run <run-id>` and `swarm inspect slice <slice-id>` produce human-readable focus packets; `--json` produces machine-readable packets for overseer use. Packets include prompt/result/stderr artifacts, JSONL event tail, last command, last agent message, file changes, git status, heartbeat, related evidence/escalations/events, failure classes, retry pressure, and recommended interventions. Compact overseer state now exposes `actionableState.focusQueue`; bounded overseer execution can run validated `inspect run/slice` commands; supervised recovery archives `recoveryRunFocus` and `recoverySliceFocus` before revive/restart. Focused E2E coverage proves successful packets, failed-command packets, focusQueue, bounded inspect, and recovery focus artifacts.
+- Phase 10C-1C clean real full-product confirmation on 2026-06-16: run `LAR-20260616T171831-live-agent-smoke-none-48036` accepted with `83/83` indexed FR/AC refs done, product readiness passed, `13` accepted slices, `56` agent runs, `13` deterministic verification runs, and no failed assertions. The generated invoice dashboard product lives at `.swarm-demo/live-agent-smoke/invoice-dashboard`, passes `npm test` 20/20, and can be started at `http://127.0.0.1:4321/`. Residual non-blocking warning cleanup remains for repeated `git status` sandbox/ACL diagnostic restatements.
+- Phase 10C-1D Sleuth Review Gate hardening: reviewer result schema, prompts, reports, verifier gate, and web detail types now carry a structured quality gate for runtime path, stub/hardcode risk, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness. Failed/high-risk quality gates block acceptance even if the reviewer status string says accepted.
+  Verification on 2026-06-17: `npm run build` passed; focused reviewer/driver/coverage tests passed; web tests passed `88/88`; all Node tests except the long live-agent-runner stress file passed `96/96`; live-agent-runner supervised-revive/full-product/readiness-feedback regressions passed individually. The full live-agent-runner file exceeded the wrapper timeout, but the in-progress run reached an accepted final summary before cleanup.
 
 ## Next Coherent Slice
 
-Next slice: broad verification of Phase 10B, then rerun Phase 9 with live-smoke child idle timeout armed.
+Next slice: Phase 10C-2 requirement ledger and human verification/input semantics.
 
-Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 through Phase 8C-19 plus probe-isolation and response-shape hardening are implemented or attempted as documented. Phase 9 attempted a real full-product rebaseline and exposed stalled product-readiness worker/probe-quoting behavior. Phase 10A is partially implemented with richer `/api/coverage`; Phase 10B now has durable prompt artifacts, `inspect run/slice` focus packets, overseer `focusQueue`, bounded inspect execution, and recovery focus artifacts. Next useful work is broad verification, then warning-restatement/canonical-probe hardening and another real full-product smoke. The full-product destination remains `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.
+Read `docs/architecture/live-agent-smoke-implementation-plan.md` before editing. Phase 1 through Phase 8C-19 plus probe-isolation and response-shape hardening are implemented or attempted as documented. Phase 9 attempted a real full-product rebaseline and exposed stalled product-readiness worker/probe-quoting behavior. Phase 10A is partially implemented with richer `/api/coverage`; Phase 10B now has durable prompt artifacts, `inspect run/slice` focus packets, overseer `focusQueue`, bounded inspect execution, and recovery focus artifacts. Phase 10C-1/1A/1B/1C enforce verification obligations, full-product coverage gating, and coverage-completion packs so accepted full-product runs must reach 100% indexed FR/AC coverage; Phase 10C-1D adds the structured Sleuth Review Gate so reviewers block fake-ready, hollow-proof, or runtime-unfit implementation. A clean real full-product smoke has now reached `83/83` coverage. The next useful work is Phase 10C-2: requirement-ledger semantics, parent FR rollups, and distinct `human_input_required` vs `human_verification_required` state. The full-product destination remains `docs/requirements/live-smoke-invoice-dashboard-product-spec.md`: after reset and run, the ultimate smoke should produce a small real invoice dashboard a human can open, or exact blockers explaining why not.

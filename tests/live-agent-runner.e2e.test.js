@@ -804,9 +804,9 @@ test("full-product mode coordinates backend and dashboard through product readin
       "--mode",
       "full-product",
       "--max-turns",
-      "10",
+      "80",
       "--max-runtime-seconds",
-      "120",
+      "240",
       "--execute-limit",
       "3",
       "--history-root",
@@ -830,6 +830,10 @@ test("full-product mode coordinates backend and dashboard through product readin
   assert.equal(summary.phase, "phase-8-full-product-execution");
   assert.equal(summary.finalOutcome, "accepted");
   assert.equal(summary.outcomeClassification.code, "accepted");
+  assert.equal(summary.outcomeVsCoverage.state, "accepted_complete");
+  assert.equal(summary.coverage.totals.done, summary.coverage.totals.total);
+  assert.equal(summary.finalCoverageGate.passed, true);
+  assert.equal(summary.finalCoverageGate.incompleteCount, 0);
   assert.equal(summary.productReadiness.passed, true);
   assert.equal(summary.productReadiness.productSpec.exists, true);
   assert.equal(summary.productReadiness.productSpec.registered, true);
@@ -852,8 +856,17 @@ test("full-product mode coordinates backend and dashboard through product readin
   assert.equal(summary.productReadiness.commandResults.start.probes.markPaid.passed, true);
   assert.equal(summary.productReadiness.commandResults.start.probes.markPaid.paidCountIncreased, true);
   assert.equal(summary.productReadiness.commandResults.start.probes.markPaid.overdueCountDecreased, true);
-  assert.equal(summary.productReadiness.dashboardSlices.accepted, 1);
+  assert.ok(summary.productReadiness.dashboardSlices.accepted >= 1);
   assert.ok(summary.turns.some((turn) => turn.kind === "product-readiness" && turn.passed === false));
+  const coverageCompletionTurns = summary.turns.filter((turn) => turn.kind === "coverage-completion-slice-created");
+  assert.ok(coverageCompletionTurns.length >= 3);
+  assert.ok(coverageCompletionTurns.some((turn) => turn.coveragePackKey === "qa-interaction"));
+  assert.ok(coverageCompletionTurns.some((turn) => turn.coveragePackKey === "smoke-acceptance"));
+  assert.ok(
+    coverageCompletionTurns
+      .filter((turn) => turn.coveragePackKey)
+      .every((turn) => turn.refs.length <= 24),
+  );
   assert.ok(summary.dependencyWarningClearances.length >= 1);
   assert.equal(summary.counts.activeEscalations, 0);
   assert.match(summary.productReadiness.commands.manualUrl, /^http:\/\/127\.0\.0\.1:/);
@@ -929,9 +942,9 @@ test("full-product mode turns runtime readiness blockers into visible follow-up 
       "--mode",
       "full-product",
       "--max-turns",
-      "14",
+      "80",
       "--max-runtime-seconds",
-      "120",
+      "240",
       "--execute-limit",
       "3",
       "--history",
@@ -954,9 +967,15 @@ test("full-product mode turns runtime readiness blockers into visible follow-up 
 
   assert.equal(summary.mode, "full-product");
   assert.equal(summary.finalOutcome, "accepted");
+  assert.equal(summary.outcomeClassification.code, "accepted");
+  assert.equal(summary.outcomeVsCoverage.state, "accepted_complete");
+  assert.equal(summary.coverage.totals.done, summary.coverage.totals.total);
+  assert.equal(summary.finalCoverageGate.passed, true);
   assert.equal(summary.productReadiness.passed, true);
   assert.ok(summary.turns.some((turn) => turn.kind === "product-readiness-slice-created"));
   assert.ok(summary.turns.some((turn) => turn.kind === "product-readiness-deferred"));
+  const coverageCompletionTurns = summary.turns.filter((turn) => turn.kind === "coverage-completion-slice-created");
+  assert.ok(coverageCompletionTurns.some((turn) => turn.coveragePackKey === "qa-interaction"));
   assert.equal(summary.productReadiness.productReadinessSlices.total, 1);
   assert.equal(summary.productReadiness.productReadinessSlices.active, 0);
   assert.ok(summary.productReadiness.productReadinessSlices.ids[0].refs.includes("AC-PROD-001.1"));
@@ -970,7 +989,7 @@ test("full-product mode turns runtime readiness blockers into visible follow-up 
   assert.ok(readinessSlice.scope.some((item) => item.includes("safe runtime proof")));
   assert.ok(readinessSlice.expectedEvidence.some((item) => item.includes("in-process HTTP probe")));
   assert.ok(readinessSlice.verificationRequirements.some((item) => item.includes("bounded HTTP probe")));
-  assert.ok(snapshot.recentEvents.some((event) => event.type === "product_readiness.slice_created"));
+  assert.ok(summary.turns.some((turn) => turn.kind === "product-readiness-slice-created"));
   assert.equal(
     snapshot.activeEscalations.filter((item) =>
       /Invoice Dashboard source .*blocked.*backend|Historical dashboard prerequisite warnings|dashboard prerequisite warnings appear stale/i.test(
@@ -1155,10 +1174,12 @@ const schemaPath = schemaIndex >= 0 ? args[schemaIndex + 1] : "";
 const cli = process.env.TEST_SWARM_CLI;
 const fault = process.env.SWARM_LIVE_FAULT || "none";
 const delayDashboardStart = process.env.SWARM_FAKE_DELAY_DASHBOARD_START === "true";
-const isResumeInvocation = args.includes("resume");
 const workerCountPath = ${JSON.stringify(workerCountPath)};
 const reviewCountPath = ${JSON.stringify(reviewCountPath)};
 const rawPrompt = readStdin() || (args.at(-1) ?? "");
+const isResumeInvocation =
+  args.includes("resume") ||
+  rawPrompt.includes("being resumed by the Agent Swarm supervised recovery protocol");
 const promptPath = parsePromptPath(rawPrompt);
 const prompt = rawPrompt.includes("Current harness snapshot:")
   ? rawPrompt
@@ -1172,14 +1193,18 @@ const isFullProductPrompt =
   prompt.includes('"phase": "phase-8-full-product-foundation"') ||
   prompt.includes('"phase": "phase-8-full-product-execution"') ||
   isFullProductWorkspace();
-let refs = readSliceRefs(sliceId) ?? extractRefs(prompt);
+const sliceRefs = readSliceRefs(sliceId);
+const promptRefs = extractRefs(prompt);
+let refs = sliceRefs ?? promptRefs;
 const isDashboardTarget = path.basename(process.cwd()).toLowerCase().includes("dashboard");
-if (isDashboardTarget && !refs.some((ref) => ref.startsWith("AC-UI") || ref.startsWith("AC-PROD"))) {
+if (!sliceRefs && refs.length === 0 && isDashboardTarget) {
   refs = [
     "AC-UI-INV-001.1",
     "AC-UI-INV-001.2",
     "AC-UI-INV-001.3"
   ];
+} else if (!sliceRefs && refs.length === 0) {
+  refs = ["AC-INV-001.1", "AC-INV-001.2", "AC-INV-001.3"];
 } else if (isFullProductPrompt && refs.some((ref) => ref.startsWith("AC-INV"))) {
   refs = [
     "AC-INV-001.1",
@@ -1193,6 +1218,29 @@ if (isDashboardTarget && !refs.some((ref) => ref.startsWith("AC-UI") || ref.star
 }
 const isProductRuntimeSlice = refs.some((ref) => ref.startsWith("AC-PROD"));
 const isDashboardSlice = isDashboardTarget || refs.some((ref) => ref.startsWith("AC-UI") || ref.startsWith("AC-PROD"));
+function qualityGate(status = "passed", risk = "none") {
+  return {
+    status,
+    summary: status === "passed" ? "fake live reviewer quality gate passed" : "fake live reviewer quality gate needs attention",
+    dimensions: [
+      "runtime_path",
+      "stub_or_hardcode",
+      "test_meaningfulness",
+      "error_handling",
+      "integration_fit",
+      "maintainability",
+      "real_world_readiness"
+    ].map((dimension) => ({
+      dimension,
+      status: status === "failed" ? "failed" : status === "warning" ? "warning" : "passed",
+      risk,
+      evidence: ["fake-review-evidence"],
+      finding: status === "passed" ? \`\${dimension} passed\` : \`\${dimension} needs attention\`
+    })),
+    blockingConcerns: status === "failed" ? ["fake live quality gate failure"] : [],
+    residualRisks: status === "warning" ? ["fake live quality gate warning"] : []
+  };
+}
 
 console.log(JSON.stringify({
   type: "thread.started",
@@ -1252,6 +1300,7 @@ if (schemaPath.includes("overseer-decision")) {
         testAssessment: "Tests are incomplete because customer filtering is not proven.",
         sourceMutationDetected: false,
         stubOrHardcodeRisk: "medium",
+        qualityGate: qualityGate("warning", "medium"),
         requiredFixes: ["Add customerId filtering behavior and tests."],
         escalations: [{ level: "blocker", message: "reviewer requested repair for missing customer filter" }],
         recommendation: "Repair customer filtering before deterministic verification."
@@ -1273,6 +1322,7 @@ if (schemaPath.includes("overseer-decision")) {
           : "Worker evidence includes behavior-focused invoice query tests.",
         sourceMutationDetected: false,
         stubOrHardcodeRisk: "none",
+        qualityGate: qualityGate(),
         requiredFixes: [],
         escalations: [],
         recommendation: "Proceed to deterministic verification."
@@ -1296,7 +1346,7 @@ if (schemaPath.includes("overseer-decision")) {
     process.exit(0);
   }
   if (isDashboardSlice) {
-    const omitStart = delayDashboardStart && !isProductRuntimeSlice;
+    const omitStart = delayDashboardStart && !isProductRuntimeSlice && !hasExistingStartScript();
     console.log(JSON.stringify({ type: "item.started", item: { type: "file_change", path: "src/server.js" } }));
     writeDashboardImplementation({ omitStart });
     if (outputPath) {
@@ -1486,6 +1536,17 @@ function isFullProductWorkspace() {
   }
 }
 
+function hasExistingStartScript() {
+  try {
+    const packagePath = path.join(process.cwd(), "package.json");
+    if (!fs.existsSync(packagePath)) return false;
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    return typeof packageJson?.scripts?.start === "string" && packageJson.scripts.start.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function parseSnapshot(prompt) {
   const normalized = prompt.replace(/\\r\\n/g, "\\n");
   const marker = "Current harness snapshot:\\n";
@@ -1539,7 +1600,7 @@ function extractRefs(prompt) {
   const scopeMatch = /FR\\/AC scope:\\n([\\s\\S]*?)\\n\\n/.exec(normalized);
   const scope = scopeMatch ? scopeMatch[1] : normalized;
   const found = [...new Set([...scope.matchAll(/\\b(?:FR|AC)-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:\\.[0-9]+)?\\b/gi)].map((match) => match[0].toUpperCase()))];
-  return found.length > 0 ? found : ["AC-INV-001.1", "AC-INV-001.2", "AC-INV-001.3"];
+  return found;
 }
 
 function sleep(ms) {
@@ -1685,12 +1746,12 @@ function sliceRecordsFromSnapshot(snapshot) {
 }
 
 function isBackendSliceRecord(slice) {
-  return Array.isArray(slice.frAcRefs) && slice.frAcRefs.some((ref) => String(ref).startsWith("AC-INV"));
+  return Array.isArray(slice.frAcRefs) && slice.frAcRefs.some((ref) => /^FR-INV-|^AC-INV-/i.test(String(ref)));
 }
 
 function isDashboardSliceRecord(slice) {
   return Array.isArray(slice.frAcRefs) && slice.frAcRefs.some((ref) =>
-    String(ref).startsWith("AC-UI") || String(ref).startsWith("AC-PROD")
+    /^FR-UI-|^AC-UI|^FR-PROD-|^AC-PROD|^FR-DATA-|^AC-DATA|^FR-API-|^AC-API|^FR-QA-|^AC-QA|^AC-NFR|^AC-SMOKE/i.test(String(ref))
   );
 }
 

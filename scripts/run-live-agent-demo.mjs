@@ -26,11 +26,11 @@ if (!["acceptance-loop", "full-product"].includes(mode)) {
   throw new Error(`Invalid --mode ${mode}; expected acceptance-loop or full-product`);
 }
 const fullProductMode = mode === "full-product";
-const maxTurns = Number.parseInt(args["max-turns"] ?? (fullProductMode ? "40" : "8"), 10);
+const maxTurns = Number.parseInt(args["max-turns"] ?? (fullProductMode ? "80" : "8"), 10);
 const executeLimit = Number.parseInt(args["execute-limit"] ?? (fullProductMode ? "4" : "3"), 10);
-const maxRuntimeSeconds = Number.parseInt(args["max-runtime-seconds"] ?? (fullProductMode ? "2700" : "600"), 10);
-const maxSlices = Number.parseInt(args["max-slices"] ?? (fullProductMode ? "12" : "5"), 10);
-const maxAgentRuns = Number.parseInt(args["max-agent-runs"] ?? (fullProductMode ? "60" : "12"), 10);
+const maxRuntimeSeconds = Number.parseInt(args["max-runtime-seconds"] ?? (fullProductMode ? "7200" : "600"), 10);
+const maxSlices = Number.parseInt(args["max-slices"] ?? (fullProductMode ? "20" : "5"), 10);
+const maxAgentRuns = Number.parseInt(args["max-agent-runs"] ?? (fullProductMode ? "150" : "12"), 10);
 const faultMode = args.fault ?? "none";
 const validFaultModes = [
   "none",
@@ -85,6 +85,62 @@ const productReadinessBlockerIds = new Set([
   "dashboard-start-script",
   "dashboard-start-probed",
 ]);
+const productCoveragePacks = [
+  {
+    key: "api-data",
+    label: "Invoice API and seeded data",
+    rank: 0,
+    workPackageType: "runtime_capability",
+    laneName: "Product API Coverage Lane: Invoice Dashboard",
+    laneLabels: ["product", "api", "data", "coverage", "live-smoke"],
+    matches: (ref) => /^FR-API-|^AC-API-|^FR-DATA-001$|^AC-DATA-/i.test(ref),
+  },
+  {
+    key: "ui-summary-table",
+    label: "Dashboard summary cards, table, and filters",
+    rank: 1,
+    workPackageType: "component_pack",
+    laneName: "Product UI Coverage Lane: Summary And Table",
+    laneLabels: ["product", "frontend", "ui", "coverage", "live-smoke"],
+    matches: (ref) => /^FR-UI-00[12]$|^AC-UI-00[12]\./i.test(ref),
+  },
+  {
+    key: "ui-detail-mark-paid",
+    label: "Dashboard detail panel and mark-paid interaction",
+    rank: 2,
+    workPackageType: "component_pack",
+    laneName: "Product UI Coverage Lane: Detail And Mark Paid",
+    laneLabels: ["product", "frontend", "ui", "workflow", "coverage", "live-smoke"],
+    matches: (ref) => /^FR-UI-00[34]$|^AC-UI-00[34]\./i.test(ref),
+  },
+  {
+    key: "qa-interaction",
+    label: "Behavior verification and UI interaction proof",
+    rank: 3,
+    workPackageType: "proof_pack",
+    laneName: "Product QA Coverage Lane: Interaction Proof",
+    laneLabels: ["product", "qa", "verification", "coverage", "live-smoke"],
+    matches: (ref) => /^FR-QA-001$|^AC-QA-001\.|^AC-NFR-003\./i.test(ref),
+  },
+  {
+    key: "local-usability",
+    label: "Local usability, NFRs, and runnable product proof",
+    rank: 4,
+    workPackageType: "proof_pack",
+    laneName: "Product NFR Coverage Lane: Local Usability",
+    laneLabels: ["product", "nfr", "usability", "coverage", "live-smoke"],
+    matches: (ref) => /^FR-PROD-001$|^AC-NFR-001\.|^AC-NFR-002\./i.test(ref),
+  },
+  {
+    key: "smoke-acceptance",
+    label: "Final smoke acceptance evidence",
+    rank: 5,
+    workPackageType: "proof_pack",
+    laneName: "Product Smoke Coverage Lane: Final Acceptance",
+    laneLabels: ["product", "smoke", "acceptance", "coverage", "live-smoke"],
+    matches: (ref) => /^AC-SMOKE-001\./i.test(ref),
+  },
+];
 
 assertApprovedWorkspace(workspace);
 if (historyEnabled) assertApprovedHistoryRoot(historyRoot, workspace);
@@ -163,6 +219,7 @@ let finalOutcome = undefined;
 let finalReason = undefined;
 let finalSliceId = undefined;
 let productReadiness = undefined;
+let finalCoverageGate = undefined;
 
 for (let turn = 1; turn <= maxTurns; turn += 1) {
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
@@ -228,8 +285,8 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       productReadiness = inspectProductReadiness({ runCommands: true });
       recordDependencyWarningClearances(productReadiness, before, turn);
       if (productReadiness.passed) {
-        finalOutcome = "accepted";
-        finalReason = "Full-product readiness passed; invoice dashboard target is locally runnable.";
+        const coverageDecision = recordFullProductCoverageGate({ turn, sliceId: acceptedSlice.id, snapshot: before });
+        if (coverageDecision.continue) continue;
         break;
       }
       turns.push({
@@ -306,8 +363,12 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
         productReadiness = inspectProductReadiness({ runCommands: true });
         recordDependencyWarningClearances(productReadiness, afterVerify, turn);
         if (productReadiness.passed) {
-          finalOutcome = "accepted";
-          finalReason = "Full-product readiness passed; invoice dashboard target is locally runnable.";
+          const coverageDecision = recordFullProductCoverageGate({
+            turn,
+            sliceId: readyForVerify.id,
+            snapshot: afterVerify,
+          });
+          if (coverageDecision.continue) continue;
           break;
         }
         turns.push({
@@ -482,6 +543,7 @@ const outcomeClassification = classifyOutcome({
   faultMode,
   fullProductMode,
   productReadiness,
+  finalCoverageGate,
   finalSnapshot,
   finalSlice,
   verifyRuns,
@@ -595,6 +657,7 @@ const summary = {
   contextHandoff: faultMode === "context-handoff" ? contextHandoff : undefined,
   lowSignal: faultMode === "low-signal" ? lowSignal : undefined,
   productReadiness: fullProductMode ? productReadiness : undefined,
+  finalCoverageGate: fullProductMode ? finalCoverageGate : undefined,
   runs: {
     overseers: finalSnapshot.agentRuns.filter((run) => run.role === "overseer" && run.entityId === scenarioEntityId),
     workers: workerRuns,
@@ -844,6 +907,7 @@ function classifyOutcome({
   faultMode,
   fullProductMode,
   productReadiness,
+  finalCoverageGate,
   finalSnapshot,
   finalSlice,
   verifyRuns,
@@ -898,6 +962,20 @@ function classifyOutcome({
         acceptedVerifyRun: latestVerify?.accepted ? latestVerify : undefined,
         reviewStatus: finalSlice?.reviewResult?.status,
         productReadiness: fullProductMode ? productReadiness : undefined,
+      },
+    };
+  }
+
+  if (fullProductMode && finalCoverageGate && !finalCoverageGate.passed) {
+    return {
+      code: "coverage_incomplete",
+      severity: "blocked",
+      explanation:
+        "Product readiness passed, but final full-product acceptance is blocked because not every indexed FR/AC ref is done.",
+      evidence: {
+        ...evidence,
+        productReadiness: fullProductMode ? productReadiness : undefined,
+        coverageGate: finalCoverageGate,
       },
     };
   }
@@ -1342,6 +1420,522 @@ function readCoverageSummary() {
   } finally {
     store.close();
   }
+}
+
+function recordFullProductCoverageGate({ turn, sliceId, snapshot }) {
+  finalCoverageGate = inspectFullProductCoverageGate();
+  turns.push({
+    turn,
+    kind: "full-product-coverage-gate",
+    sliceId,
+    passed: finalCoverageGate.passed,
+    totals: finalCoverageGate.totals,
+    incompleteCount: finalCoverageGate.incompleteCount,
+    sampleIncompleteRefs: finalCoverageGate.sampleIncompleteRefs,
+    topIncompleteDomains: finalCoverageGate.topIncompleteDomains,
+  });
+  if (finalCoverageGate.passed) {
+    finalOutcome = "accepted";
+    finalReason = "Full-product readiness passed and indexed FR/AC coverage is complete.";
+    return { terminal: true, continue: false };
+  }
+  const completionWork = ensureCoverageCompletionWork({ coverageGate: finalCoverageGate, snapshot, turn });
+  if (completionWork) {
+    turns.push(completionWork);
+    return { terminal: false, continue: true };
+  }
+  finalOutcome = "blocked";
+  finalReason = finalCoverageGate.reason;
+  raiseScenarioEscalation("blocker", finalReason);
+  return { terminal: true, continue: false };
+}
+
+function inspectFullProductCoverageGate() {
+  const coverage = readCoverageSummary();
+  const incompleteRefs = coverage.refs.filter((ref) => ref.status !== "done");
+  const passed = coverage.interpretation?.state === "complete";
+  const sampleIncompleteRefs = incompleteRefs.slice(0, 12).map((ref) => ({
+    ref: ref.ref,
+    domain: ref.domain,
+    status: ref.status,
+    nextAction: ref.nextAction,
+    statusReason: ref.statusReason,
+  }));
+  const topIncompleteDomains = (coverage.interpretation?.topIncompleteDomains ?? []).slice(0, 5).map((domain) => ({
+    domain: domain.domain,
+    total: domain.total,
+    done: domain.done,
+    incomplete: domain.incomplete,
+    completionPercent: domain.completionPercent,
+  }));
+  const coverageText = `${coverage.totals.done}/${coverage.totals.total}`;
+  return {
+    passed,
+    generatedAt: coverage.generatedAt,
+    state: coverage.interpretation?.state ?? "empty",
+    totals: coverage.totals,
+    incompleteCount: incompleteRefs.length,
+    sampleIncompleteRefs,
+    topIncompleteDomains,
+    reason: passed
+      ? "Indexed FR/AC coverage is complete."
+      : `Full-product readiness passed, but final acceptance is blocked because indexed FR/AC coverage is partial (${coverageText}).`,
+  };
+}
+
+function ensureCoverageCompletionWork({ coverageGate, snapshot, turn }) {
+  if (!coverageGate || coverageGate.passed) return undefined;
+
+  const activeSlice = snapshot?.slices?.find((slice) => isActiveSlice(slice));
+  if (activeSlice) {
+    return {
+      turn,
+      kind: "coverage-completion-work-visible",
+      sliceId: activeSlice.id,
+      status: activeSlice.status,
+      refs: activeSlice.frAcRefs,
+      reason: "Indexed coverage is incomplete, but an active slice is already visible for the overseer loop.",
+    };
+  }
+
+  const coverage = readCoverageSummary();
+  const incompleteRefs = coverage.refs.filter((ref) => ref.status !== "done");
+  const store = new SwarmStore(workspace);
+  try {
+    const activeStoredSlice = store.listSlices().find((slice) => isActiveSlice(slice));
+    if (activeStoredSlice) {
+      return {
+        turn,
+        kind: "coverage-completion-work-visible",
+        sliceId: activeStoredSlice.id,
+        status: activeStoredSlice.status,
+        refs: activeStoredSlice.frAcRefs,
+        reason: "Indexed coverage is incomplete, but an active stored slice is already available.",
+      };
+    }
+
+    const completionGroup = selectCoverageCompletionGroup(store, incompleteRefs);
+    if (!completionGroup) return undefined;
+
+    const target = findCoverageCompletionTarget(store, completionGroup.source);
+    if (!target) return undefined;
+
+    const now = new Date().toISOString();
+    let lane = store.firstActiveLaneForTarget(target.id);
+    let laneCreated = false;
+    if (!lane) {
+      lane = {
+        id: makeId("lane"),
+        name: coverageCompletionLaneName(completionGroup),
+        purpose: completionGroup.label
+          ? `Complete ${completionGroup.label} coverage from ${completionGroup.source.title}.`
+          : `Complete remaining indexed FR/AC coverage from ${completionGroup.source.title}.`,
+        focusLabels: coverageCompletionLaneLabels(completionGroup),
+        targetId: target.id,
+        orchestrator: "live-overseer",
+        worktree: target.path,
+        state: "active",
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.insertLane(lane);
+      laneCreated = true;
+      store.addEvent(
+        createEvent({
+          actor: "live-coverage-loop",
+          type: "lane.created",
+          entityType: "lane",
+          entityId: lane.id,
+          payload: {
+            reason: "Full-product coverage gate found unowned refs and needed a visible completion lane.",
+            sourceId: completionGroup.source.id,
+            targetId: target.id,
+            purpose: lane.purpose,
+          },
+        }),
+      );
+    }
+
+    const sourceText = fs.existsSync(completionGroup.source.uri)
+      ? fs.readFileSync(completionGroup.source.uri, "utf8")
+      : "";
+    const obligations = buildCoverageCompletionObligations({
+      source: completionGroup.source,
+      sourceText,
+      refs: completionGroup.refs,
+      now,
+    });
+    const extraEvidence = coverageCompletionExtraExpectedEvidence(completionGroup);
+    const expectedEvidence = obligations.map(
+      (obligation) => obligation.criteria[0]?.expectedOutcome ?? `Behavior evidence proving ${obligation.ref}.`,
+    ).concat(extraEvidence);
+    const sourceRef = {
+      adapterId: completionGroup.source.adapterId,
+      kind: completionGroup.source.kind,
+      uri: completionGroup.source.uri,
+      title: completionGroup.source.title,
+      hash: completionGroup.source.hash,
+    };
+    const slice = {
+      id: makeId("slice"),
+      laneId: lane.id,
+      targetId: target.id,
+      title: coverageCompletionTitle(completionGroup),
+      status: "ready",
+      sourceRefs: [sourceRef],
+      frAcRefs: completionGroup.refs,
+      deliveryQuestion: coverageCompletionDeliveryQuestion(completionGroup),
+      workPackageType: coverageCompletionWorkPackageType(completionGroup),
+      minimumMeaningfulOutcome: "proves_cutover_or_readiness",
+      scope: completionGroup.refs.map((ref) => `Implement or prove the behavior required by ${ref}.`),
+      outOfScope: [
+        "Do not mutate source specs.",
+        "Do not mark refs complete without worker evidence, independent review, and deterministic verification.",
+        "Do not weaken or replace previously accepted behavior to satisfy coverage.",
+      ],
+      expectedEvidence,
+      verificationObligations: obligations,
+      unblockTargets: ["full-product-coverage-gate", "final-product-acceptance"],
+      verificationRequirements: [
+        "Map evidence to every included FR/AC ref.",
+        "Run the target test command if configured.",
+        "For product-level refs, cite local product readiness evidence where relevant.",
+        ...coverageCompletionVerificationGuidance(completionGroup),
+        "Reviewer and deterministic verifier must pass every included ref before acceptance.",
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.insertSlice(slice);
+
+    const leases = completionGroup.refs.map((frAcRef) => {
+      const lease = {
+        id: makeId("lease"),
+        frAcRef,
+        laneId: lane.id,
+        sliceId: slice.id,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.insertLease(lease);
+      return lease;
+    });
+
+    const dependency = {
+      id: makeId("dependency"),
+      fromType: "slice",
+      fromId: slice.id,
+      target: "full-product-coverage-gate",
+      reason: "Full-product smoke cannot be accepted until every indexed FR/AC ref is done.",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.insertDependency(dependency);
+
+    store.addEvent(
+      createEvent({
+        actor: "live-coverage-loop",
+        type: "coverage_completion.slice_created",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          reason: coverageGate.reason,
+          sourceId: completionGroup.source.id,
+          sourceTitle: completionGroup.source.title,
+          coveragePackKey: completionGroup.key,
+          coveragePackLabel: completionGroup.label,
+          targetId: target.id,
+          laneId: lane.id,
+          laneCreated,
+          frAcRefs: completionGroup.refs,
+          incompleteBefore: coverageGate.incompleteCount,
+        },
+      }),
+    );
+    store.addEvent(
+      createEvent({
+        actor: "live-overseer",
+        type: "decision.recorded",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          decision: "continue_full_product_run_for_coverage_completion",
+          reason: "Product readiness passed but indexed FR/AC coverage was incomplete.",
+          dependenciesConsidered: ["product readiness", "coverage gate", "immutable source refs"],
+          coveragePackKey: completionGroup.key,
+          coveragePackLabel: completionGroup.label,
+          selectedRefs: completionGroup.refs,
+        },
+      }),
+    );
+
+    return {
+      turn,
+      kind: "coverage-completion-slice-created",
+      sliceId: slice.id,
+      laneId: lane.id,
+      laneCreated,
+      sourceId: completionGroup.source.id,
+      sourceTitle: completionGroup.source.title,
+      coveragePackKey: completionGroup.key,
+      coveragePackLabel: completionGroup.label,
+      targetId: target.id,
+      refs: completionGroup.refs,
+      leases: leases.map((lease) => lease.frAcRef),
+      reason: "Full-product readiness passed, but coverage was partial; remaining refs were converted into a visible verification slice.",
+    };
+  } finally {
+    store.close();
+  }
+}
+
+function selectCoverageCompletionGroup(store, incompleteRefs) {
+  const sources = store.listSources();
+  const groups = new Map();
+  for (const coverageRef of incompleteRefs) {
+    if (!["not_started", "in_progress"].includes(coverageRef.status)) continue;
+    if (!["pull_slice", "run_worker", "run_reviewer", "run_verifier"].includes(coverageRef.nextAction)) continue;
+    const lease = store.latestLeaseFor(coverageRef.ref);
+    if (lease && lease.status !== "released") continue;
+    const source = sources.find((item) => item.id === coverageRef.sourceId);
+    if (!source) continue;
+    const existing = groups.get(source.id) ?? { source, refs: [] };
+    existing.refs.push(coverageRef.ref);
+    groups.set(source.id, existing);
+  }
+  return [...groups.values()]
+    .flatMap(splitCoverageCompletionGroup)
+    .filter((group) => group.refs.length > 0)
+    .sort(
+      (left, right) =>
+        coverageCompletionSourceRank(left.source) - coverageCompletionSourceRank(right.source) ||
+        (left.rank ?? 0) - (right.rank ?? 0) ||
+        left.source.createdAt.localeCompare(right.source.createdAt),
+    )[0];
+}
+
+function splitCoverageCompletionGroup(group) {
+  if (!isProductSpecSource(group.source)) {
+    return [
+      {
+        ...group,
+        key: path.basename(group.source.uri).toLowerCase(),
+        label: group.source.title,
+        rank: 0,
+      },
+    ];
+  }
+  const productGroups = [];
+  const assigned = new Set();
+  for (const pack of productCoveragePacks) {
+    const refs = group.refs.filter((ref) => pack.matches(ref));
+    for (const ref of refs) assigned.add(ref);
+    if (refs.length === 0) continue;
+    productGroups.push({
+      ...group,
+      refs,
+      key: pack.key,
+      label: pack.label,
+      rank: pack.rank,
+      pack,
+    });
+  }
+  const remainingRefs = group.refs.filter((ref) => !assigned.has(ref));
+  if (remainingRefs.length > 0) {
+    productGroups.push({
+      ...group,
+      refs: remainingRefs,
+      key: "product-other",
+      label: "Remaining product-spec coverage",
+      rank: 99,
+      pack: undefined,
+    });
+  }
+  return productGroups;
+}
+
+function findCoverageCompletionTarget(store, source) {
+  const basename = path.basename(source.uri).toLowerCase();
+  if (basename === "invoice-api.md") return findInvoiceTarget(store);
+  if (basename === "invoice-dashboard.md") return findDashboardTarget(store);
+  if (path.resolve(source.uri).toLowerCase() === path.resolve(productSpec).toLowerCase()) {
+    return findDashboardTarget(store);
+  }
+  return findDashboardTarget(store) ?? findInvoiceTarget(store);
+}
+
+function coverageCompletionSourceRank(source) {
+  const basename = path.basename(source.uri).toLowerCase();
+  if (basename === "invoice-api.md") return 0;
+  if (basename === "invoice-dashboard.md") return 1;
+  if (isProductSpecSource(source)) return 2;
+  return 3;
+}
+
+function coverageCompletionLaneName(sourceOrGroup) {
+  const source = sourceOrGroup.source ?? sourceOrGroup;
+  if (sourceOrGroup.pack?.laneName) return sourceOrGroup.pack.laneName;
+  const basename = path.basename(source.uri).toLowerCase();
+  if (basename === "invoice-api.md") return "Backend Coverage Lane: Invoice Query Core";
+  if (basename === "invoice-dashboard.md") return "Dashboard Coverage Lane: Invoice Operations Product";
+  return "Product Coverage Lane: Invoice Dashboard Spec Completion";
+}
+
+function coverageCompletionLaneLabels(sourceOrGroup) {
+  const source = sourceOrGroup.source ?? sourceOrGroup;
+  if (sourceOrGroup.pack?.laneLabels) return sourceOrGroup.pack.laneLabels;
+  const basename = path.basename(source.uri).toLowerCase();
+  if (basename === "invoice-api.md") return ["backend", "coverage", "invoice-api", "live-smoke"];
+  if (basename === "invoice-dashboard.md") return ["frontend", "dashboard", "coverage", "live-smoke"];
+  return ["product", "coverage", "invoice-dashboard", "live-smoke"];
+}
+
+function coverageCompletionWorkPackageType(sourceOrGroup) {
+  const source = sourceOrGroup.source ?? sourceOrGroup;
+  if (sourceOrGroup.pack?.workPackageType) return sourceOrGroup.pack.workPackageType;
+  const basename = path.basename(source.uri).toLowerCase();
+  if (basename === "invoice-api.md") return "runtime_capability";
+  if (basename === "invoice-dashboard.md") return "component_pack";
+  return "proof_pack";
+}
+
+function coverageCompletionTitle(group) {
+  if (isProductSpecSource(group.source) && group.label) {
+    return `Complete ${group.label} coverage (${group.refs.join(", ")})`;
+  }
+  return `Complete coverage for ${group.refs.join(", ")}`;
+}
+
+function coverageCompletionDeliveryQuestion(group) {
+  if (isProductSpecSource(group.source) && group.label) {
+    return `Can the ${group.label.toLowerCase()} refs be implemented or proven against immutable source criteria?`;
+  }
+  return `Can the remaining indexed refs from ${group.source.title} be implemented or proven against immutable source criteria?`;
+}
+
+function coverageCompletionExtraExpectedEvidence(group) {
+  const refs = new Set(group.refs.map((ref) => ref.toUpperCase()));
+  const evidence = [];
+  if ([...refs].some((ref) => /^AC-API-|^FR-API-|^AC-DATA-|^FR-DATA-/.test(ref))) {
+    evidence.push(
+      "API/data refs: executable endpoint or in-process server evidence must prove filters, sorting, detail, error responses, status updates, and seeded data as applicable.",
+    );
+  }
+  if ([...refs].some((ref) => /^AC-UI-|^FR-UI-/.test(ref))) {
+    evidence.push(
+      "UI refs: behavior evidence must prove the user-visible dashboard state; static HTML/script string checks alone are not sufficient.",
+    );
+  }
+  if (refs.has("AC-QA-001.5") || refs.has("FR-QA-001")) {
+    evidence.push(
+      "AC-QA-001.5: executable UI model or browser/DOM interaction proof must exercise filters, detail selection, mark-paid action, and refreshed summary/table/detail state.",
+    );
+  }
+  if ([...refs].some((ref) => /^AC-NFR-003/.test(ref))) {
+    evidence.push(
+      "NFR-003 refs: prove the browser UI uses backend API/persistence paths rather than duplicated fixture-only state.",
+    );
+  }
+  if ([...refs].some((ref) => /^AC-SMOKE-/.test(ref))) {
+    evidence.push(
+      "Smoke refs: final evidence must link accepted FR/ACs to artifacts and leave the runnable product available for human inspection.",
+    );
+  }
+  return evidence;
+}
+
+function coverageCompletionVerificationGuidance(group) {
+  const refs = new Set(group.refs.map((ref) => ref.toUpperCase()));
+  const guidance = [];
+  if (refs.has("AC-QA-001.5") || refs.has("FR-QA-001")) {
+    guidance.push(
+      "For AC-QA-001.5, reject static script-presence tests; require an executed UI model, DOM, or browser-like workflow covering filters, detail, and mark-paid refresh.",
+    );
+  }
+  if ([...refs].some((ref) => /^AC-UI-|^FR-UI-/.test(ref))) {
+    guidance.push("For UI refs, review rendered/user-facing state changes, not only exported function existence.");
+  }
+  if ([...refs].some((ref) => /^AC-API-|^FR-API-/.test(ref))) {
+    guidance.push("For API refs, verify exact request/response behavior, including filters, sorting, status codes, and changed summary state.");
+  }
+  return guidance;
+}
+
+function isProductSpecSource(source) {
+  return path.resolve(source.uri).toLowerCase() === path.resolve(productSpec).toLowerCase();
+}
+
+function buildCoverageCompletionObligations({ source, sourceText, refs, now }) {
+  return refs.map((ref) => {
+    const sourceMatch = findSourceTextForRef(sourceText, ref);
+    return {
+      ref,
+      sourceRef: source.id,
+      sourceUri: source.uri,
+      sourceTitle: source.title,
+      sourceText: sourceMatch.text,
+      sourceContext: sourceMatch.context,
+      mode: "automated",
+      responsibleParty: "deterministic-verifier",
+      criteria: [
+        {
+          id: `${ref}.result`,
+          expectedOutcome: sourceMatch.text,
+          evidenceRequired: ["worker_evidence", "review_result", "verification_command"],
+          acceptanceThreshold: "worker coverage, review, and deterministic verification all pass",
+        },
+      ],
+      createdBy: "coverage-completion-planner",
+      createdAt: now,
+      immutable: true,
+      guidance: [
+        "Do not mutate source specs.",
+        "Map worker/reviewer/verifier evidence to this exact FR/AC text.",
+        "Completion of this ref requires evidence, not a status-only update.",
+        ...coverageCompletionObligationGuidance(ref),
+      ],
+    };
+  });
+}
+
+function coverageCompletionObligationGuidance(ref) {
+  const normalized = ref.toUpperCase();
+  const guidance = [];
+  if (/^AC-QA-001\.5$/.test(normalized)) {
+    guidance.push(
+      "This ref requires an executed UI model, DOM, or browser-like interaction test for filters, detail selection, mark-paid, and refresh; static source/HTML string checks are insufficient.",
+    );
+  }
+  if (/^AC-UI-|^FR-UI-/.test(normalized)) {
+    guidance.push("UI refs require user-visible state proof, not only function existence or markup presence.");
+  }
+  if (/^AC-API-|^FR-API-/.test(normalized)) {
+    guidance.push("API refs require exact endpoint behavior proof, including filters, sorting, status codes, and response shape where applicable.");
+  }
+  if (/^AC-NFR-003/.test(normalized)) {
+    guidance.push("Product coherence refs require proof that UI state flows through backend API/persistence, not duplicated fixtures.");
+  }
+  return guidance;
+}
+
+function findSourceTextForRef(sourceText, ref) {
+  const lines = sourceText.split(/\r?\n/);
+  const normalizedRef = ref.toUpperCase();
+  let context;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+    if (heading) context = heading[1].trim();
+    if (trimmed.toUpperCase().includes(normalizedRef)) {
+      return {
+        text: trimmed.replace(/^[-*]\s*/, ""),
+        context,
+      };
+    }
+  }
+  return { text: `Behavior required by ${ref}.`, context };
 }
 
 function summarizeOutcomeVsCoverage(outcome, coverage) {
@@ -2347,7 +2941,8 @@ function inspectProductReadiness({ runCommands }) {
   const scripts = packageJson && typeof packageJson === "object" && packageJson.scripts ? packageJson.scripts : {};
   const hasTestScript = typeof scripts.test === "string" && scripts.test.trim().length > 0;
   const hasStartScript = typeof scripts.start === "string" && scripts.start.trim().length > 0;
-  const manualUrl = "http://127.0.0.1:4321";
+  const manualPort = runCommands && hasStartScript ? allocateLocalProbePort() : 4321;
+  const manualUrl = `http://127.0.0.1:${manualPort}`;
   const probeIsolation = runCommands && (hasTestScript || hasStartScript)
     ? createProductProbeWorkspace()
     : {
@@ -2776,6 +3371,14 @@ function findDashboardTarget(store) {
   });
 }
 
+function findInvoiceTarget(store) {
+  const resolvedInvoiceTarget = path.resolve(invoiceTarget).toLowerCase();
+  return store.listTargets().find((target) => {
+    const targetPath = path.resolve(target.path).toLowerCase();
+    return target.name === "invoice-api" || targetPath === resolvedInvoiceTarget || path.basename(target.path) === "invoice-api";
+  });
+}
+
 function isActiveSlice(slice) {
   return !["accepted", "closed"].includes(slice.status);
 }
@@ -2904,17 +3507,19 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
   let child;
   const cwd = options.cwd ?? dashboardTarget;
   const probeIsolation = options.probeIsolation;
+  const probeUrl = new URL(manualUrl);
   try {
     fs.writeSync(outputFd, `$ npm start\n\n`);
     fs.writeSync(outputFd, `cwd: ${cwd}\n`);
+    fs.writeSync(outputFd, `url: ${manualUrl}\n`);
     const invocation = npmInvocation("start");
     child = spawn(invocation.command, invocation.args, {
       cwd,
       stdio: ["ignore", outputFd, outputFd],
       env: {
         ...process.env,
-        PORT: "4321",
-        HOST: "127.0.0.1",
+        PORT: probeUrl.port || "4321",
+        HOST: probeUrl.hostname || "127.0.0.1",
       },
     });
 
@@ -2973,6 +3578,32 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
     }
     fs.closeSync(outputFd);
   }
+}
+
+function allocateLocalProbePort() {
+  const script = `
+const net = require("node:net");
+const server = net.createServer();
+server.on("error", (error) => {
+  console.error(error && error.message ? error.message : String(error));
+  process.exit(1);
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  console.log(address.port);
+  server.close();
+});
+`;
+  const output = execFileSync(process.execPath, ["-e", script], {
+    encoding: "utf8",
+    timeout: 5000,
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const port = Number.parseInt(output, 10);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`Unable to allocate local product probe port from output: ${output}`);
+  }
+  return port;
 }
 
 function npmInvocation(scriptName) {

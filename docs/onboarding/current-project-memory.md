@@ -1,6 +1,6 @@
 # Current Project Memory
 
-Last updated: 2026-06-15
+Last updated: 2026-06-17
 
 This file is the durable handoff memory for the current state of `agent-swarm`. It should let a fresh agent resume without relying on the chat transcript.
 
@@ -59,6 +59,7 @@ Implemented and covered by tests:
 - deterministic verification evidence includes criterion-level expected/actual results
 - independent reviewer runner through `swarm review`; reviewer dispatches through the driver registry with the target protocol's normal tool/command posture
 - reviewer JSONL events, heartbeats, structured `review_result` evidence, and review-gated verification
+- structured Sleuth Review Gate in reviewer results, with runtime path, stub/hardcode, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness dimensions; failed/high-risk gates block acceptance
 - visible overseer runner through `swarm orchestrate`; overseer dispatches through the driver registry (read-only via `--permission-mode plan` for claude)
 - overseer JSONL events, heartbeat, structured decision artifact, prompt artifact, and role/entity checkpoint
 - bounded overseer command execution through `swarm orchestrate --execute`
@@ -88,17 +89,27 @@ Implemented and covered by tests:
 Latest known verification:
 
 ```text
-npm test -> 108/108 passing
+Clean real full-product run LAR-20260616T171831-live-agent-smoke-none-48036 -> accepted, coverage 83/83, product readiness passed
+Generated invoice dashboard npm test -> 20/20 passing
+2026-06-17 Sleuth Review Gate slice:
+  npm run build -> passed
+  focused reviewer/driver/coverage tests -> passed
+  web tests -> 88/88 passing
+  all Node tests except the long live-agent-runner stress file -> 96/96 passing
+  live-agent-runner targeted regressions -> supervised revive, full-product acceptance, and readiness-feedback acceptance all passed individually
+  full live-agent-runner file attempt exceeded the wrapper timeout, but the in-progress run reached an accepted final summary before cleanup
 git diff --check -> clean
 ```
 
 ## Latest Observability Contract Update
 
-On 2026-06-15, after a smooth full-product live smoke accepted run, the next hardening focus narrowed to observability clarity. The core lesson:
+On 2026-06-15, after a smooth live smoke run accepted with partial global coverage, the next hardening focus narrowed to observability clarity. On 2026-06-16 this was tightened again for full-product mode.
 
-- `finalOutcome: accepted` means the selected bounded run path passed.
-- `coverage: 15/83` means the broader indexed source requirements are still partial.
-- The UI must show both at once and must not imply whole-product completion from a selected-scope accepted run.
+- `finalOutcome: accepted` means the selected bounded run path passed only for selected-scope modes.
+- Historical selected-scope runs can be accepted while global indexed coverage is partial.
+- Full-product mode must not end `accepted` while coverage is partial; it now creates visible coverage-completion slices for remaining refs, and only blocks with `coverage_incomplete` if no completion work can run inside the bounds.
+- The clean real full-product run `LAR-20260616T171831-live-agent-smoke-none-48036` confirmed the gate: final outcome `accepted`, coverage `83/83`, product readiness passed, and generated product tests passed.
+- The UI must show run outcome, coverage, product readiness, and active concerns separately.
 
 Implemented contract additions:
 
@@ -106,13 +117,16 @@ Implemented contract additions:
 - `GET /api/snapshot` now includes `runObservability`
 - `GET /api/coverage` now includes `interpretation`
 - `scripts/run-live-agent-demo.mjs` now writes compact `coverage` and `outcomeVsCoverage` into `live-agent-run-summary.json`
+- `scripts/run-live-agent-demo.mjs` now writes `finalCoverageGate` for full-product coverage gating and drives coverage-completion slices from it
 - frontend type/API mirror updated in `web/src/lib/types.ts` and `web/src/lib/api.ts`
 - design note added at `docs/architecture/run-observability-contract.md`
 
 Expected UI behavior:
 
 - show run outcome, coverage, and product readiness as separate top-level truths
-- call out `accepted_partial` as a warning: run accepted for selected scope, coverage still incomplete
+- call out `accepted_partial` as a warning for selected-scope runs
+- call out active coverage-completion slices while the full-product run is still able to make progress
+- call out `coverage_incomplete` as a blocker for terminal full-product runs whose readiness probes pass while FR/AC refs remain incomplete
 - use `runObservability.uiHints` for badges/callouts where useful
 
 ## Core Verification Doctrine Decision
@@ -128,6 +142,7 @@ On 2026-06-15, after reviewing why a run could be accepted while global coverage
 - `human_verification_required` means clear requirement but human acceptance needed; implementation may proceed, but final acceptance waits for a human packet and result.
 - A human verification packet must include exact FR/AC text, source context, slice/lane/worktree, implementation summary, automated evidence, changed files or PR link, steps to run/open/test, expected outcome, and pass/fail/needs-rework controls.
 - Requirement status must be ledger-derived with explicit parent FR rollups; selected-scope run acceptance is not whole-product completion.
+- Phase 10C-1B makes full-product coverage actionable: after product readiness passes, the runner creates visible coverage-completion slices with immutable obligations for any remaining indexed refs. Phase 10C-1C makes product-spec completion pack-based and explicit about UI/QA interaction proof. Fake full-product E2E proves both normal and delayed-product-readiness paths can reach accepted with `83/83` refs done, and the clean real full-product run on 2026-06-16 confirmed that behavior with real agents.
 
 Architecture docs updated for this doctrine:
 
@@ -495,9 +510,9 @@ Phase 8C-5 real-agent calibration after compact state completed:
 
 Phase 8C-6 full-product budget and dependency-gate hardening completed:
 
-- full-product default limits are now 40 turns, 2700 seconds, 12 slices, and 60 agent runs
-- `npm run demo:live-agent:full` and `npm run smoke:live-agent:full` now use those calibrated limits
-- reset manifest records `fullProductMode.maxTurns = 40`, `maxAgentRuns = 60`, and `maxRuntimeMinutes = 45`
+- full-product default limits were 40 turns, 2700 seconds, 12 slices, and 60 agent runs after Phase 8C-6; Phase 10C-1C raises them to 80 turns, 7200 seconds, 20 slices, and 150 agent runs so coherent coverage-completion packs can reach 100%
+- `npm run demo:live-agent:full` and `npm run smoke:live-agent:full` now use the Phase 10C-1C calibrated limits
+- reset manifest records `fullProductMode.maxTurns = 80`, `maxAgentRuns = 150`, `maxSlices = 20`, and `maxRuntimeMinutes = 120`
 - product readiness now records dashboard dependency-gate state:
   - declared `Depends-On` refs
   - accepted refs
@@ -831,13 +846,32 @@ Tracked improvement backlog from the last run:
 | Fresh seeded product state | implemented | no | Readiness commands run from an isolated copied product target and record the probe workspace in readiness/probe artifacts. |
 | Reset process cleanup audit | implemented, needs real confirmation | maybe | Reset can stop related processes automatically. Confirm whether this remains automatic for trusted local smoke only or becomes a general harness option. |
 
-## Next Slice To Implement
+## Next Slice To Execute
 
-Name: Phase 10C-2 Requirement Ledger And Human Verification
+Name: Phase 10C-2 Requirement Ledger And Human Verification Semantics
 
 Phase 10C-1 implemented the first enforceable layer: `VerificationObligation` type/storage, planner-derived obligations from source text, `slice.created`/`planner.decision` obligation summaries, dispatch preflight, read-only worker/reviewer prompt sections, criterion-level verifier evidence, and additive `/api/coverage` obligation fields.
 
-Next recommended implementation steps:
+Phase 10C-1A fixed the critical full-product acceptance truth gap found after the `15/83` run: product readiness passing no longer allows final `accepted` when registered FR/AC coverage is partial. Phase 10C-1B then made the gap actionable: `scripts/run-live-agent-demo.mjs` records `finalCoverageGate`, creates coverage-completion slices for remaining refs, and blocks with `outcomeClassification.code = "coverage_incomplete"` only if coverage cannot complete inside the run bounds. This is why product API refs such as `AC-API-001.*` must be leased, obligated, verified, and accepted explicitly instead of being inferred from a broad readiness probe.
+
+Phase 10C-1C fixed the first real 100%-coverage calibration gap. A clean real run on 2026-06-16 reached product readiness and created coverage-completion work, but the remaining product-spec refs were collapsed into one 65-ref proof pack. The reviewer correctly rejected that pack because `AC-QA-001.5` was still hollow: tests checked static inline script text instead of executing a UI model/browser/DOM workflow for filters, detail selection, mark-paid, and refreshed summary/table/detail state. The runner now splits product-spec completion into coherent packs (`api-data`, `ui-summary-table`, `ui-detail-mark-paid`, `qa-interaction`, `local-usability`, and `smoke-acceptance`), raises full-product defaults to 80 turns / 7200 seconds / 20 slices / 150 agent runs, and injects explicit obligation guidance that static script-presence tests do not satisfy UI/QA interaction refs. Focused fake-Codex E2E proves both normal and delayed-readiness full-product paths can now reach accepted with `83/83` indexed refs done.
+
+Phase 10C-1D makes review quality a first-class acceptance gate. Reviewer output now includes a structured Sleuth Review Gate with seven dimensions: runtime path, stub/hardcode, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness. Reviewer prompts require the gate, slice reports/UI show it, and deterministic verification blocks failed gates, blocking concerns, failed dimensions, or high-risk dimensions. This is the answer to "review the functionality and implementation, not just AC/FR evidence."
+
+Clean 100%-coverage real run confirmed:
+
+- Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`
+- Final outcome: `accepted`
+- Final reason: full-product readiness passed and indexed FR/AC coverage is complete
+- Coverage: `83/83` indexed refs done, `0` incomplete
+- Product readiness: passed
+- Slices: `13` accepted slices, including coherent product coverage packs for API/data, UI summary/table, UI detail/mark-paid, QA interaction, local usability, and final smoke acceptance
+- Agent/verifier activity: `56` agent runs and `13` deterministic verification runs
+- Generated product: `.swarm-demo/live-agent-smoke/invoice-dashboard`; `npm test` passes `20/20`
+- Product URL when started manually: `http://127.0.0.1:4321/`
+- Residual hardening: 4 non-blocking active warning restatements remain around the same `git status` sandbox/ACL diagnostic. They did not block final acceptance, but should be cleaned before treating active-warning state as fully polished.
+
+The next recommended implementation steps for Phase 10C-2 are:
 
 - distinguish `human_input_required` from `human_verification_required` in state and API payloads
 - add a human verification packet artifact generator
@@ -845,9 +879,9 @@ Next recommended implementation steps:
 - decide whether the requirement ledger stays derived for one more slice or becomes a persisted table now
 - update the Coverage tab to show obligation status, verification mode, and human path
 
-After Phase 10C-2, rerun Phase 9 clean real-run rebaseline.
+Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and should be confirmed in the next focused/full verification pass. Phase 10C-2 remains the next design/implementation slice after that: requirement-ledger semantics, parent FR rollups, and human verification/input state.
 
-Previous next goal: verify the new Super Overseer focus path across the broader suite, then rerun the real full-product smoke with child idle timeout and focus inspection available.
+Previous next goal is complete: the clean real full-product smoke reran with the hardened coverage-completion path and reached `83/83`.
 
 Next practical slices:
 
@@ -883,7 +917,7 @@ Phase 10B:
 - make recovery/revive use the focus diagnosis before restart [implemented by capturing focus artifacts before intervention]
 - later expose focus summaries in the web UI agent/slice detail panels
 
-Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Phase 10A coverage enrichment is partially implemented. Phase 10B focus-packet foundation and overseer/recovery wiring are implemented. The next useful checkpoint is broad verification, then a fresh real full-product calibration run. Keep the Phase 5C happy path strict and auditable while calibrating the full-product target with real agent behavior.
+Implementation order is defined in `docs/architecture/live-agent-smoke-implementation-plan.md`. Phase 1 through Phase 8C-19 are complete or attempted as documented. Phase 10A coverage enrichment is partially implemented. Phase 10B focus-packet foundation and overseer/recovery wiring are implemented. Phase 10C-1 through 10C-1C are confirmed through a clean real full-product run that reached `83/83`; Phase 10C-1D adds the structured Sleuth Review Gate to prevent fake-ready or hollow-proof slices from being accepted. The next useful checkpoint is Phase 10C-2: requirement-ledger semantics, parent FR rollups, and human verification/input state. Keep the Phase 5C happy path strict and auditable while evolving the full-product target with real agent behavior.
 
 Do not lose the full-product target while implementing fault injection. The earlier phases built the measuring instrument; later full-product mode uses that instrument to prove the harness can turn `docs/requirements/live-smoke-invoice-dashboard-product-spec.md` into a local working product.
 
