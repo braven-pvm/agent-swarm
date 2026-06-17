@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity, groupAgentsByRole, roleGroupLabel, type RosterGroupRow } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity, groupAgentsByRole, roleGroupLabel, cleanSliceTitle, type RosterGroupRow } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -347,5 +347,25 @@ describe("groupAgentsByRole", () => {
     const g = groups[0];
     expect(g.active.map((r) => r.actor).sort()).toEqual(["a", "b"]);
     expect(g.idle.map((r) => r.actor).sort()).toEqual(["c", "d"]);
+  });
+});
+
+describe("cleanSliceTitle", () => {
+  it("drops a trailing FR/AC ref dump so the title is the deliverable", () => {
+    expect(cleanSliceTitle("Complete Invoice API and seeded data coverage (AC-API-001.1, AC-API-001.2, FR-DATA-001)"))
+      .toBe("Complete Invoice API and seeded data coverage");
+  });
+  it("drops a leading 'Implement ' verb", () => {
+    expect(cleanSliceTitle("Implement invoice listing")).toBe("invoice listing");
+  });
+  it("strips both the verb and the ref dump together", () => {
+    expect(cleanSliceTitle("Implement dashboard model (AC-UI-INV-001.1)")).toBe("dashboard model");
+  });
+  it("leaves a title with no ref dump untouched", () => {
+    expect(cleanSliceTitle("Resolve invoice dashboard product readiness"))
+      .toBe("Resolve invoice dashboard product readiness");
+  });
+  it("does not strip a parenthetical that is not a ref list", () => {
+    expect(cleanSliceTitle("Mark invoice paid (idempotent)")).toBe("Mark invoice paid (idempotent)");
   });
 });

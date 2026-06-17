@@ -2,7 +2,7 @@ import type {
   SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity, CoverageSummary,
   AgentFocusItem, CheckpointRecord,
 } from "~/lib/types";
-import { groupEscalations, humanizeToken, type EscalationGroup } from "~/lib/format";
+import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
 
 export interface AgentRosterRow {
   actor: string;
@@ -199,7 +199,7 @@ export function createConsoleStore() {
         const slc = snapshot.slices.find((s) => s.id === latest.sliceId);
         if (slc) {
           row.sliceId = slc.id;
-          row.sliceTitle = slc.title;
+          row.sliceTitle = cleanSliceTitle(slc.title);
           row.frAcRefs = slc.frAcRefs;
         }
       }

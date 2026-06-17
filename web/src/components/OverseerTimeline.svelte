@@ -32,7 +32,7 @@
       <div class="ov-now-activity" title={overseer.nowTarget ?? overseer.now}>
         {d.present}{#if d.target} <code class="now-target">{d.target}</code>{/if}
       </div>
-      {#if overseer.next}<div class="ov-now-next" title={overseer.next}>next: {overseer.next}</div>{/if}
+      {#if overseer.next}<div class="ov-now-next" title={overseer.next}><span class="ov-now-next-label">Next</span>{overseer.next}</div>{/if}
     {:else if store.overseerCheckpointSummary}
       <!-- No overseer agent online — fall back to its latest recorded checkpoint summary. -->
       <div class="ov-now-head">
@@ -56,7 +56,7 @@
     {#each shown as row (row.id)}
       {@const age = Date.now() - Date.parse(row.ts)}
       <li>
-        <button class="ov-row" title={row.type} onclick={() => onSelect(row.id)}>
+        <button class="ov-row" class:ov-row-decision={row.type === "overseer.decision_recorded"} title={row.type} onclick={() => onSelect(row.id)}>
           <span class="ov-row-time" title="time since this event">{shortAge(age)}</span>
           <span class="ov-row-body">
             <span class="ov-row-action">

@@ -212,6 +212,16 @@ export function humanizeToken(s: string): string {
   return joined.charAt(0).toUpperCase() + joined.slice(1);
 }
 
+// Display title for a slice: drop the leading "Implement " verb and a trailing FR/AC ref
+// dump like "(AC-API-001.1, AC-API-001.2, …)" so the title reads as the deliverable, not a
+// wall of refs (the refs are shown separately as chips/dots).
+export function cleanSliceTitle(title: string): string {
+  return (title ?? "")
+    .replace(/^\s*implement\s+/i, "")
+    .replace(/\s*\([^)]*\b(?:AC|FR)-[^)]*\)\s*$/i, "")
+    .trim();
+}
+
 /** Sentence-case display label for a coverage status string. First word capitalized only. */
 export function statusLabel(status: string): string {
   switch (status) {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { HarnessEvent, AgentRunRecord, ReviewResult, SliceWithDetail, AgentActivity, CoverageRef } from "~/lib/types";
-  import { formatDuration, describeActivity, fmtClock, shortAge, livenessLevel, groupRunActivity, summarizeCommand, prettifyTarget, refTone, statusLabel, type ActivityGroup } from "~/lib/format";
+  import { formatDuration, describeActivity, fmtClock, shortAge, livenessLevel, groupRunActivity, summarizeCommand, prettifyTarget, refTone, statusLabel, cleanSliceTitle, type ActivityGroup } from "~/lib/format";
   import { api } from "~/lib/api";
   import Markdown from "~/components/Markdown.svelte";
   let { store }: { store: ConsoleStore } = $props();
@@ -393,7 +393,7 @@
     </div>
 
     {#if sel.kind === "slice" && slice}
-      <h4>{slice.title} · {slice.status}<span class="muted"> · {formatDuration((["accepted","closed"].includes(slice.status) ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt))}</span></h4>
+      <h4>{cleanSliceTitle(slice.title)} · {slice.status}<span class="muted"> · {formatDuration((["accepted","closed"].includes(slice.status) ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt))}</span></h4>
       <div class="proof">
         {#each chain as row (row.ref)}
           <div class="proof-ref">
@@ -431,7 +431,7 @@
           <div class="ag-working-head">
             <span class="ag-working-eyebrow">Working on</span>
             <button class="ag-working-title" title="Open slice {workingSlice.id}" onclick={() => store.select({ kind: "slice", id: workingSlice.id })}>
-              {workingSlice.title}
+              {cleanSliceTitle(workingSlice.title)}
             </button>
             <span class="verdict verdict-{verdictClass(workingSlice.status)}">{workingSlice.status}</span>
           </div>

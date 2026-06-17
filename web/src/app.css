@@ -225,18 +225,21 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 /* The liveness chip — reuses the roster's .lv-* tones; .agent-state carries only the chip shape. */
 .ov-now-state { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; letter-spacing: .02em; }
 .ov-now-activity { color: var(--muted); font-size: var(--fs-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.ov-now-next { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ov-now-next { margin-top: var(--s2); padding: 3px var(--s2); border-left: 2px solid var(--accent); background: rgba(91,157,255,0.07); border-radius: 0 4px 4px 0; color: var(--muted); font-size: var(--fs-meta); }
+.ov-now-next-label { color: var(--accent); font-size: var(--fs-eyebrow); font-weight: 600; letter-spacing: .02em; text-transform: uppercase; margin-right: 6px; }
 
 /* ── Loop log — a tidy newest-first list, not a wrap of equal chips ── */
-.ov-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
-.ov-row { display: flex; gap: var(--s2); width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: var(--s1) var(--s2); margin: 0; color: var(--ink); cursor: pointer; }
+.ov-log { list-style: none; margin: var(--s3) 0 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+.ov-log li + li { border-top: 1px solid var(--line); }
+.ov-row { display: flex; gap: var(--s2); width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: var(--s2); margin: 0; color: var(--ink); cursor: pointer; align-items: flex-start; }
 .ov-row:hover { background: var(--surface-2); }
 /* Mono timestamp, fixed gutter so the action column aligns down the list. */
 .ov-row-time { flex: none; width: 36px; color: var(--muted); font-size: var(--fs-meta); padding-top: 1px; }
-.ov-row-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ov-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ov-row-action { color: var(--ink); font-size: var(--fs-body); }
 .ov-row-count { color: var(--muted); font-size: var(--fs-meta); margin-left: var(--s1); }
-.ov-row-summary { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-row-summary { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-row-decision { background: rgba(91,157,255,0.05); }
 .ov-more { display: block; width: 100%; text-align: center; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 6px var(--s3); margin-top: var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
 .ov-more:hover { background: var(--surface-2); color: var(--ink); }
 .overseer .empty { margin: 0; font-size: var(--fs-meta); }

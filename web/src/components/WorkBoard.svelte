@@ -3,7 +3,7 @@
   import type { FrAcVerificationResult } from "~/lib/types";
   import {
     formatDuration, isTerminalSlice, sortActiveSlices, sliceStatusChip,
-    statusOverviewCounts,
+    statusOverviewCounts, cleanSliceTitle,
   } from "~/lib/format";
   let { store, onSelect }: { store: ConsoleStore; onSelect: (sliceId: string) => void } = $props();
 
@@ -26,10 +26,8 @@
   function sliceDur(slice: (typeof slices)[number]): string {
     return formatDuration((isTerminalSlice(slice.status) ? Date.parse(slice.updatedAt) : Date.now()) - Date.parse(slice.createdAt));
   }
-  // Drop a leading "Implement " verb so the title reads as the deliverable, not the task.
-  function displayTitle(title: string): string {
-    return title.replace(/^Implement\s+/i, "");
-  }
+  // Title as the deliverable: drop a leading "Implement " verb and a trailing FR/AC ref dump.
+  const displayTitle = cleanSliceTitle;
   // Short, monospace slice id — strip a redundant leading "SLICE-" so we render it once.
   function shortSliceId(id: string): string {
     return id.replace(/^SLICE-/i, "");
