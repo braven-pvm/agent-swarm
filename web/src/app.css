@@ -60,9 +60,12 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-
 .brand { font-weight: 600; } .spacer { flex: 1; }
 .chip { border: 1px solid var(--line-2); border-radius: 10px; padding: 1px 8px; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .chip.conn.on { color: var(--green); border-color: var(--line-2); } .chip.conn.off { color: var(--muted); }
-.routes { display: flex; gap: 4px; padding: 4px 12px; border-bottom: 1px solid var(--line); }
-.routes button { background: none; border: none; color: var(--muted); padding: 4px 10px; cursor: pointer; border-radius: 6px; }
-.routes button.active { color: var(--ink); background: var(--surface-2); }
+/* Primary navigation — prominent underline-indicator tabs: generous padding, semibold,
+   the current section carried by an --accent underline + --ink text (muted when inactive). */
+.routes { display: flex; gap: var(--s2); padding: 0 var(--s3); background: var(--panel); border-bottom: 1px solid var(--line-2); }
+.routes button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); font-size: var(--fs-title); font-weight: 600; letter-spacing: .01em; padding: var(--s3) var(--s4); margin-bottom: -1px; cursor: pointer; border-radius: 0; transition: color .12s, border-color .12s; }
+.routes button:hover { color: var(--ink); border-bottom-color: var(--line-2); }
+.routes button.active { color: var(--ink); border-bottom-color: var(--accent); }
 /* Outward-increasing rhythm: larger gap BETWEEN cockpit regions than within them. */
 .cockpit { position: relative; display: grid; gap: var(--s4); padding: var(--s3); flex: 1; overflow: hidden; }
 .rail, .center { overflow-y: auto; }
