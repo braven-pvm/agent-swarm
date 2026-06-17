@@ -326,11 +326,20 @@ export interface RequirementRollup {
   childStatusCounts: Record<RequirementLedgerStatus, number>;
 }
 
+export interface HumanVerificationPacketLink {
+  evidenceId: string;
+  markdownPath: string;
+  jsonPath: string;
+  status: "awaiting_human_verification" | "human_verified" | "failed" | "needs_rework";
+  generatedAt: string;
+}
+
 export interface RequirementHumanPath {
   state: "none" | "human_verification_required" | "human_input_required";
   blocksAcceptance: boolean;
   reason: string;
   responsibleParty?: string;
+  packet?: HumanVerificationPacketLink;
 }
 
 export interface RequirementLedgerEntry {
@@ -382,6 +391,7 @@ export interface CoverageRef {
   parentRefs?: string[];
   childRefs?: string[];
   humanPath?: RequirementHumanPath;
+  humanVerificationPacket?: HumanVerificationPacketLink;
   rollup?: RequirementRollup;
   nextAction:
     | "none"
@@ -700,6 +710,7 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
         createdAt: item.createdAt,
         ref: item.ref,
       })),
+      humanVerificationPacket: latestHumanVerificationPacketLink(evidence, ref),
       obligation: obligation
         ? {
             status: "present",
@@ -934,6 +945,7 @@ function requirementHumanPath(row: CoverageRef, status: RequirementLedgerStatus)
       blocksAcceptance: true,
       reason: "The requirement needs clarification or an external decision; downstream dependent work must stay blocked.",
       responsibleParty: row.obligation?.responsibleParty,
+      packet: row.humanVerificationPacket,
     };
   }
   if (status === "awaiting_human_verification" || row.obligation?.mode === "human_verification_required") {
@@ -945,9 +957,36 @@ function requirementHumanPath(row: CoverageRef, status: RequirementLedgerStatus)
         ? "Human-verification requirement has been satisfied for this accepted ref."
         : "Human verification is required before this ref can be accepted.",
       responsibleParty: row.obligation?.responsibleParty,
+      packet: row.humanVerificationPacket,
     };
   }
   return { state: "none", blocksAcceptance: false, reason: "No human-specific verification path is active." };
+}
+
+function latestHumanVerificationPacketLink(
+  evidence: Array<ReturnType<SwarmStore["listEvidence"]>[number]>,
+  ref: string,
+): HumanVerificationPacketLink | undefined {
+  for (const item of [...evidence].reverse()) {
+    if (item.kind !== "artifact") continue;
+    if (item.ref && item.ref !== ref) continue;
+    if (item.payload.type !== "human_verification_packet") continue;
+    const markdownPath = stringValue(item.payload.markdownPath);
+    const jsonPath = stringValue(item.payload.jsonPath);
+    if (!markdownPath || !jsonPath) continue;
+    const status = stringValue(item.payload.status);
+    return {
+      evidenceId: item.id,
+      markdownPath,
+      jsonPath,
+      status:
+        status === "human_verified" || status === "failed" || status === "needs_rework"
+          ? status
+          : "awaiting_human_verification",
+      generatedAt: stringValue(item.payload.generatedAt) ?? item.createdAt,
+    };
+  }
+  return undefined;
 }
 
 function hasHumanRequiredEscalation(row: CoverageRef): boolean {

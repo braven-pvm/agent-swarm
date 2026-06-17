@@ -201,6 +201,8 @@ Current implementation note:
 - Coverage rows preserve `directStatus` for the ref's own lease/evidence state and expose `ledgerStatus`/`ledgerReason` for the derived requirement state.
 - Parent FR rows expose `childRefs` and `rollup`. Container parents use `rollup.rule = "children"`; parents with direct evidence plus children use `rollup.rule = "direct_and_children"`.
 - Parent rollups can change the visible coverage status: a container parent with all accepted child ACs becomes done/accepted, while a parent with incomplete child ACs remains incomplete even if the parent ref itself was indexed.
+- Verification for `human_verification_required` refs produces durable JSON and Markdown human verification packets, records them as `artifact` evidence with `type = human_verification_packet`, and keeps the ref at `awaiting_human_verification` until a human result is recorded.
+- Coverage rows expose the latest human verification packet through `humanVerificationPacket` and `humanPath.packet`.
 - This ledger is currently derived, not persisted. Persisting it as a dedicated table remains a later hardening step once the semantics stabilize.
 
 ## Evidence Coverage

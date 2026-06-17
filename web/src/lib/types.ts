@@ -111,11 +111,19 @@ export interface RequirementRollup {
   childRefs: string[];
   childStatusCounts: Record<RequirementLedgerStatus, number>;
 }
+export interface HumanVerificationPacketLink {
+  evidenceId: string;
+  markdownPath: string;
+  jsonPath: string;
+  status: "awaiting_human_verification" | "human_verified" | "failed" | "needs_rework";
+  generatedAt: string;
+}
 export interface RequirementHumanPath {
   state: "none" | "human_verification_required" | "human_input_required";
   blocksAcceptance: boolean;
   reason: string;
   responsibleParty?: string;
+  packet?: HumanVerificationPacketLink;
 }
 export interface RequirementLedgerEntry {
   ref: string;
@@ -179,6 +187,7 @@ export interface CoverageRef {
   parentRefs?: string[];
   childRefs?: string[];
   humanPath?: RequirementHumanPath;
+  humanVerificationPacket?: HumanVerificationPacketLink;
   rollup?: RequirementRollup;
   nextAction:
     | "none"

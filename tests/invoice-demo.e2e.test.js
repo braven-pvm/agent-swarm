@@ -304,6 +304,88 @@ test("planner creates read-only verification obligations that flow through promp
   assert.match(frAcResults[0].criteriaResults[0].actualOutcome, /covered/i);
 });
 
+test("human-verification obligations produce packets and block acceptance", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-human-verification-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  let store = new SwarmStore(workspace);
+  let slice = store.listSlices().find((item) => item.id === sliceId);
+  store.close();
+  assert.ok(slice);
+  const humanRef = slice.frAcRefs[0];
+  const obligations = slice.verificationObligations.map((obligation) =>
+    obligation.ref === humanRef
+      ? { ...obligation, mode: "human_verification_required", responsibleParty: "human-qa" }
+      : obligation,
+  );
+
+  const db = new Database(path.join(workspace, ".swarm", "state.db"));
+  try {
+    db.prepare("update slices set verification_obligations_json = ? where id = ?").run(JSON.stringify(obligations), sliceId);
+  } finally {
+    db.close();
+  }
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "human-worker"]);
+  runSwarm(workspace, ["review", sliceId, "--driver", "fixture", "--actor", "human-reviewer"]);
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "human-verifier"]);
+  assert.match(verifyOutput, new RegExp(`awaiting human verification: ${humanRef.replace(".", "\\.")}`));
+  assert.match(verifyOutput, /human packet/);
+
+  store = new SwarmStore(workspace);
+  slice = store.listSlices().find((item) => item.id === sliceId);
+  const leases = store.listLeases().filter((lease) => lease.sliceId === sliceId);
+  const commandEvidence = store.listEvidence(sliceId).filter((item) => item.kind === "command").at(-1);
+  const packetEvidence = store.listEvidence(sliceId).find((item) => item.kind === "artifact" && item.ref === humanRef);
+  const coverage = buildCoverage(store);
+  store.close();
+
+  assert.equal(slice?.status, "blocked", "human verification should block final acceptance");
+  assert.ok(leases.every((lease) => lease.status === "active"), "leases should stay active until human verification is recorded");
+  assert.ok(commandEvidence, "verification evidence should be recorded");
+  assert.deepEqual(commandEvidence.payload.humanVerificationRefs, [humanRef]);
+  assert.equal(commandEvidence.payload.humanInputRequiredRefs.length, 0);
+  assert.equal(commandEvidence.payload.humanVerificationPackets.length, 1);
+  const humanResult = commandEvidence.payload.frAcResults.find((item) => item.ref === humanRef);
+  assert.equal(humanResult.status, "awaiting_human_verification");
+  assert.ok(humanResult.evidenceIds.includes(commandEvidence.payload.humanVerificationPackets[0].evidenceId));
+
+  assert.ok(packetEvidence, "human verification packet evidence should be recorded");
+  assert.equal(packetEvidence.payload.type, "human_verification_packet");
+  assert.equal(packetEvidence.payload.status, "awaiting_human_verification");
+  assert.ok(fs.existsSync(packetEvidence.payload.markdownPath));
+  assert.ok(fs.existsSync(packetEvidence.payload.jsonPath));
+  const packetMarkdown = fs.readFileSync(packetEvidence.payload.markdownPath, "utf8");
+  assert.match(packetMarkdown, new RegExp(`Human Verification Packet: ${humanRef.replace(".", "\\.")}`));
+  assert.match(packetMarkdown, /Expected Outcomes/);
+  assert.match(packetMarkdown, /Decision Options/);
+
+  const coverageRef = coverage.refs.find((item) => item.ref === humanRef);
+  assert.equal(coverageRef.ledgerStatus, "awaiting_human_verification");
+  assert.equal(coverageRef.humanPath.state, "human_verification_required");
+  assert.equal(coverageRef.humanPath.blocksAcceptance, true);
+  assert.equal(coverageRef.humanPath.packet.markdownPath, packetEvidence.payload.markdownPath);
+});
+
 test("worker dispatch blocks explicit slices with missing verification obligations", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-obligation-gate-${process.pid}`);
   const target = path.join(workspace, "invoice-api");

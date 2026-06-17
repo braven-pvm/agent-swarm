@@ -836,13 +836,28 @@ program
         .listEscalations("active")
         .filter((item) => item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
       const verificationEvidenceId = makeId("evidence");
-      const frAcResults = buildFrAcResults({
+      let frAcResults = buildFrAcResults({
         slice,
         verifier: options.actor,
         commandPassed,
+        reviewGate,
         workerGate,
         verificationEvidenceId,
       });
+      const humanVerificationPackets = writeHumanVerificationPackets({
+        workspace,
+        store,
+        slice,
+        target,
+        verifier: options.actor,
+        command,
+        commandPassed,
+        workerGate,
+        reviewGate,
+        verificationEvidenceId,
+        frAcResults,
+      });
+      frAcResults = attachHumanVerificationPacketEvidence(frAcResults, humanVerificationPackets);
       const perRefPassed = frAcResults.every((result) => result.status === "passed" || result.status === "overridden");
       const passed = commandPassed && workerGate.passed && reviewGate.passed && activeAcceptanceBlockers.length === 0 && perRefPassed;
       const failedStatus: SliceRecord["status"] = reviewGate.status === "repair_required" ? "repairing" : "blocked";
@@ -869,6 +884,9 @@ program
           frAcResults,
           missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
           failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
+          humanVerificationRefs: frAcResults.filter((item) => item.status === "awaiting_human_verification").map((item) => item.ref),
+          humanInputRequiredRefs: frAcResults.filter((item) => item.status === "human_input_required").map((item) => item.ref),
+          humanVerificationPackets,
           stdout: trimOutput(result.stdout),
           stderr: trimOutput(result.stderr),
         },
@@ -901,6 +919,9 @@ program
             frAcResults,
             missingRefs: frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref),
             failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
+            humanVerificationRefs: frAcResults.filter((item) => item.status === "awaiting_human_verification").map((item) => item.ref),
+            humanInputRequiredRefs: frAcResults.filter((item) => item.status === "human_input_required").map((item) => item.ref),
+            humanVerificationPackets,
             stdout: trimOutput(result.stdout),
             stderr: trimOutput(result.stderr),
           },
@@ -927,8 +948,15 @@ program
       }
       const missingRefs = frAcResults.filter((item) => item.status === "missing_evidence").map((item) => item.ref);
       const failedRefs = frAcResults.filter((item) => item.status === "failed").map((item) => item.ref);
+      const humanVerificationRefs = frAcResults.filter((item) => item.status === "awaiting_human_verification").map((item) => item.ref);
       if (missingRefs.length > 0) console.log(`  missing FR/AC evidence: ${missingRefs.join(", ")}`);
       if (failedRefs.length > 0) console.log(`  failed FR/AC evidence: ${failedRefs.join(", ")}`);
+      if (humanVerificationRefs.length > 0) {
+        console.log(`  awaiting human verification: ${humanVerificationRefs.join(", ")}`);
+        for (const packet of humanVerificationPackets) {
+          console.log(`  human packet ${packet.ref}: ${packet.markdownPath}`);
+        }
+      }
       if (result.stdout.trim()) console.log(result.stdout.trim());
       if (result.stderr.trim()) console.error(result.stderr.trim());
     } finally {
@@ -3773,6 +3801,7 @@ function buildFrAcResults(input: {
   slice: SliceRecord;
   verifier: string;
   commandPassed: boolean;
+  reviewGate: ReturnType<typeof readLatestReviewGate>;
   workerGate: ReturnType<typeof readAndValidateWorkerResult>;
   verificationEvidenceId: string;
 }): FrAcVerificationResult[] {
@@ -3803,12 +3832,249 @@ function buildFrAcResults(input: {
         verifiedBy: input.verifier,
       });
     }
+    if (input.reviewGate.passed && requiresHumanVerification(input.slice, ref)) {
+      return attachCriterionResults(input.slice, {
+        ref,
+        status: "awaiting_human_verification",
+        evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
+        proof: `Automated verification passed, but ${ref} requires human verification before acceptance.\n\nSupporting proof: ${workerResult.proof}`,
+        verifiedBy: input.verifier,
+      });
+    }
     return attachCriterionResults(input.slice, {
       ...workerResult,
       evidenceIds: [...workerResult.evidenceIds, input.verificationEvidenceId],
       verifiedBy: input.verifier,
     });
   });
+}
+
+type HumanVerificationPacketRecord = {
+  ref: string;
+  evidenceId: string;
+  packetId: string;
+  markdownPath: string;
+  jsonPath: string;
+  status: "awaiting_human_verification";
+  generatedAt: string;
+};
+
+type HumanVerificationPacketData = {
+  packetId: string;
+  generatedAt: string;
+  status: "awaiting_human_verification";
+  ref: string;
+  slice: {
+    id: string;
+    title: string;
+    status: SliceRecord["status"];
+    deliveryQuestion: string;
+    scope: string[];
+    outOfScope: string[];
+  };
+  target: { id: string; name: string; path: string };
+  obligation?: SliceRecord["verificationObligations"][number];
+  expectedOutcomes: string[];
+  evidenceRequired: string[];
+  automatedEvidence: {
+    verificationEvidenceId: string;
+    command: string;
+    commandPassed: boolean;
+    workerGate: ReturnType<typeof readAndValidateWorkerResult>;
+    reviewGate: ReturnType<typeof readLatestReviewGate>;
+    frAcResult?: FrAcVerificationResult;
+  };
+  humanInstructions: string[];
+  decisionOptions: string[];
+};
+
+function requiresHumanVerification(slice: SliceRecord, ref: string): boolean {
+  return slice.verificationObligations.some((obligation) => obligation.ref === ref && obligation.mode === "human_verification_required");
+}
+
+function attachHumanVerificationPacketEvidence(
+  results: FrAcVerificationResult[],
+  packets: HumanVerificationPacketRecord[],
+): FrAcVerificationResult[] {
+  const packetByRef = new Map(packets.map((packet) => [packet.ref, packet]));
+  return results.map((result) => {
+    const packet = packetByRef.get(result.ref);
+    if (!packet) return result;
+    return {
+      ...result,
+      evidenceIds: [...new Set([...result.evidenceIds, packet.evidenceId])],
+      criteriaResults: result.criteriaResults?.map((criterion) => ({
+        ...criterion,
+        evidenceIds: [...new Set([...criterion.evidenceIds, packet.evidenceId])],
+      })),
+    };
+  });
+}
+
+function writeHumanVerificationPackets(input: {
+  workspace: string;
+  store: SwarmStore;
+  slice: SliceRecord;
+  target: { id: string; name: string; path: string };
+  verifier: string;
+  command: string;
+  commandPassed: boolean;
+  workerGate: ReturnType<typeof readAndValidateWorkerResult>;
+  reviewGate: ReturnType<typeof readLatestReviewGate>;
+  verificationEvidenceId: string;
+  frAcResults: FrAcVerificationResult[];
+}): HumanVerificationPacketRecord[] {
+  const refs = input.frAcResults.filter((result) => result.status === "awaiting_human_verification").map((result) => result.ref);
+  if (refs.length === 0) return [];
+  const artifactPath = path.join(artifactsDir(input.workspace), input.slice.id);
+  fs.mkdirSync(artifactPath, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const records: HumanVerificationPacketRecord[] = [];
+  for (const ref of refs) {
+    const evidenceId = makeId("evidence");
+    const packetId = `HVP-${evidenceId.slice(4)}`;
+    const segment = sanitizeArtifactSegment(ref);
+    const jsonPath = path.join(artifactPath, `human-verification-${segment}-${packetId}.json`);
+    const markdownPath = path.join(artifactPath, `human-verification-${segment}-${packetId}.md`);
+    const result = input.frAcResults.find((item) => item.ref === ref);
+    const obligation = input.slice.verificationObligations.find((item) => item.ref === ref);
+    const packet: HumanVerificationPacketData = {
+      packetId,
+      generatedAt,
+      status: "awaiting_human_verification",
+      ref,
+      slice: {
+        id: input.slice.id,
+        title: input.slice.title,
+        status: input.slice.status,
+        deliveryQuestion: input.slice.deliveryQuestion,
+        scope: input.slice.scope,
+        outOfScope: input.slice.outOfScope,
+      },
+      target: {
+        id: input.target.id,
+        name: input.target.name,
+        path: input.target.path,
+      },
+      obligation,
+      expectedOutcomes: obligation?.criteria.map((criterion) => criterion.expectedOutcome) ?? [],
+      evidenceRequired: obligation?.criteria.flatMap((criterion) => criterion.evidenceRequired) ?? [],
+      automatedEvidence: {
+        verificationEvidenceId: input.verificationEvidenceId,
+        command: input.command,
+        commandPassed: input.commandPassed,
+        workerGate: input.workerGate,
+        reviewGate: input.reviewGate,
+        frAcResult: result,
+      },
+      humanInstructions: [
+        "Review the immutable source text and expected outcomes.",
+        "Run or open the target using the commands and paths in this packet.",
+        "Compare actual behavior against every expected outcome.",
+        "Record pass, fail, or needs-rework through the human verification workflow when available.",
+      ],
+      decisionOptions: ["human_verified", "failed", "needs_rework"],
+    };
+    fs.writeFileSync(jsonPath, `${JSON.stringify(packet, null, 2)}\n`, "utf8");
+    fs.writeFileSync(markdownPath, renderHumanVerificationPacketMarkdown(packet), "utf8");
+    input.store.insertEvidence({
+      id: evidenceId,
+      sliceId: input.slice.id,
+      kind: "artifact",
+      ref,
+      summary: `Human verification packet ready for ${ref}`,
+      payload: {
+        type: "human_verification_packet",
+        packetId,
+        ref,
+        status: "awaiting_human_verification",
+        markdownPath,
+        jsonPath,
+        generatedAt,
+      },
+      createdAt: generatedAt,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.verifier,
+        type: "human_verification.packet_created",
+        entityType: "slice",
+        entityId: input.slice.id,
+        payload: { packetId, ref, evidenceId, markdownPath, jsonPath },
+      }),
+    );
+    records.push({ ref, evidenceId, packetId, markdownPath, jsonPath, status: "awaiting_human_verification", generatedAt });
+  }
+  return records;
+}
+
+function renderHumanVerificationPacketMarkdown(packet: HumanVerificationPacketData): string {
+  const criteria = packet.obligation?.criteria ?? [];
+  return [
+    `# Human Verification Packet: ${packet.ref}`,
+    "",
+    `Packet: ${packet.packetId}`,
+    `Generated: ${packet.generatedAt}`,
+    `Status: ${packet.status}`,
+    "",
+    "## Requirement",
+    "",
+    `Source: ${packet.obligation?.sourceTitle ?? packet.obligation?.sourceUri ?? "unknown"}`,
+    `Mode: ${packet.obligation?.mode ?? "human_verification_required"}`,
+    `Responsible party: ${packet.obligation?.responsibleParty ?? "human"}`,
+    "",
+    "### Source Text",
+    "",
+    packet.obligation?.sourceText ?? packet.ref,
+    packet.obligation?.sourceContext ? `\n### Source Context\n\n${packet.obligation.sourceContext}` : "",
+    "",
+    "## Slice And Target",
+    "",
+    `Slice: ${packet.slice.id} - ${packet.slice.title}`,
+    `Delivery question: ${packet.slice.deliveryQuestion}`,
+    `Target: ${packet.target.name}`,
+    `Target path: ${packet.target.path}`,
+    "",
+    "Scope:",
+    ...markdownList(packet.slice.scope),
+    "",
+    "Out of scope:",
+    ...markdownList(packet.slice.outOfScope),
+    "",
+    "## Expected Outcomes",
+    "",
+    ...criteria.flatMap((criterion) => [
+      `- ${criterion.id}: ${criterion.expectedOutcome}`,
+      `  evidence required: ${criterion.evidenceRequired.join(", ")}`,
+      `  threshold: ${criterion.acceptanceThreshold}`,
+    ]),
+    "",
+    "## Automated Support Evidence",
+    "",
+    `Verification evidence: ${packet.automatedEvidence.verificationEvidenceId}`,
+    `Command: ${packet.automatedEvidence.command}`,
+    `Command passed: ${packet.automatedEvidence.commandPassed}`,
+    `Worker gate: ${packet.automatedEvidence.workerGate.passed ? "passed" : "failed"} - ${packet.automatedEvidence.workerGate.reason}`,
+    `Review gate: ${packet.automatedEvidence.reviewGate.passed ? "passed" : "failed"} - ${packet.automatedEvidence.reviewGate.reason}`,
+    `FR/AC result: ${packet.automatedEvidence.frAcResult?.status ?? "unknown"}`,
+    "",
+    packet.automatedEvidence.frAcResult?.proof ?? "",
+    "",
+    "## Human Instructions",
+    "",
+    ...packet.humanInstructions.map((item) => `- ${item}`),
+    "",
+    "## Decision Options",
+    "",
+    ...packet.decisionOptions.map((item) => `- ${item}`),
+    "",
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
+function markdownList(items: string[]): string[] {
+  return items.length > 0 ? items.map((item) => `- ${item}`) : ["- none"];
 }
 
 function attachCriterionResults(slice: SliceRecord, result: FrAcVerificationResult): FrAcVerificationResult {
