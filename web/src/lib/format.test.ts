@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity, groupAgentsByRole, roleGroupLabel, type RosterGroupRow } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -271,5 +271,81 @@ describe("prettifyTarget", () => {
   });
   it("leaves plain commands unchanged", () => {
     expect(prettifyTarget("npm test")).toBe("npm test");
+  });
+});
+
+describe("roleGroupLabel", () => {
+  it("maps known roles to sentence-case plurals", () => {
+    expect(roleGroupLabel("overseer")).toBe("Overseers");
+    expect(roleGroupLabel("worker")).toBe("Workers");
+    expect(roleGroupLabel("reviewer")).toBe("Reviewers");
+    expect(roleGroupLabel("verifier")).toBe("Verifiers");
+    expect(roleGroupLabel("planner")).toBe("Planners");
+    expect(roleGroupLabel("recovery")).toBe("Recovery");
+  });
+  it("humanizes an unknown role and falls back to Other for none", () => {
+    expect(roleGroupLabel("custom_role")).toBe("Custom role");
+    expect(roleGroupLabel(undefined)).toBe("Other");
+  });
+});
+
+describe("groupAgentsByRole", () => {
+  const NOW = Date.parse("2026-06-14T12:00:00.000Z");
+  // latest = NOW → age 0; running → active; running + old → stalled (dead); non-running → idle.
+  const row = (actor: string, role: string | undefined, opts: { runStatus?: string; ageMs?: number } = {}): RosterGroupRow => ({
+    actor, role, runStatus: opts.runStatus, latest: new Date(NOW - (opts.ageMs ?? 0)).toISOString(),
+  });
+
+  it("orders groups overseer→worker→reviewer→verifier→planner→recovery, unknown last", () => {
+    const groups = groupAgentsByRole([
+      row("p", "planner", { runStatus: "running" }),
+      row("u", "scout", { runStatus: "running" }),
+      row("o", "overseer", { runStatus: "running" }),
+      row("w", "worker", { runStatus: "running" }),
+      row("rc", "recovery", { runStatus: "running" }),
+      row("rv", "reviewer", { runStatus: "running" }),
+      row("v", "verifier", { runStatus: "running" }),
+    ], NOW);
+    expect(groups.map((g) => g.role)).toEqual([
+      "overseer", "worker", "reviewer", "verifier", "planner", "recovery", "scout",
+    ]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "Overseers", "Workers", "Reviewers", "Verifiers", "Planners", "Recovery", "Scout",
+    ]);
+  });
+
+  it("omits empty groups and counts members", () => {
+    const groups = groupAgentsByRole([
+      row("w1", "worker", { runStatus: "running" }),
+      row("w2", "worker", { runStatus: "completed" }),
+    ], NOW);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].role).toBe("worker");
+    expect(groups[0].count).toBe(2);
+  });
+
+  it("sorts active-first within a group: active → stalled → idle, then by actor name", () => {
+    const groups = groupAgentsByRole([
+      row("zeta", "worker", { runStatus: "completed" }),               // idle
+      row("alpha", "worker", { runStatus: "running", ageMs: 10 * 60_000 }), // stalled (dead)
+      row("yankee", "worker", { runStatus: "running" }),               // active
+      row("bravo", "worker", { runStatus: "running" }),                // active
+    ], NOW);
+    const g = groups[0];
+    // active (alpha-sorted) first, then stalled, then idle
+    expect(g.active.map((r) => r.actor)).toEqual(["bravo", "yankee", "alpha"]);
+    expect(g.idle.map((r) => r.actor)).toEqual(["zeta"]);
+  });
+
+  it("partitions active+stalled into .active and idle into .idle", () => {
+    const groups = groupAgentsByRole([
+      row("a", "verifier", { runStatus: "running" }),                   // active
+      row("b", "verifier", { runStatus: "running", ageMs: 10 * 60_000 }), // stalled
+      row("c", "verifier", { runStatus: "released" }),                  // idle
+      row("d", "verifier" /* no run */),                                // idle (no runStatus)
+    ], NOW);
+    const g = groups[0];
+    expect(g.active.map((r) => r.actor).sort()).toEqual(["a", "b"]);
+    expect(g.idle.map((r) => r.actor).sort()).toEqual(["c", "d"]);
   });
 });

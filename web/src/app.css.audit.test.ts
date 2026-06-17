@@ -123,7 +123,7 @@ describe("app.css — panel elevation hierarchy", () => {
     expect(block(".center")).toContain("background: var(--bg)");
   });
 
-  it("lifts the board columns above the recessed canvas to --panel", () => {
-    expect(block(".board-col")).toContain("background: var(--panel)");
+  it("lifts the board's status strip above the recessed canvas to --panel", () => {
+    expect(block(".wb-overview")).toContain("background: var(--panel)");
   });
 });

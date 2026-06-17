@@ -32,7 +32,7 @@
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 :focus:not(:focus-visible) { outline: none; }
 /* Cards/regions with overflow:hidden — inset the ring so it isn't clipped. */
-.spec-card:focus-visible, .specs-sidebar:focus-visible, .board-col:focus-visible,
+.spec-card:focus-visible, .specs-sidebar:focus-visible,
 .run-card-head:focus-visible, .spec-detail:focus-visible { outline-offset: -2px; }
 /* Chips/cells on tinted fills — double box-shadow ring reads over any fill,
    and the bg gap keeps it legible against adjacent colour. */
@@ -65,17 +65,77 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-
 .routes button.active { color: var(--ink); background: var(--surface-2); }
 /* Outward-increasing rhythm: larger gap BETWEEN cockpit regions than within them. */
 .cockpit { position: relative; display: grid; gap: var(--s4); padding: var(--s3); flex: 1; overflow: hidden; }
-.rail, .center, .board-col { overflow-y: auto; }
+.rail, .center { overflow-y: auto; }
 /* Side rails read as SECONDARY (--panel). */
 .rail { background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s3); }
 .rail-title, .col-title { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; margin: 0 0 var(--s3); }
 /* Centre stage is the PRIMARY surface: recessed to the base canvas so its cards lift above it. */
 .center { display: flex; flex-direction: column; gap: var(--s4); background: var(--bg); }
-.board { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s2); }
-.board-col { background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2); }
-.count { color: var(--muted); }
+/* ── Work board ───────────────────────────────────────────────────────────
+   Active-first vertical layout that fills the wide recessed --bg stage: a
+   glanceable status strip, then a responsive grid of active slice cards, then
+   a collapsed Accepted section. Outward-increasing rhythm — --s4 between the
+   three sections, --s3 grid gap, 8px within a card. */
+.board { display: flex; flex-direction: column; gap: var(--s4); }
+.count { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Status overview strip: compact per-status counts in one row. Counts are
+   muted by default; non-zero active buckets weight up to --ink, and Blocked
+   gains a red tint only when >0 so an idle board reads calm. */
+.wb-overview { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.wb-stat { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+.wb-stat-n { font-variant-numeric: tabular-nums; color: var(--muted); }
+.wb-stat-on { color: var(--ink); } .wb-stat-on .wb-stat-n { color: var(--ink); font-weight: 600; }
+.wb-stat-blocked, .wb-stat-blocked .wb-stat-n { color: #f08d85; }
+.wb-stat-accepted { margin-left: auto; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+.wb-stat-accepted .wb-stat-n { font-weight: 600; }
+.wb-stat-accepted.acc-done, .wb-stat-accepted.acc-done .wb-stat-n { color: var(--green); }
+.wb-stat-glyph { font-size: .9em; }
+/* A section = an eyebrow header + a card grid. Sections are separated by the
+   --s4 .board gap; within a section the header hugs its grid. */
+.wb-section { display: flex; flex-direction: column; }
+.wb-section .col-title { text-transform: uppercase; }
+/* Responsive card grid — cards flow to fill the wide centre instead of one
+   tall column. min ~260px keeps a slice card readable; 8px sits within a card. */
+.wb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--s3); align-items: start; }
+.wb-grid .slice-card { margin-bottom: 0; }
+.wb-empty { padding: var(--s4) 0; }
+/* Disclosure toggle: a quiet full-width dashed button (interactive → --line-3,
+   inherits the global focus ring), mirroring the roster's idle-tail toggle. */
+.wb-more { display: block; width: 100%; text-align: center; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 6px var(--s3); margin-top: var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
+.wb-more:hover { background: var(--surface-2); color: var(--ink); }
+/* Accepted section reads quieter — it is done work. */
+.wb-accepted-head { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: none; border: none; padding: 0; margin: 0 0 var(--s3); color: var(--muted); font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; font-weight: 600; cursor: pointer; }
+.wb-accepted-head:hover { color: var(--ink); }
+.wb-accepted-head:focus-visible { outline-offset: 2px; }
+.wb-caret { font-size: .9em; color: var(--muted); }
+.wb-accepted-glyph { color: var(--green); font-size: .9em; }
+.wb-accepted .col-title { color: var(--muted); }
+/* Status chip on a card — reuses the cov-badge tone palette (semantic hue +
+   glyph), aligned to the card title row. */
+.slice-card-head { display: flex; align-items: flex-start; gap: 6px; }
+.slice-card-head .slice-title { flex: 1; min-width: 0; }
+.wb-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
+.wb-chip-glyph { font-size: .9em; }
+.wb-chip-queued { background: rgba(255,255,255,.06); color: var(--muted); }
+.wb-chip-implementing { background: rgba(214,161,60,.16); color: var(--amber); }
+.wb-chip-review { background: rgba(91,157,255,.16); color: var(--blue); }
+.wb-chip-blocked { background: rgba(239,107,97,.18); color: #f08d85; font-weight: 600; }
+.wb-chip-accepted { background: rgba(92,184,122,.16); color: var(--green); }
 .agent, .slice-card, .esc, .turn { display: block; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line-3); border-radius: var(--radius); padding: var(--s3); margin-bottom: var(--s2); color: var(--ink); cursor: pointer; }
 .agent:hover, .slice-card:hover, .esc:hover { background: var(--surface-2); }
+/* Role groups: outward-increasing rhythm — cards sit 8px apart WITHIN a group (.agent
+   margin-bottom), a larger --s4 gap opens BEFORE each group header so groups read as
+   separate clusters. First group hugs the rail title (no leading gap). */
+.agent-group { margin-top: var(--s4); }
+.agent-group:first-of-type { margin-top: 0; }
+/* Group header = eyebrow, NOT a card: reuses the .rail-title/.col-title pattern (uppercase,
+   letter-spacing, --muted, weight 600) with no border/fill so it never reads as a tappable row. */
+.agent-group-title { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 var(--s2); }
+.agent-group-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Idle-tail disclosure: a quiet full-width text button (interactive → --line-3, gets the global
+   focus ring). Reveals/hides the truncated idle agents in its group. */
+.agent-idle-toggle { display: block; width: 100%; text-align: left; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 5px var(--s3); margin-bottom: var(--s2); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
+.agent-idle-toggle:hover { background: var(--surface-2); color: var(--ink); }
 .agent-head { display: flex; gap: 6px; align-items: center; }
 .agent-name { font-weight: 600; font-size: var(--fs-title); } .agent-role { color: var(--muted); } .muted { color: var(--muted); }
 .agent-now { color: var(--muted); font-size: var(--fs-meta); margin-top: var(--s1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
@@ -153,10 +213,33 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .ref { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; background: rgba(255,255,255,.06); color: var(--muted); }
 .ref-passed { background: rgba(92,184,122,.14); color: var(--green); }
 .ref-failed, .ref-missing_evidence { background: rgba(239,107,97,.14); color: var(--red); }
+/* Static display panel on the recessed centre stage → leans on elevation+spacing (--line-2). */
 .overseer { background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s3); }
-.turn-strip { display: flex; flex-wrap: wrap; gap: 6px; }
-/* Each turn is a real click target → lift from a ~14px sliver to a ~24px tappable chip. */
-.turn { width: auto; display: inline-flex; align-items: center; min-height: 24px; margin: 0; padding: 4px 8px; font-size: var(--fs-meta); }
+.overseer .col-title { text-transform: uppercase; }
+
+/* ── 'Overseer now' header — persistent 'what is it doing atm', always visible ──
+   Tight internal rhythm (--s1) sets it apart from the looser loop log below (--s4 gap). */
+.ov-now { display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s4); }
+.ov-now-head { display: flex; align-items: center; gap: var(--s2); }
+.ov-now-who { color: var(--ink); font-weight: 600; font-size: var(--fs-title); }
+/* The liveness chip — reuses the roster's .lv-* tones; .agent-state carries only the chip shape. */
+.ov-now-state { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; letter-spacing: .02em; }
+.ov-now-activity { color: var(--muted); font-size: var(--fs-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ov-now-next { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* ── Loop log — a tidy newest-first list, not a wrap of equal chips ── */
+.ov-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.ov-row { display: flex; gap: var(--s2); width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: var(--s1) var(--s2); margin: 0; color: var(--ink); cursor: pointer; }
+.ov-row:hover { background: var(--surface-2); }
+/* Mono timestamp, fixed gutter so the action column aligns down the list. */
+.ov-row-time { flex: none; width: 36px; color: var(--muted); font-size: var(--fs-meta); padding-top: 1px; }
+.ov-row-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ov-row-action { color: var(--ink); font-size: var(--fs-body); }
+.ov-row-count { color: var(--muted); font-size: var(--fs-meta); margin-left: var(--s1); }
+.ov-row-summary { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-more { display: block; width: 100%; text-align: center; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 6px var(--s3); margin-top: var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
+.ov-more:hover { background: var(--surface-2); color: var(--ink); }
+.overseer .empty { margin: 0; font-size: var(--fs-meta); }
 .esc-warning { border-left: 3px solid var(--amber); } .esc-blocker, .esc-critical, .esc-human_required { border-left: 3px solid var(--red); }
 .esc-head { display: flex; align-items: center; gap: 5px; }
 .esc-level { text-transform: capitalize; }

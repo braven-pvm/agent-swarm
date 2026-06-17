@@ -224,6 +224,102 @@ export function statusLabel(status: string): string {
   }
 }
 
+// ── Work board: slice status grouping, priority, and per-status tone ────────
+// The board collapses the 11 SliceStatus values into 5 operator buckets and
+// orders active work most-urgent-first, so the wide centre stage shows a
+// glanceable distribution + a priority-sorted grid instead of five columns.
+
+export type SliceStatusGroup = "queued" | "implementing" | "review" | "blocked" | "accepted";
+
+// Map a raw SliceStatus to its operator bucket. Terminal (accepted/closed) → "accepted".
+export function sliceStatusGroup(status: string): SliceStatusGroup {
+  switch (status) {
+    case "candidate": case "ready": case "claimed": return "queued";
+    case "implementing": case "implemented": case "repairing": return "implementing";
+    case "verifying": case "ready_for_review": return "review";
+    case "blocked": return "blocked";
+    default: return "accepted"; // accepted | closed | anything unexpected
+  }
+}
+
+/** A slice is terminal (done work) when accepted or closed; everything else is active. */
+export function isTerminalSlice(status: string): boolean {
+  return status === "accepted" || status === "closed";
+}
+
+// Priority for the active grid: blocked (most urgent) → review → implementing → queued.
+// Lower = sorted first. Terminal/unknown sink to the bottom (kept out of the active grid anyway).
+const ACTIVE_PRIORITY: Record<SliceStatusGroup, number> = {
+  blocked: 0, review: 1, implementing: 2, queued: 3, accepted: 4,
+};
+export function activeSlicePriority(status: string): number {
+  return ACTIVE_PRIORITY[sliceStatusGroup(status)];
+}
+
+// Structural subset the board sort needs — keeps the helper DOM/store-free for unit tests.
+export interface SortableSlice { status: string; updatedAt: string; }
+
+/**
+ * Sort active (non-terminal) slices most-urgent-first: by ACTIVE_PRIORITY group
+ * (blocked > review > implementing > queued), tiebreak newest updatedAt first.
+ * Pure + stable-ish (returns a new array; does not mutate the input).
+ */
+export function sortActiveSlices<T extends SortableSlice>(slices: T[]): T[] {
+  return [...slices].sort((a, b) => {
+    const pa = activeSlicePriority(a.status);
+    const pb = activeSlicePriority(b.status);
+    if (pa !== pb) return pa - pb;
+    return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
+  });
+}
+
+export interface SliceStatusTone {
+  /** Reused cov-badge-* / lv-* tone family suffix for the chip fill+text. */
+  cls: string;
+  /** Glyph paired with the colour so the chip never relies on hue alone. */
+  glyph: string;
+  /** Sentence-case label for the chip + overview strip. */
+  label: string;
+}
+
+// Status-group tones, reusing the established semantic hues (blocked=red, review=blue,
+// implementing=amber, queued=neutral, accepted=green) — each paired with a glyph.
+const STATUS_GROUP_TONES: Record<SliceStatusGroup, SliceStatusTone> = {
+  blocked: { cls: "wb-chip-blocked", glyph: "✕", label: "Blocked" },
+  review: { cls: "wb-chip-review", glyph: "◐", label: "Review" },
+  implementing: { cls: "wb-chip-implementing", glyph: "▸", label: "Implementing" },
+  queued: { cls: "wb-chip-queued", glyph: "○", label: "Queued" },
+  accepted: { cls: "wb-chip-accepted", glyph: "✓", label: "Accepted" },
+};
+
+/** Chip tone (class + glyph + group label) for a slice's status group. */
+export function sliceStatusGroupTone(status: string): SliceStatusTone {
+  return STATUS_GROUP_TONES[sliceStatusGroup(status)];
+}
+
+/**
+ * A precise per-status chip label (humanized actual status, e.g. "Ready for review",
+ * "Repairing") paired with its GROUP tone — so the chip is exact while the colour stays
+ * within the five-bucket vocabulary.
+ */
+export function sliceStatusChip(status: string): SliceStatusTone {
+  const tone = sliceStatusGroupTone(status);
+  return { cls: tone.cls, glyph: tone.glyph, label: humanizeToken(status) || tone.label };
+}
+
+export interface StatusOverviewCount { group: SliceStatusGroup; label: string; count: number; }
+
+// Fixed display order for the overview strip: the four active buckets first
+// (queued → implementing → review → blocked), Accepted last as the green tail.
+const OVERVIEW_ORDER: SliceStatusGroup[] = ["queued", "implementing", "review", "blocked", "accepted"];
+
+/** Per-group counts for the overview strip, in OVERVIEW_ORDER (always all five, zeros included). */
+export function statusOverviewCounts(slices: Array<{ status: string }>): StatusOverviewCount[] {
+  const tally: Record<SliceStatusGroup, number> = { queued: 0, implementing: 0, review: 0, blocked: 0, accepted: 0 };
+  for (const s of slices) tally[sliceStatusGroup(s.status)] += 1;
+  return OVERVIEW_ORDER.map((group) => ({ group, label: STATUS_GROUP_TONES[group].label, count: tally[group] }));
+}
+
 // ── Spec Build Map helpers ──────────────────────────────────────────────
 // A single shared status vocabulary joined to the existing Coverage tone classes
 // (cov-badge-*) so the Specs screen introduces zero new color decisions. Every
@@ -417,6 +513,73 @@ export function formatAge(iso: string, now: number = Date.now()): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+// ── Agent roster grouping ───────────────────────────────────────────────
+// The roster is grouped by ROLE, active-first within each group, with the long idle tail
+// truncated. Pure helpers here so the ordering/partitioning is unit-testable without a DOM.
+
+// Minimal shape the grouping needs — a structural subset of AgentRosterRow so the helper has no
+// dependency on the store module (and tests can build rows inline).
+export interface RosterGroupRow { actor: string; role?: string; latest: string; runStatus?: string; }
+
+// Group order: overseer first (the conductor), then the worker→reviewer→verifier delivery chain,
+// then planner, then recovery; any unknown/absent role sinks to the bottom.
+const ROLE_ORDER = ["overseer", "worker", "reviewer", "verifier", "planner", "recovery"];
+
+// Sentence-case plural label per role for the group eyebrow (e.g. "Reviewers"). "recovery" has no
+// natural plural, so it stays as the section name "Recovery". Unknown roles render humanized.
+const ROLE_LABELS: Record<string, string> = {
+  overseer: "Overseers", worker: "Workers", reviewer: "Reviewers",
+  verifier: "Verifiers", planner: "Planners", recovery: "Recovery",
+};
+
+/** Group eyebrow label for a role bucket: the plural map, else a humanized fallback, else "Other". */
+export function roleGroupLabel(role: string | undefined): string {
+  if (!role) return "Other";
+  return ROLE_LABELS[role] ?? (humanizeToken(role) || "Other");
+}
+
+// active (alive/quiet/stale) first, then stalled (dead), then idle (done) — so the operator's eye
+// lands on live work, then on stalls that need rescue, with the dormant tail last.
+const STATE_RANK: Record<"active" | "stalled" | "idle", number> = { active: 0, stalled: 1, idle: 2 };
+
+export interface RosterGroup<T extends RosterGroupRow> {
+  role: string;            // the role key ("overseer", …) or "" for the unknown bucket
+  label: string;           // group eyebrow label (e.g. "Reviewers")
+  count: number;           // total rows in the group (active + stalled + idle)
+  active: T[];             // active + stalled rows — always shown in full
+  idle: T[];               // idle rows — truncated to a cap with a "+N idle" toggle
+}
+
+/**
+ * Group roster rows by role (ROLE_ORDER, unknown last), and within each group sort ACTIVE-FIRST by
+ * liveness (active → stalled → idle, then by actor name). Each group splits into `active` (active +
+ * stalled rows, always rendered) and `idle` (the dormant tail the component truncates). Empty
+ * groups are omitted. `now` lets tests pin the liveness clock.
+ */
+export function groupAgentsByRole<T extends RosterGroupRow>(rows: T[], now: number = Date.now()): RosterGroup<T>[] {
+  const stateOf = (r: RosterGroupRow): "active" | "stalled" | "idle" =>
+    livenessLabel(livenessLevel(r.runStatus, now - Date.parse(r.latest)));
+  const rank = (role: string | undefined) => {
+    const i = ROLE_ORDER.indexOf(role ?? "");
+    return i === -1 ? ROLE_ORDER.length : i;
+  };
+  const buckets = new Map<string, T[]>();
+  for (const r of rows) {
+    const key = r.role && ROLE_ORDER.includes(r.role) ? r.role : (r.role ?? "");
+    const list = buckets.get(key);
+    if (list) list.push(r); else buckets.set(key, [r]);
+  }
+  return Array.from(buckets.entries())
+    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([role, list]) => {
+      const sorted = [...list].sort((x, y) =>
+        STATE_RANK[stateOf(x)] - STATE_RANK[stateOf(y)] || x.actor.localeCompare(y.actor));
+      const active = sorted.filter((r) => stateOf(r) !== "idle");
+      const idle = sorted.filter((r) => stateOf(r) === "idle");
+      return { role, label: roleGroupLabel(role || undefined), count: sorted.length, active, idle };
+    });
 }
 
 // One raw activity entry pulled from an agent_event (state + target + the event timestamp).

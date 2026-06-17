@@ -1,8 +1,8 @@
 import type {
   SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity, CoverageSummary,
-  AgentFocusItem,
+  AgentFocusItem, CheckpointRecord,
 } from "~/lib/types";
-import { groupEscalations, type EscalationGroup } from "~/lib/format";
+import { groupEscalations, humanizeToken, type EscalationGroup } from "~/lib/format";
 
 export interface AgentRosterRow {
   actor: string;
@@ -32,6 +32,73 @@ export interface ProofChainRow {
   verification?: { status: string; proof: string };
   reviewFinding?: { status: string; finding: string };
   citations: string[];
+}
+
+// ── Overseer loop log ───────────────────────────────────────────────────
+// The overseer panel's recent-decisions list. We collapse the raw overseer event
+// stream into a compact, newest-first list where CONSECUTIVE identical event types
+// fold into one row carrying a ×N count (so three 'Command completed' in a row read
+// as one 'Command completed ×3' line, not three equal chips). Decision events prefer
+// the human-written decision summary from the matching checkpoint/payload.
+
+export interface OverseerLogRow {
+  id: string;          // newest event id in the run — the click target (onSelect)
+  type: string;        // raw overseer.* event type (e.g. "overseer.command_completed")
+  action: string;      // humanized action label ("Command completed")
+  summary?: string;    // decision summary, when this run is a recorded decision
+  ts: string;          // newest event timestamp in the run (ISO)
+  count: number;       // how many consecutive same-type events folded in
+}
+
+// A non-heartbeat overseer event is a loop event (the heartbeat-activity stream,
+// 'overseer.agent_event', is the per-agent feed shown elsewhere — not the loop log).
+function isOverseerLoopEvent(e: HarnessEvent): boolean {
+  return e.type.startsWith("overseer.") && e.type !== "overseer.agent_event";
+}
+
+// Resolve a decision summary for a decision event: prefer an explicit summary on the
+// event payload, else fall back to the overseer checkpoint nearest in time (same actor),
+// else the most recent overseer checkpoint summary.
+function decisionSummary(ev: HarnessEvent, checkpoints: CheckpointRecord[]): string | undefined {
+  const p = ev.payload as Record<string, unknown> | undefined;
+  const inline = (p?.summary ?? p?.decision ?? p?.nextIntendedAction) as string | undefined;
+  if (typeof inline === "string" && inline.trim()) return inline.trim();
+  const overseerCps = checkpoints
+    .filter((c) => c.role === "overseer" || c.createdBy === ev.actor)
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  // nearest checkpoint at or before the event, else the most recent overseer checkpoint
+  const at = overseerCps.find((c) => c.updatedAt <= ev.timestamp) ?? overseerCps[0];
+  const s = at?.summary?.trim();
+  return s || undefined;
+}
+
+/**
+ * Build the overseer loop log from the raw event stream (ASC by timestamp) and the
+ * checkpoints. Consecutive same-type events collapse into one row (newest event id +
+ * timestamp kept, ×N count accumulated); 'overseer.decision_recorded' rows attach the
+ * matching decision summary. Returned NEWEST-FIRST. Pure — DOM/store-free for tests.
+ */
+export function buildOverseerLog(
+  events: HarnessEvent[],
+  checkpoints: CheckpointRecord[],
+  humanize: (s: string) => string,
+): OverseerLogRow[] {
+  const loop = events.filter(isOverseerLoopEvent);
+  const rows: OverseerLogRow[] = [];
+  for (const ev of loop) {
+    const last = rows[rows.length - 1];
+    if (last && last.type === ev.type) {
+      // fold a consecutive repeat into the running row; keep the NEWEST event as the target
+      last.count += 1;
+      last.id = ev.id;
+      last.ts = ev.timestamp;
+      continue;
+    }
+    const bare = ev.type.replace("overseer.", "");
+    const summary = ev.type === "overseer.decision_recorded" ? decisionSummary(ev, checkpoints) : undefined;
+    rows.push({ id: ev.id, type: ev.type, action: humanize(bare) || bare, summary, ts: ev.timestamp, count: 1 });
+  }
+  return rows.reverse(); // newest-first
 }
 
 const MAX_EVENTS = 200;
@@ -115,12 +182,32 @@ export function createConsoleStore() {
     return Array.from(byActor.values()).sort((a, b) => a.actor.localeCompare(b.actor));
   });
 
+  // The overseer agent row (role 'overseer'; normally exactly one, actor like 'live-overseer').
+  // Drives the persistent 'Overseer now' header — null when no overseer agent is present.
+  const overseer = $derived<AgentRosterRow | null>(agents.find((r) => r.role === "overseer") ?? null);
+
+  // Latest overseer checkpoint summary — the fallback 'now' line when no overseer agent exists.
+  const overseerCheckpointSummary = $derived.by<string | null>(() => {
+    const cps = (snapshot?.checkpoints ?? []).filter((c) => c.role === "overseer");
+    if (cps.length === 0) return null;
+    const latest = cps.reduce((a, b) => (a.updatedAt >= b.updatedAt ? a : b));
+    return latest.summary?.trim() || null;
+  });
+
+  // The compact, deduped, newest-first overseer loop log (see buildOverseerLog).
+  const overseerLog = $derived.by<OverseerLogRow[]>(() =>
+    snapshot ? buildOverseerLog(snapshot.recentEvents, snapshot.checkpoints, humanizeToken) : [],
+  );
+
   return {
     get snapshot() { return snapshot; },
     get connected() { return connected; },
     get selected() { return selected; },
     get escalationGroups() { return escalationGroups; },
     get agents() { return agents; },
+    get overseer() { return overseer; },
+    get overseerCheckpointSummary() { return overseerCheckpointSummary; },
+    get overseerLog() { return overseerLog; },
     get coverage() { return coverage; },
     hydrate(s: SnapshotResponse) { snapshot = s; },
     setConnected(v: boolean) { connected = v; },

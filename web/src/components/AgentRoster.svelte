@@ -1,9 +1,19 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { CoverageRef } from "~/lib/types";
-  import { describeActivity, livenessLevel, livenessLabel, shortAge, formatDuration, refTone } from "~/lib/format";
+  import { describeActivity, livenessLevel, livenessLabel, shortAge, formatDuration, refTone, groupAgentsByRole } from "~/lib/format";
   let { store, onSelect }: { store: ConsoleStore; onSelect: (actor: string) => void } = $props();
   const rows = $derived(store.agents);
+
+  // Group by role (active-first within each group), splitting the dormant idle tail out so the
+  // component can truncate it. groupAgentsByRole pins the liveness clock at render time.
+  const groups = $derived(groupAgentsByRole(rows));
+
+  // Cap on idle rows shown per group before the "+N idle" toggle (the operator complaint is long
+  // lists of dormant agents — e.g. many idle verifiers). Active/stalled rows are never capped.
+  const IDLE_CAP = 3;
+  // Per-group expand state, keyed by role bucket. Resets only when the component remounts.
+  let expanded = $state<Record<string, boolean>>({});
 
   // Coverage lookup: ref (upper) → CoverageRef. Colors the task refs by status and names the
   // owning spec/domain. Degrades gracefully to an empty map when coverage is null.
@@ -24,62 +34,82 @@
   }
 </script>
 
+{#snippet agentCard(row: import("~/lib/console.svelte").AgentRosterRow)}
+  {@const age = Date.now() - Date.parse(row.latest)}
+  {@const level = livenessLevel(row.runStatus, age)}
+  {@const state = livenessLabel(level)}
+  {@const working = ["reading", "testing", "editing", "verifying"].includes(row.state)}
+  {@const d = describeActivity({ state: row.state, target: row.nowTarget })}
+  <button
+    class="agent"
+    class:active={state === "active"}
+    class:stalled={state === "stalled"}
+    class:idle={state === "idle"}
+    onclick={() => onSelect(row.actor)}
+  >
+    <div class="agent-head">
+      <span class="live-dot live-{level}" title="{shortAge(age)} since last signal"></span>
+      <span class="agent-name">{row.actor}</span>
+      {#if row.role}<span class="agent-role">{row.role}</span>{/if}
+      <span class="spacer"></span>
+      <span class="agent-state lv-{state}">{state}</span>
+      {#if row.runtimeMs}<span class="runtime" title="agent runtime">{formatDuration(row.runtimeMs)}</span>{/if}
+      <span class="agent-age age-{level}" title="last signal age">{shortAge(age)}</span>
+    </div>
+    <div class="agent-now" title={row.nowTarget ?? row.now}>{working ? d.present : d.past}{#if d.target} <code class="now-target">{d.target}</code>{/if}</div>
+    {#if row.sliceTitle}
+      {@const suffix = specSuffix(row.frAcRefs)}
+      <div class="agent-task" title={row.sliceTitle}>
+        <span class="agent-task-glyph" aria-hidden="true">◇</span>
+        <span class="agent-task-title">{row.sliceTitle}</span>
+        {#if suffix}<span class="agent-task-spec muted"> · {suffix}</span>{/if}
+      </div>
+      {#if row.frAcRefs && row.frAcRefs.length > 0}
+        {@const refs = row.frAcRefs}
+        <div class="agent-refs">
+          {#each refs.slice(0, MAX_REFS) as ref (ref)}
+            {@const tone = refTone(covByRef.get(ref.toUpperCase())?.status)}
+            <span class="agent-ref {tone.cls}" title="{ref} · {tone.label}">
+              <span class="agent-ref-glyph" aria-hidden="true">{tone.glyph}</span>{ref}
+            </span>
+          {/each}
+          {#if refs.length > MAX_REFS}<span class="agent-ref agent-ref-more">+{refs.length - MAX_REFS}</span>{/if}
+        </div>
+      {/if}
+    {/if}
+    {#if row.focusReason}
+      {@const topFix = row.recommendedInterventions?.[0]}
+      <div class="agent-focus" title={row.focusReason}>
+        <span class="agent-focus-pill">⚑ focus</span>
+        <span class="agent-focus-reason">{row.focusReason}</span>
+        {#if topFix}<span class="agent-focus-fix muted" title={topFix}> · {topFix}</span>{/if}
+      </div>
+    {/if}
+    {#if row.next}<div class="agent-next" title={row.next}>next: {row.next}</div>{/if}
+    {#if state === "stalled"}<div class="dead-warn" title="A live run has not emitted a signal recently — the process may be stalled.">⚠ live run silent {shortAge(age)} — may be stalled</div>{/if}
+  </button>
+{/snippet}
+
 <section class="rail rail-left">
   <h2 class="rail-title">Agents</h2>
-  {#each rows as row (row.actor)}
-    {@const age = Date.now() - Date.parse(row.latest)}
-    {@const level = livenessLevel(row.runStatus, age)}
-    {@const state = livenessLabel(level)}
-    {@const working = ["reading", "testing", "editing", "verifying"].includes(row.state)}
-    {@const d = describeActivity({ state: row.state, target: row.nowTarget })}
-    <button
-      class="agent"
-      class:active={state === "active"}
-      class:stalled={state === "stalled"}
-      class:idle={state === "idle"}
-      onclick={() => onSelect(row.actor)}
-    >
-      <div class="agent-head">
-        <span class="live-dot live-{level}" title="{shortAge(age)} since last signal"></span>
-        <span class="agent-name">{row.actor}</span>
-        {#if row.role}<span class="agent-role">{row.role}</span>{/if}
-        <span class="spacer"></span>
-        <span class="agent-state lv-{state}">{state}</span>
-        {#if row.runtimeMs}<span class="runtime" title="agent runtime">{formatDuration(row.runtimeMs)}</span>{/if}
-        <span class="agent-age age-{level}" title="last signal age">{shortAge(age)}</span>
-      </div>
-      <div class="agent-now" title={row.nowTarget ?? row.now}>{working ? d.present : d.past}{#if d.target} <code class="now-target">{d.target}</code>{/if}</div>
-      {#if row.sliceTitle}
-        {@const suffix = specSuffix(row.frAcRefs)}
-        <div class="agent-task" title={row.sliceTitle}>
-          <span class="agent-task-glyph" aria-hidden="true">◇</span>
-          <span class="agent-task-title">{row.sliceTitle}</span>
-          {#if suffix}<span class="agent-task-spec muted"> · {suffix}</span>{/if}
-        </div>
-        {#if row.frAcRefs && row.frAcRefs.length > 0}
-          {@const refs = row.frAcRefs}
-          <div class="agent-refs">
-            {#each refs.slice(0, MAX_REFS) as ref (ref)}
-              {@const tone = refTone(covByRef.get(ref.toUpperCase())?.status)}
-              <span class="agent-ref {tone.cls}" title="{ref} · {tone.label}">
-                <span class="agent-ref-glyph" aria-hidden="true">{tone.glyph}</span>{ref}
-              </span>
-            {/each}
-            {#if refs.length > MAX_REFS}<span class="agent-ref agent-ref-more">+{refs.length - MAX_REFS}</span>{/if}
-          </div>
-        {/if}
+  {#each groups as group (group.role)}
+    {@const isOpen = expanded[group.role]}
+    {@const hiddenIdle = Math.max(0, group.idle.length - IDLE_CAP)}
+    {@const shownIdle = isOpen ? group.idle : group.idle.slice(0, IDLE_CAP)}
+    <div class="agent-group">
+      <h3 class="agent-group-title">{group.label} <span class="agent-group-count">{group.count}</span></h3>
+      {#each group.active as row (row.actor)}
+        {@render agentCard(row)}
+      {/each}
+      {#each shownIdle as row (row.actor)}
+        {@render agentCard(row)}
+      {/each}
+      {#if hiddenIdle > 0}
+        <button class="agent-idle-toggle" onclick={() => (expanded[group.role] = !isOpen)}>
+          {isOpen ? "Show fewer" : `+${hiddenIdle} idle`}
+        </button>
       {/if}
-      {#if row.focusReason}
-        {@const topFix = row.recommendedInterventions?.[0]}
-        <div class="agent-focus" title={row.focusReason}>
-          <span class="agent-focus-pill">⚑ focus</span>
-          <span class="agent-focus-reason">{row.focusReason}</span>
-          {#if topFix}<span class="agent-focus-fix muted" title={topFix}> · {topFix}</span>{/if}
-        </div>
-      {/if}
-      {#if row.next}<div class="agent-next" title={row.next}>next: {row.next}</div>{/if}
-      {#if state === "stalled"}<div class="dead-warn" title="A live run has not emitted a signal recently — the process may be stalled.">⚠ live run silent {shortAge(age)} — may be stalled</div>{/if}
-    </button>
+    </div>
   {/each}
   {#if rows.length === 0}<p class="empty">No agents yet.</p>{/if}
 </section>
