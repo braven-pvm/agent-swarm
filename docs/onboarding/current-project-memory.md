@@ -869,6 +869,8 @@ Phase 10C-2D keeps the requirement ledger derived for now and makes that decisio
 
 Phase 10C-2E defines the compact status-sink ledger contract without implementing a concrete external sink. `src/status-sink.ts` now owns `StatusSink`, `StatusUpdate`, and `buildStatusSinkLedgerSummary()`. The summary is explicitly `origin: "derived"`, links back to `/api/coverage` at payload path `ledger`, carries accepted/incomplete totals, attention counts, human-verification state, rollup counts, bounded buckets, and bounded next refs. This lets future Linear/file/Notion sinks publish meaningful progress without becoming a second source of requirement truth.
 
+Phase 10C-2F adds the local human-action API for UI handoff: `GET /api/human-actions`, `POST /api/escalations/:id/clear`, and `POST /api/human-verify`. The queue derives from active escalations and `/api/coverage` ledger state, exposes focus/source/packet links plus allowed action templates, and returns refreshed queue state after writes. The Command Bridge server is now local trusted control, not purely read-only. See `docs/architecture/human-action-api.md`.
+
 Clean 100%-coverage real run confirmed:
 
 - Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`

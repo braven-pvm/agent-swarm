@@ -29,6 +29,15 @@ async function get(port, p) {
   return { status: res.status, body: await res.text(), type: res.headers.get("content-type") };
 }
 
+async function postJson(port, p, body) {
+  const res = await fetch(`http://127.0.0.1:${port}${p}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.text(), type: res.headers.get("content-type") };
+}
+
 // ---------------------------------------------------------------------------
 // Workspace seeding — builds a workspace with a target, a source, a lane,
 // and a slice so the API endpoints have real data to return.
@@ -96,22 +105,108 @@ async function seedWorkspace() {
   });
 
   const sliceId = "SLICE-web-e2e-01";
+  const humanRef = "AC-INV-001.1";
   store.insertSlice({
     id: sliceId,
     laneId,
     targetId,
     title: "Invoice CRUD",
-    status: "implementing",
-    sourceRefs: [{ sourceId, frAcRef: "AC-INV-001.1" }],
-    frAcRefs: ["AC-INV-001.1"],
+    status: "blocked",
+    sourceRefs: [{ sourceId, frAcRef: humanRef }],
+    frAcRefs: [humanRef],
     deliveryQuestion: "Can the API handle invoices?",
     workPackageType: "component_pack",
     minimumMeaningfulOutcome: "changes_runtime_path",
     scope: ["src/invoices.js"],
     outOfScope: [],
     expectedEvidence: ["tests pass"],
+    verificationObligations: [{
+      ref: humanRef,
+      sourceRef: humanRef,
+      sourceUri: specUri,
+      sourceTitle: "Invoice API Spec",
+      sourceText: "AC-INV-001.1 Do the invoice thing.",
+      mode: "human_verification_required",
+      responsibleParty: "human-qa",
+      criteria: [{
+        id: "AC-INV-001.1.criterion-1",
+        expectedOutcome: "Human confirms the invoice behavior is acceptable.",
+        evidenceRequired: ["Human review packet"],
+        acceptanceThreshold: "Human marks the ref verified.",
+      }],
+      createdBy: "test-planner",
+      createdAt: new Date().toISOString(),
+      immutable: true,
+      guidance: ["Use the human packet before signing off."],
+    }],
     unblockTargets: [],
     verificationRequirements: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  store.insertLease({
+    id: "LEASE-web-e2e-01",
+    frAcRef: humanRef,
+    sliceId,
+    laneId,
+    status: "active",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const artifactsRoot = path.join(workspace, ".swarm", "artifacts", sliceId);
+  fs.mkdirSync(artifactsRoot, { recursive: true });
+  const packetId = "HVP-web-e2e";
+  const packetEvidenceId = "EVID-web-e2e-packet";
+  const packetMarkdownPath = path.join(artifactsRoot, "human-verification-AC-INV-001.1-HVP-web-e2e.md");
+  const packetJsonPath = path.join(artifactsRoot, "human-verification-AC-INV-001.1-HVP-web-e2e.json");
+  fs.writeFileSync(packetMarkdownPath, `# Human Verification Packet: ${humanRef}\n`, "utf8");
+  fs.writeFileSync(packetJsonPath, `${JSON.stringify({ packetId, ref: humanRef }, null, 2)}\n`, "utf8");
+  store.insertEvidence({
+    id: packetEvidenceId,
+    sliceId,
+    kind: "artifact",
+    ref: humanRef,
+    summary: `Human verification packet ready for ${humanRef}`,
+    payload: {
+      type: "human_verification_packet",
+      packetId,
+      ref: humanRef,
+      status: "awaiting_human_verification",
+      markdownPath: packetMarkdownPath,
+      jsonPath: packetJsonPath,
+      generatedAt: new Date().toISOString(),
+    },
+    createdAt: new Date().toISOString(),
+  });
+  store.insertEvidence({
+    id: "EVID-web-e2e-command",
+    sliceId,
+    kind: "command",
+    ref: humanRef,
+    summary: `Verification awaits human sign-off for ${humanRef}`,
+    payload: {
+      command: "verify",
+      passed: false,
+      humanVerificationRefs: [humanRef],
+      frAcResults: [{
+        ref: humanRef,
+        status: "awaiting_human_verification",
+        evidenceIds: [packetEvidenceId],
+        proof: "Automated support evidence passed; human sign-off remains.",
+        verifiedBy: "web-e2e-verifier",
+      }],
+    },
+    createdAt: new Date().toISOString(),
+  });
+  store.insertEscalation({
+    id: "ESC-web-e2e-human",
+    level: "human_required",
+    status: "active",
+    entityType: "harness",
+    entityId: "scenario:web-e2e",
+    message: "Need human decision before continuing the scenario.",
+    createdBy: "test-overseer",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -251,14 +346,14 @@ async function seedWorkspace() {
     "utf8",
   );
 
-  return { workspace, historyRoot, sliceId, sourceId, focusRunId };
+  return { workspace, historyRoot, sliceId, sourceId, focusRunId, humanRef, escalationId: "ESC-web-e2e-human" };
 }
 
 // ---------------------------------------------------------------------------
 // Main test
 // ---------------------------------------------------------------------------
-test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
-  const { workspace, historyRoot, sliceId, sourceId, focusRunId } = await seedWorkspace();
+test("web-server serves SPA, read APIs, SSE, and local human-action writes", async (t) => {
+  const { workspace, historyRoot, sliceId, sourceId, focusRunId, humanRef, escalationId } = await seedWorkspace();
   const webDistPath = fixtureWebDist();
   const server = createWebViewerServer({ workspace, defaultEventCount: 20, historyRoot, webDistPath });
   const port = await listen(server);
@@ -327,6 +422,25 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
     assert.ok(Array.isArray(coverage.byDomain), "/api/coverage should have byDomain array");
     assert.ok(Array.isArray(coverage.refs), "/api/coverage should have refs array");
 
+    const humanActionsRes = await get(port, "/api/human-actions");
+    assert.equal(humanActionsRes.status, 200, "/api/human-actions should be 200");
+    const humanActions = JSON.parse(humanActionsRes.body);
+    assert.ok(Array.isArray(humanActions.actions), "/api/human-actions should expose actions");
+    assert.ok(
+      humanActions.actions.some((action) => action.kind === "decision_required" && action.id === `escalation:${escalationId}`),
+      "human actions should include active human-required escalations",
+    );
+    const humanVerificationAction = humanActions.actions.find((action) => action.kind === "human_verification" && action.ref === humanRef);
+    assert.ok(humanVerificationAction, "human actions should include awaiting human verification refs");
+    assert.ok(
+      humanVerificationAction.links.some((link) => link.label === "human packet" && link.href.startsWith("/api/artifacts/")),
+      "human verification action should link to the packet artifact",
+    );
+    assert.ok(
+      humanVerificationAction.allowedActions.some((action) => action.kind === "record_human_verification"),
+      "human verification action should expose the POST action template",
+    );
+
     const runObservabilityRes = await get(port, "/api/run-observability");
     assert.equal(runObservabilityRes.status, 200, "/api/run-observability should be 200");
     const runObservability = JSON.parse(runObservabilityRes.body);
@@ -346,6 +460,41 @@ test("web-server serves SPA, read APIs, SSE, and rejects writes", async (t) => {
       ["AC-PROD-001.1"],
       "run observability should expose product readiness accepted refs",
     );
+
+    const clearEscalationRes = await postJson(port, `/api/escalations/${encodeURIComponent(escalationId)}/clear`, {
+      actor: "human-ui",
+      reason: "Decision recorded through the UI.",
+    });
+    assert.equal(clearEscalationRes.status, 200, "POST /api/escalations/:id/clear should be 200");
+    const clearEscalation = JSON.parse(clearEscalationRes.body);
+    assert.equal(clearEscalation.ok, true, "clear escalation response should be ok");
+    assert.equal(clearEscalation.escalation.status, "cleared", "clear escalation should return the cleared escalation");
+    assert.ok(
+      clearEscalation.humanActions.actions.every((action) => action.id !== `escalation:${escalationId}`),
+      "cleared escalation should leave the returned human-action queue",
+    );
+
+    const humanVerifyRes = await postJson(port, "/api/human-verify", {
+      sliceId,
+      ref: humanRef,
+      status: "human_verified",
+      actor: "human-ui",
+      notes: "Accepted from the web UI.",
+    });
+    assert.equal(humanVerifyRes.status, 200, "POST /api/human-verify should be 200");
+    const humanVerify = JSON.parse(humanVerifyRes.body);
+    assert.equal(humanVerify.ok, true, "human verification response should be ok");
+    assert.equal(humanVerify.result.accepted, true, "human verification should accept the one-ref slice");
+    assert.equal(humanVerify.result.finalSliceStatus, "accepted", "human verification should update final slice status");
+    assert.ok(
+      humanVerify.humanActions.actions.every((action) => action.ref !== humanRef),
+      "accepted human verification should leave the returned human-action queue",
+    );
+
+    const coverageAfterHumanVerify = JSON.parse((await get(port, "/api/coverage")).body);
+    const verifiedRef = coverageAfterHumanVerify.refs.find((row) => row.ref === humanRef);
+    assert.equal(verifiedRef.ledgerStatus, "accepted", "human-verified ref should be accepted in coverage");
+    assert.equal(verifiedRef.verification, "human_verified", "coverage should preserve the human verification status");
 
     const sourceRes = await get(port, `/api/source/${encodeURIComponent(sourceId)}`);
     assert.equal(sourceRes.status, 200, `/api/source/${sourceId} should be 200`);

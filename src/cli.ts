@@ -30,6 +30,7 @@ import { initTarget } from "./target-init.js";
 import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
 import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
+import { recordHumanVerification } from "./human-actions.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags, type SourceIndexMetadata } from "./source-index.js";
@@ -1056,141 +1057,20 @@ program
     ensureInitialized(workspace);
     const store = new SwarmStore(workspace);
     try {
-      const slice = store.listSlices().find((item) => item.id === sliceId);
-      if (!slice) throw new Error(`Slice not found: ${sliceId}`);
-      if (!slice.frAcRefs.includes(ref)) throw new Error(`Ref ${ref} is not in slice ${slice.id}`);
-      const status = parseHumanVerificationDecision(options.status);
-      const packetEvidence = latestHumanVerificationPacketEvidence(store, slice.id, ref);
-      if (!packetEvidence) {
-        throw new Error(`No human verification packet exists for ${ref} in ${slice.id}`);
-      }
-      const previousResults = latestCommandFrAcResults(store, slice);
-      const previousResult = previousResults.find((item) => item.ref === ref);
-      if (!previousResult || !["awaiting_human_verification", "failed"].includes(previousResult.status)) {
-        throw new Error(`Ref ${ref} is ${previousResult?.status ?? "missing"}; human verification requires an awaiting or failed human-verification result`);
-      }
-
-      const recordedAt = new Date().toISOString();
-      const resultEvidenceId = makeId("evidence");
-      const commandEvidenceId = makeId("evidence");
-      const packetId = stringValue(packetEvidence.payload.packetId) ?? packetEvidence.id;
-      const markdownPath = stringValue(packetEvidence.payload.markdownPath);
-      const jsonPath = stringValue(packetEvidence.payload.jsonPath);
-      if (!markdownPath || !jsonPath) throw new Error(`Human verification packet ${packetEvidence.id} is missing packet paths`);
-      const resultStatus: FrAcVerificationResult["status"] = status === "human_verified" ? "human_verified" : "failed";
-      const proof = humanVerificationProof({
+      const result = recordHumanVerification(store, {
+        sliceId,
         ref,
-        status,
+        status: options.status,
         actor: options.actor,
         notes: options.notes,
-        packetId,
       });
-      const frAcResults = updateHumanVerificationResults({
-        slice,
-        previousResults,
-        ref,
-        resultStatus,
-        proof,
-        actor: options.actor,
-        resultEvidenceId,
-        packetEvidenceId: packetEvidence.id,
-      });
-      const accepted = frAcResults.every((item) => ["passed", "human_verified", "overridden"].includes(item.status));
-      const nextSliceStatus: SliceRecord["status"] = accepted ? "accepted" : status === "needs_rework" ? "repairing" : "blocked";
-
-      store.insertEvidence({
-        id: resultEvidenceId,
-        sliceId: slice.id,
-        kind: "artifact",
-        ref,
-        summary: `Human verification ${status} for ${ref}`,
-        payload: {
-          type: "human_verification_result",
-          packetId,
-          packetEvidenceId: packetEvidence.id,
-          ref,
-          status,
-          resultStatus,
-          actor: options.actor,
-          notes: options.notes,
-          markdownPath,
-          jsonPath,
-          generatedAt: recordedAt,
-        },
-        createdAt: recordedAt,
-      });
-      store.insertEvidence({
-        id: commandEvidenceId,
-        sliceId: slice.id,
-        kind: "command",
-        summary: `Human verification ${status} recorded for ${ref}`,
-        payload: {
-          command: "human-verify",
-          passed: accepted,
-          humanVerificationResult: {
-            ref,
-            status,
-            resultStatus,
-            actor: options.actor,
-            notes: options.notes,
-            packetId,
-            packetEvidenceId: packetEvidence.id,
-            resultEvidenceId,
-          },
-          frAcResults,
-          humanVerificationRefs: frAcResults.filter((item) => item.status === "awaiting_human_verification").map((item) => item.ref),
-          humanVerifiedRefs: frAcResults.filter((item) => item.status === "human_verified").map((item) => item.ref),
-          failedRefs: frAcResults.filter((item) => item.status === "failed").map((item) => item.ref),
-        },
-        createdAt: recordedAt,
-      });
-      store.updateSliceStatus(slice.id, nextSliceStatus);
-      if (accepted) {
-        store.completeLeasesForSlice(slice.id);
-      }
-      store.updateDependenciesFor("slice", slice.id, accepted ? "satisfied" : "blocked");
-      store.upsertHeartbeat({
-        id: `heartbeat:${options.actor}`,
-        actor: options.actor,
-        state: accepted ? "idle" : "blocked",
-        detail: `Human verification ${status} for ${ref}`,
-        entityType: "slice",
-        entityId: slice.id,
-      });
-      store.addEvent(
-        createEvent({
-          actor: options.actor,
-          type: "human_verification.recorded",
-          entityType: "slice",
-          entityId: slice.id,
-          payload: {
-            ref,
-            status,
-            resultStatus,
-            accepted,
-            packetId,
-            packetEvidenceId: packetEvidence.id,
-            resultEvidenceId,
-            commandEvidenceId,
-          },
-        }),
-      );
-      refreshCheckpoint({
-        store,
-        role: "verifier",
-        entityType: "slice",
-        entityId: slice.id,
-        actor: options.actor,
-        reason: "Human verification result recorded.",
-      });
-      if (accepted) {
-        detectAndRecordLowSignalWork(store, slice);
-      }
-      console.log(`Human verification ${status} recorded for ${ref}`);
-      console.log(`  slice: ${slice.id}`);
-      console.log(`  packet: ${markdownPath}`);
-      console.log(`  final slice status: ${nextSliceStatus}`);
-      if (!accepted) console.log(`  acceptance remains blocked until all refs are passed, human_verified, or overridden`);
+      const packetEvidence = store.listEvidence(sliceId).find((item) => item.id === result.packetEvidenceId);
+      const markdownPath = packetEvidence ? stringValue(packetEvidence.payload.markdownPath) : undefined;
+      console.log(`Human verification ${result.status} recorded for ${ref}`);
+      console.log(`  slice: ${result.sliceId}`);
+      if (markdownPath) console.log(`  packet: ${markdownPath}`);
+      console.log(`  final slice status: ${result.finalSliceStatus}`);
+      if (!result.accepted) console.log(`  acceptance remains blocked until all refs are passed, human_verified, or overridden`);
     } finally {
       store.close();
     }
@@ -1460,7 +1340,7 @@ program
       console.log(`  workspace: ${workspace}`);
       console.log(`  history: ${historyRoot}`);
       console.log(`  url: http://${options.host}:${port}/`);
-      console.log("  mode: read-only");
+      console.log("  mode: local trusted control");
     });
   });
 
@@ -4168,86 +4048,6 @@ type HumanVerificationPacketData = {
   humanInstructions: string[];
   decisionOptions: string[];
 };
-
-type HumanVerificationDecision = "human_verified" | "failed" | "needs_rework";
-
-function parseHumanVerificationDecision(raw: string): HumanVerificationDecision {
-  const normalized = raw.trim().toLowerCase().replace(/-/g, "_");
-  if (normalized === "passed" || normalized === "pass" || normalized === "human_verified") return "human_verified";
-  if (normalized === "failed" || normalized === "fail") return "failed";
-  if (normalized === "needs_rework" || normalized === "needs_repair" || normalized === "rework") return "needs_rework";
-  throw new Error(`Invalid human verification status: ${raw}. Expected human_verified, failed, or needs_rework.`);
-}
-
-function latestHumanVerificationPacketEvidence(
-  store: SwarmStore,
-  sliceId: string,
-  ref: string,
-): EvidenceRecord | undefined {
-  return store
-    .listEvidence(sliceId)
-    .filter((item) => item.kind === "artifact" && item.ref === ref && item.payload.type === "human_verification_packet")
-    .at(-1);
-}
-
-function latestCommandFrAcResults(store: SwarmStore, slice: SliceRecord): FrAcVerificationResult[] {
-  const latest = latestFrAcResults(store.listEvidence(slice.id));
-  if (latest.length > 0) return latest;
-  return missingEvidenceResults(slice, "human-verification", "No verification evidence recorded yet.");
-}
-
-function updateHumanVerificationResults(input: {
-  slice: SliceRecord;
-  previousResults: FrAcVerificationResult[];
-  ref: string;
-  resultStatus: FrAcVerificationResult["status"];
-  proof: string;
-  actor: string;
-  resultEvidenceId: string;
-  packetEvidenceId: string;
-}): FrAcVerificationResult[] {
-  const previousByRef = new Map(input.previousResults.map((result) => [result.ref, result]));
-  return input.slice.frAcRefs.map((ref) => {
-    const previous = previousByRef.get(ref) ?? {
-      ref,
-      status: "missing_evidence" as const,
-      evidenceIds: [],
-      proof: "No previous verification result existed for this ref.",
-      verifiedBy: "harness",
-    };
-    if (ref !== input.ref) return previous;
-    return attachCriterionResults(input.slice, {
-      ref,
-      status: input.resultStatus,
-      evidenceIds: [...new Set([...previous.evidenceIds, input.packetEvidenceId, input.resultEvidenceId])],
-      proof: input.proof,
-      verifiedBy: input.actor,
-    });
-  });
-}
-
-function humanVerificationProof(input: {
-  ref: string;
-  status: HumanVerificationDecision;
-  actor: string;
-  notes: string;
-  packetId: string;
-}): string {
-  const label =
-    input.status === "human_verified"
-      ? "Human verification passed"
-      : input.status === "needs_rework"
-        ? "Human verification needs rework"
-        : "Human verification failed";
-  return [
-    `${label} for ${input.ref}.`,
-    `Packet: ${input.packetId}.`,
-    `Recorded by: ${input.actor}.`,
-    input.notes.trim() ? `Notes: ${input.notes.trim()}` : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
 
 function requiresHumanVerification(slice: SliceRecord, ref: string): boolean {
   return slice.verificationObligations.some((obligation) => obligation.ref === ref && obligation.mode === "human_verification_required");

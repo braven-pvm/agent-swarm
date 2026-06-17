@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import http, { type ServerResponse } from "node:http";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { URL } from "node:url";
 import { artifactsDir } from "./paths.js";
@@ -22,6 +22,7 @@ import {
   compareLiveRunHistory,
 } from "./observability.js";
 import { buildRunFocusPacket, buildSliceFocusPacket } from "./focus.js";
+import { buildHumanActionQueue, clearHumanEscalation, recordHumanVerification } from "./human-actions.js";
 
 export function createWebViewerServer(input: {
   workspace: string;
@@ -29,9 +30,13 @@ export function createWebViewerServer(input: {
   historyRoot: string;
   webDistPath: string;
 }): http.Server {
-  return http.createServer((request, response) => {
+  return http.createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url ?? "/", "http://localhost");
+      if (request.method === "POST") {
+        await handlePostRequest(request, response, requestUrl, input.workspace);
+        return;
+      }
       if (request.method !== "GET") {
         sendText(response, 405, "Method not allowed", "text/plain");
         return;
@@ -130,6 +135,10 @@ export function createWebViewerServer(input: {
         }
         if (requestUrl.pathname === "/api/run-observability") {
           sendJson(response, buildRunObservability(store, input.workspace));
+          return;
+        }
+        if (requestUrl.pathname === "/api/human-actions") {
+          sendJson(response, buildHumanActionQueue(store, input.workspace));
           return;
         }
         if (requestUrl.pathname === "/api/graph") {
@@ -243,6 +252,108 @@ export function createWebViewerServer(input: {
       sendJson(response, { error: error instanceof Error ? error.message : String(error) }, 500);
     }
   });
+}
+
+async function handlePostRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  requestUrl: URL,
+  workspace: string,
+): Promise<void> {
+  if (requestUrl.pathname.startsWith("/api/escalations/") && requestUrl.pathname.endsWith("/clear")) {
+    const escalationId = decodeURIComponent(
+      requestUrl.pathname.slice("/api/escalations/".length, -"/clear".length),
+    );
+    if (!escalationId) {
+      sendJson(response, { error: "Missing escalation id" }, 400);
+      return;
+    }
+    const body = await readJsonBody(request);
+    const reason = stringBodyValue(body.reason);
+    if (!reason) {
+      sendJson(response, { error: "reason is required" }, 400);
+      return;
+    }
+    const store = new SwarmStore(workspace);
+    try {
+      const escalation = clearHumanEscalation(store, escalationId, {
+        actor: stringBodyValue(body.actor) ?? "human",
+        reason,
+      });
+      sendJson(response, {
+        ok: true,
+        escalation,
+        humanActions: buildHumanActionQueue(store, workspace),
+      });
+    } catch (error) {
+      sendJson(response, { error: error instanceof Error ? error.message : String(error) }, errorStatus(error));
+    } finally {
+      store.close();
+    }
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/human-verify") {
+    const body = await readJsonBody(request);
+    const sliceId = stringBodyValue(body.sliceId);
+    const ref = stringBodyValue(body.ref);
+    const status = stringBodyValue(body.status);
+    if (!sliceId || !ref || !status) {
+      sendJson(response, { error: "sliceId, ref, and status are required" }, 400);
+      return;
+    }
+    const store = new SwarmStore(workspace);
+    try {
+      const result = recordHumanVerification(store, {
+        sliceId,
+        ref,
+        status,
+        actor: stringBodyValue(body.actor) ?? "human",
+        notes: stringBodyValue(body.notes) ?? "",
+      });
+      sendJson(response, {
+        ok: true,
+        result,
+        humanActions: buildHumanActionQueue(store, workspace),
+      });
+    } catch (error) {
+      sendJson(response, { error: error instanceof Error ? error.message : String(error) }, errorStatus(error));
+    } finally {
+      store.close();
+    }
+    return;
+  }
+
+  sendText(response, 405, "Method not allowed", "text/plain");
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 64 * 1024) throw new Error("Request body too large");
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return {};
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Expected a JSON object body");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function stringBodyValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function errorStatus(error: unknown): number {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/not found/i.test(message)) return 404;
+  return 400;
 }
 
 function sendJson(response: ServerResponse, value: unknown, statusCode = 200): void {
