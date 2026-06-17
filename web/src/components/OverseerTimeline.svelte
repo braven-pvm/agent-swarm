@@ -12,6 +12,14 @@
   const LOG_CAP = 8;
   let expanded = $state(false);
   const shown = $derived(expanded ? log : log.slice(0, LOG_CAP));
+
+  // A small category icon for a loop row so the subtext reads at a glance.
+  function rowIcon(type: string): { glyph: string; cls: string } {
+    if (type === "overseer.decision_recorded") return { glyph: "◆", cls: "ov-ic-decision" };
+    if (type === "overseer.command_started" || type === "overseer.command_completed") return { glyph: "›", cls: "ov-ic-cmd" };
+    if (type === "overseer.commands_completed") return { glyph: "✓", cls: "ov-ic-batch" };
+    return { glyph: "•", cls: "ov-ic-turn" }; // started / completed turn lifecycle
+  }
 </script>
 
 <section class="overseer">
@@ -62,7 +70,7 @@
             <span class="ov-row-action">
               {row.action}{#if row.count > 1}<span class="ov-row-count" title="{row.count} consecutive">×{row.count}</span>{/if}
             </span>
-            {#if row.summary}<span class="ov-row-summary">{row.summary}</span>{/if}
+            {#if row.summary}{@const ic = rowIcon(row.type)}<span class="ov-row-summary"><span class="ov-row-ic {ic.cls}" aria-hidden="true">{ic.glyph}</span>{row.summary}</span>{/if}
           </span>
         </button>
       </li>

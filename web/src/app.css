@@ -238,8 +238,11 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .ov-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ov-row-action { color: var(--ink); font-size: var(--fs-body); }
 .ov-row-count { color: var(--muted); font-size: var(--fs-meta); margin-left: var(--s1); }
-.ov-row-summary { color: var(--muted); font-size: var(--fs-meta); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-row-summary { color: rgba(255,255,255,0.52); font-size: var(--fs-meta); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-row-ic { margin-right: 5px; font-size: .9em; }
+.ov-ic-decision { color: var(--accent); } .ov-ic-cmd { color: var(--muted); } .ov-ic-batch { color: var(--green); } .ov-ic-turn { color: var(--faint); }
 .ov-row-decision { background: rgba(91,157,255,0.05); }
+.ov-row-decision .ov-row-summary { color: var(--muted); }
 .ov-more { display: block; width: 100%; text-align: center; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 6px var(--s3); margin-top: var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
 .ov-more:hover { background: var(--surface-2); color: var(--ink); }
 .overseer .empty { margin: 0; font-size: var(--fs-meta); }
