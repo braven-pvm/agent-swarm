@@ -866,6 +866,8 @@ Phase 10C-2C adds human sign-off. `swarm human-verify <slice-id> <ref> --status 
 
 Phase 10C-2D keeps the requirement ledger derived for now and makes that decision explicit: the durable facts remain source refs, leases, slice state, obligations, evidence, review results, dependencies, escalations, and human verification results; `/api/coverage` derives the latest ledger view from those facts. The Coverage UI now consumes ledger status, direct status, rollup reason, obligation mode, human packet/result state, and ledger filters directly. Persisted ledger snapshots should wait until real usage proves a need for point-in-time audit/history beyond existing events and evidence.
 
+Phase 10C-2E defines the compact status-sink ledger contract without implementing a concrete external sink. `src/status-sink.ts` now owns `StatusSink`, `StatusUpdate`, and `buildStatusSinkLedgerSummary()`. The summary is explicitly `origin: "derived"`, links back to `/api/coverage` at payload path `ledger`, carries accepted/incomplete totals, attention counts, human-verification state, rollup counts, bounded buckets, and bounded next refs. This lets future Linear/file/Notion sinks publish meaningful progress without becoming a second source of requirement truth.
+
 Clean 100%-coverage real run confirmed:
 
 - Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`
@@ -882,9 +884,10 @@ Clean 100%-coverage real run confirmed:
 The next recommended implementation steps for Phase 10C-2 are:
 
 - validate the derived-ledger Coverage UI against a fresh real or focused smoke run
-- decide whether status sinks need a summarized ledger payload now, or whether `/api/coverage` remains the canonical management contract for the next iteration
+- validate the compact status-sink ledger summary against a fresh real or focused smoke run
+- wire `buildStatusSinkLedgerSummary()` into the first concrete file/Linear status sink when that sink is implemented
 
-Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and confirmed by the next real full-product smoke. Phase 10C-2A implements derived requirement-ledger semantics and parent FR rollups. Phase 10C-2B implements human verification packet artifacts and awaiting-human coverage links. Phase 10C-2C implements human result recording/sign-off. Phase 10C-2D implements the derived-ledger persistence decision and UI consumption of the ledger/rollup/packet/result fields. Next should validate this UI contract and then decide how much of it belongs in status sinks.
+Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and confirmed by the next real full-product smoke. Phase 10C-2A implements derived requirement-ledger semantics and parent FR rollups. Phase 10C-2B implements human verification packet artifacts and awaiting-human coverage links. Phase 10C-2C implements human result recording/sign-off. Phase 10C-2D implements the derived-ledger persistence decision and UI consumption of the ledger/rollup/packet/result fields. Phase 10C-2E implements the compact outbound ledger summary contract for future status sinks while keeping `/api/coverage` canonical.
 
 Previous next goal is complete: the clean real full-product smoke reran with the hardened coverage-completion path and reached `83/83`.
 

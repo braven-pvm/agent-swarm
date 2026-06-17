@@ -143,17 +143,66 @@ export interface StatusSinkCapabilities {
   canAttachReportLink: boolean;
   canAttachPrLink: boolean;
   canWriteEvidenceSummary: boolean;
+  canWriteLedgerSummary: boolean;
 }
 
 export interface StatusUpdate {
   sourceRefs: SourceRef[];
-  sliceId: string;
+  sliceId?: string;
   status: string;
   summary: string;
   reportUrl?: string;
   prUrl?: string;
   evidenceSummary?: string;
   blocker?: string;
+  ledger?: StatusSinkLedgerSummary;
+}
+
+export interface StatusSinkLedgerSummary {
+  origin: "derived";
+  canonicalDetail: {
+    apiPath: "/api/coverage";
+    payloadPath: "ledger";
+  };
+  generatedAt: string;
+  state: "empty" | "complete" | "partial" | "human_attention" | "blocked";
+  completion: {
+    total: number;
+    accepted: number;
+    verifiedNotAccepted: number;
+    incomplete: number;
+    completionPercent: number;
+  };
+  totals: Record<string, number> & { total: number };
+  attention: {
+    blocked: number;
+    failed: number;
+    humanInputRequired: number;
+    awaitingHumanVerification: number;
+    refs: StatusSinkLedgerRef[];
+  };
+  human: {
+    awaitingVerification: number;
+    signed: number;
+  };
+  rollups: {
+    total: number;
+    incomplete: number;
+  };
+  buckets: Array<{ status: string; count: number; refs: string[] }>;
+  nextRefs: StatusSinkLedgerRef[];
+}
+
+export interface StatusSinkLedgerRef {
+  ref: string;
+  status: string;
+  domain: string;
+  reason: string;
+  sourceTitle: string;
+  sliceId?: string;
+  nextAction?: string;
+  humanPath?: string;
+  responsibleParty?: string;
 }
 
 export interface StatusUpdateResult {
@@ -188,6 +237,21 @@ Expected capabilities:
 - attach harness report links
 - avoid mutating immutable source specs
 - keep detailed telemetry and evidence in the harness
+- optionally write the compact derived requirement-ledger summary
+
+## Requirement Ledger Write-Back
+
+For the MVP, the requirement ledger is derived by the harness from source refs, leases, slice state, verification obligations, evidence, review results, dependencies, escalations, and human verification results. It is not persisted as a separate requirements table.
+
+Status sinks may receive a compact `ledger` summary on `StatusUpdate`, but this summary is an outbound mirror only. The canonical full ledger detail remains `/api/coverage` at payload path `ledger`.
+
+The compact summary exists so Linear, file-based checklists, or other sinks can show meaningful progress without reconstructing every row:
+
+- total accepted/incomplete refs and completion percent
+- blocked/failed/human-input/human-verification attention counts
+- bounded attention refs and next refs
+- rollup counts for parent FR visibility
+- direct link back to the canonical `/api/coverage` payload
 
 ## Linear Adapter
 

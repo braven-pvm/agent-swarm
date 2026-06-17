@@ -333,6 +333,8 @@ Reporter/dashboard:
 Status sink:
 
 - writes concise native-store status with a link to canonical harness evidence
+- may include the compact derived requirement-ledger summary from `src/status-sink.ts`
+- must point back to `/api/coverage` for the canonical full ledger detail
 - does not become the source of verification truth
 
 ## MVP Implementation Target
@@ -345,11 +347,13 @@ Implemented:
 - FR/AC coverage is visible in `swarm report`, `observe`, JSON snapshots, `/api/coverage`, and rendered slice reports in the web viewer
 - E2E coverage proves verification refuses acceptance when a worker omits one in-scope AC
 - reviewer results include a structured Sleuth Review Gate, reviewer prompts require it, verifier acceptance blocks failed/high-risk quality gates, and reports/UI expose the gate summary
+- Coverage UI consumes derived ledger status, direct status, rollup reason, obligation mode, and human packet/result fields
+- `src/status-sink.ts` defines the compact outbound ledger summary for future file/Linear/Notion sinks while keeping `/api/coverage` canonical
 
 Next hardening:
 
 - prevent worker-authored outputs from mutating obligation criteria/responsible party
-- consume derived ledger status, direct status, rollup reason, obligation mode, and human verification result fields in the web viewer and status sinks
+- wire the compact ledger summary into the first concrete status sink when that sink is implemented
 - decide later whether to persist ledger snapshots after the latest-derived model has proven stable in real runs
 - make Sleuth Review Gate thresholds protocol-configurable where projects need stricter or looser residual-risk handling
 - expose quality dimensions and blocking concerns as first-class UI/API fields, not only in slice reports

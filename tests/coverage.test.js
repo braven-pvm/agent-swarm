@@ -605,3 +605,35 @@ test("buildCoverage derives requirement ledger entries and parent FR rollups", a
     store.close();
   }
 });
+
+test("status-sink ledger summary stays compact and derived from coverage ledger", async () => {
+  const { buildCoverage } = await import("../dist/observability.js");
+  const { buildStatusSinkLedgerSummary } = await import("../dist/status-sink.js");
+  const { SwarmStore } = await import("../dist/storage.js");
+  const { workspace } = await seedParentRollupWorkspace();
+
+  const store = new SwarmStore(workspace);
+  try {
+    const coverage = buildCoverage(store);
+    const summary = buildStatusSinkLedgerSummary(coverage, { maxRefsPerBucket: 1, maxNextRefs: 2 });
+
+    assert.equal(summary.origin, "derived", "status sinks should know the ledger is derived, not independently stored");
+    assert.deepEqual(summary.canonicalDetail, { apiPath: "/api/coverage", payloadPath: "ledger" });
+    assert.equal(summary.state, "partial", "incomplete rollup should keep the outbound summary partial");
+    assert.equal(summary.completion.total, 5, "summary total should match the ledger denominator");
+    assert.equal(summary.completion.accepted, 3, "summary should count accepted parent+child refs");
+    assert.equal(summary.completion.incomplete, 2, "summary should expose remaining refs without carrying full ledger");
+    assert.equal(summary.completion.completionPercent, 60, "summary should expose an operator-friendly percent");
+    assert.equal(summary.rollups.total, 2, "summary should report rollup count");
+    assert.equal(summary.rollups.incomplete, 1, "summary should report incomplete rollups");
+    assert.ok(summary.buckets.some((bucket) => bucket.status === "accepted" && bucket.count === 3 && bucket.refs.length === 1));
+    assert.equal(summary.nextRefs.length, 2, "next refs should be bounded for concise status sinks");
+    assert.deepEqual(
+      summary.nextRefs.map((ref) => ref.ref),
+      ["AC-LED-002.1", "FR-LED-002"],
+      "next refs should point status sinks at the unresolved requirement surface",
+    );
+  } finally {
+    store.close();
+  }
+});
