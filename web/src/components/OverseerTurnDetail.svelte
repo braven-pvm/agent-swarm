@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { HarnessEvent } from "~/lib/types";
   import { humanizeToken, summarizeCommand, prettifyTarget, shortAge } from "~/lib/format";
+  import Markdown from "~/components/Markdown.svelte";
 
   let { event }: { event: HarnessEvent } = $props();
 
@@ -155,9 +156,13 @@
         if (!res.ok) { logError = `Could not load log (${res.status}).`; return; }
         const body = await res.text();
         if (openLog !== requested) return;
-        // Show the tail (most recent output) — logs can be large.
+        // Logs: show the tail (most recent output). Prompts/manifests: show the full content from
+        // the start (head-capped) — the beginning is what matters there.
         const lines = body.split("\n");
-        logText = lines.length > 200 ? "…\n" + lines.slice(-200).join("\n") : body;
+        const isLog = /\.log$/i.test(rel);
+        logText = isLog
+          ? (lines.length > 200 ? "…\n" + lines.slice(-200).join("\n") : body)
+          : (lines.length > 1000 ? lines.slice(0, 1000).join("\n") + "\n…" : body);
       })
       .catch((e) => { if (openLog === requested) logError = String(e?.message ?? e); })
       .finally(() => { if (openLog === requested) logLoading = false; });
@@ -167,6 +172,39 @@
 </script>
 
 <div class="ovt">
+  <!-- A loadable artifact reference (logs / prompt / manifest): a toggle that lazily fetches the
+       file and renders it — markdown via <Markdown>, everything else as a mono inset. -->
+  {#snippet artifact(label: string, absPath: string)}
+    {@const rel = artifactRel(absPath)}
+    <div class="ovt-log">
+      <span class="ovt-log-label muted">{label}</span>
+      {#if rel}
+        <button class="ovt-log-btn" onclick={() => toggleLog(absPath)} title={absPath}>
+          {openLog === absPath ? "▾" : "▸"} <code>{prettifyTarget(absPath)}</code>
+        </button>
+      {:else}
+        <code class="ovt-log-ref" title={absPath}>{prettifyTarget(absPath)}</code>
+      {/if}
+    </div>
+    {#if openLog === absPath}
+      {#if logLoading}
+        <p class="empty ovt-log-state">Loading…</p>
+      {:else if logError}
+        <p class="error ovt-log-state">{logError}</p>
+      {:else if logText != null}
+        {#if logText.trim().length > 0}
+          {#if /\.(md|markdown)$/i.test(absPath)}
+            <div class="ovt-prompt"><Markdown md={logText} /></div>
+          {:else}
+            <pre class="json ovt-log-out">{logText}</pre>
+          {/if}
+        {:else}
+          <p class="empty ovt-log-state">Empty.</p>
+        {/if}
+      {/if}
+    {/if}
+  {/snippet}
+
   <!-- HEADER -->
   <div class="ovt-head">
     <h4 class="ovt-title">{title}</h4>
@@ -184,17 +222,14 @@
   <!-- COMMAND events -->
   {#if isCommand && command}
     <div class="ovt-eyebrow">Command</div>
-    <div class="ovt-cmd-line">
-      <span class="ovt-cmd-phrase">{cmdPhrase(command) || "command"}</span>
-      {#if isCompletedCommand && exitCode != null}
-        <span class="exit" class:bad={exitCode !== 0}>exit {exitCode}</span>
-      {/if}
-    </div>
     <pre class="json ovt-cmd-raw" title={command}>{command}</pre>
+    {#if isCompletedCommand && exitCode != null}
+      <div class="ovt-result-meta"><span class="exit" class:bad={exitCode !== 0}>exit {exitCode}</span></div>
+    {/if}
     {#if commandKey || childRole || sliceId}
       <div class="ovt-kv">
         {#if commandKey}<div class="kv"><b>Command key</b><code>{commandKey}</code></div>{/if}
-        {#if childRole}<div class="kv"><b>Role</b>{childRole}</div>{/if}
+        {#if childRole}<div class="kv"><b>Role</b><span class="ovt-kv-v">{childRole}</span></div>{/if}
         {#if sliceId}<div class="kv"><b>Slice</b><code>{sliceId}</code></div>{/if}
       </div>
     {/if}
@@ -208,34 +243,8 @@
     {/if}
     {#if stdoutPath || stderrPath}
       <div class="ovt-eyebrow">Logs</div>
-      {#each [["stdout", stdoutPath], ["stderr", stderrPath]] as [label, p] (label)}
-        {#if p}
-          {@const rel = artifactRel(p)}
-          <div class="ovt-log">
-            <span class="ovt-log-label muted">{label}</span>
-            {#if rel}
-              <button class="ovt-log-btn" onclick={() => toggleLog(p)} title={p}>
-                {openLog === p ? "▾" : "▸"} <code>{prettifyTarget(p)}</code>
-              </button>
-            {:else}
-              <code class="ovt-log-ref" title={p}>{prettifyTarget(p)}</code>
-            {/if}
-          </div>
-          {#if openLog === p}
-            {#if logLoading}
-              <p class="empty ovt-log-state">Loading…</p>
-            {:else if logError}
-              <p class="error ovt-log-state">{logError}</p>
-            {:else if logText != null}
-              {#if logText.trim().length > 0}
-                <pre class="json ovt-log-out">{logText}</pre>
-              {:else}
-                <p class="empty ovt-log-state">Empty output.</p>
-              {/if}
-            {/if}
-          {/if}
-        {/if}
-      {/each}
+      {#if stdoutPath}{@render artifact("stdout", stdoutPath)}{/if}
+      {#if stderrPath}{@render artifact("stderr", stderrPath)}{/if}
     {/if}
   {/if}
 
@@ -261,14 +270,11 @@
           {@const rSlice = asStr(pick(r, "sliceId"))}
           {@const rPurpose = asStr(pick(r, "purpose"))}
           <div class="ovt-result">
-            <div class="ovt-result-head">
-              <span class="ovt-cmd-phrase">{cmdPhrase(rCmd) || "command"}</span>
+            {#if rCmd}<pre class="json ovt-cmd-raw" title={rCmd}>{rCmd}</pre>{/if}
+            <div class="ovt-result-meta">
               <span class="exit" class:bad={resultBad(r)}>{resultChip(r)}</span>
+              {#if rRole || rSlice}<span class="muted">{[rRole, rSlice].filter(Boolean).join(" · ")}</span>{/if}
             </div>
-            {#if rCmd}<code class="ovt-result-cmd" title={rCmd}>{prettifyTarget(rCmd)}</code>{/if}
-            {#if rRole || rSlice}
-              <div class="ovt-result-meta muted">{[rRole, rSlice].filter(Boolean).join(" · ")}</div>
-            {/if}
             {#if rPurpose}<div class="ovt-result-purpose muted">{rPurpose}</div>{/if}
           </div>
         {/each}
@@ -301,10 +307,7 @@
           {@const rcCmd = asStr(pick(rc, "command"))}
           {@const rcPurpose = asStr(pick(rc, "purpose"))}
           <div class="ovt-result">
-            <div class="ovt-result-head">
-              <span class="ovt-cmd-phrase">{cmdPhrase(rcCmd) || "command"}</span>
-            </div>
-            {#if rcCmd}<code class="ovt-result-cmd" title={rcCmd}>{prettifyTarget(rcCmd)}</code>{/if}
+            {#if rcCmd}<pre class="json ovt-cmd-raw" title={rcCmd}>{rcCmd}</pre>{/if}
             {#if rcPurpose}<div class="ovt-result-purpose muted">{rcPurpose}</div>{/if}
           </div>
         {/each}
@@ -344,12 +347,8 @@
     {/if}
     {#if manifestPath || promptPath}
       <div class="ovt-eyebrow">Files</div>
-      {#if manifestPath}
-        <div class="ovt-log"><span class="ovt-log-label muted">manifest</span><code class="ovt-log-ref" title={manifestPath}>{prettifyTarget(manifestPath)}</code></div>
-      {/if}
-      {#if promptPath}
-        <div class="ovt-log"><span class="ovt-log-label muted">prompt</span><code class="ovt-log-ref" title={promptPath}>{prettifyTarget(promptPath)}</code></div>
-      {/if}
+      {#if promptPath}{@render artifact("prompt", promptPath)}{/if}
+      {#if manifestPath}{@render artifact("manifest", manifestPath)}{/if}
     {/if}
   {/if}
 

@@ -741,13 +741,19 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .ovt-runid { font-size: var(--fs-meta); color: var(--muted); }
 .ovt-age { font-size: var(--fs-meta); }
 .ovt-summary { color: var(--ink); font-size: var(--fs-body); margin: var(--s2) 0 0; }
-/* Eyebrow sub-head — reuses the .run-subhead vocabulary (uppercase, muted, 600). */
-.ovt-eyebrow { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; margin: var(--s3) 0 var(--s1); text-transform: uppercase; }
+/* Section header: uppercase eyebrow + a hairline rule so each section reads as a distinct block,
+   clearly separated from the data beneath it. */
+.ovt-eyebrow { font-size: var(--fs-eyebrow); letter-spacing: .05em; color: var(--muted); font-weight: 600; margin: var(--s4) 0 var(--s2); padding-bottom: 3px; border-bottom: 1px solid var(--line); text-transform: uppercase; }
 .ovt-para { font-size: var(--fs-body); margin: 0; }
 .ovt-cmd-line { display: flex; align-items: baseline; gap: var(--s2); }
 .ovt-cmd-phrase { color: var(--ink); font-size: var(--fs-body); }
-.ovt-cmd-raw { margin: var(--s1) 0 0; max-height: 96px; }
+.ovt-cmd-raw { margin: var(--s1) 0 0; max-height: 120px; white-space: pre-wrap; word-break: break-word; }
+.ovt-result .ovt-cmd-raw { margin: 0; }
+.ovt-prompt { margin: var(--s1) 0 var(--s2); max-height: 340px; overflow: auto; background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+/* Field rows: muted label hugging an --ink value, so data reads as primary over its label. */
 .ovt-kv { margin: var(--s2) 0 0; }
+.ovt-kv .kv { display: flex; gap: 6px; align-items: baseline; color: var(--ink); }
+.ovt-kv-v { color: var(--ink); }
 .ovt-log { display: flex; align-items: baseline; gap: var(--s2); margin: var(--s1) 0; }
 .ovt-log-label { font-size: var(--fs-eyebrow); text-transform: uppercase; letter-spacing: .02em; flex: none; min-width: 42px; }
 .ovt-log-btn { background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; padding: 0; text-align: left; }
@@ -766,7 +772,7 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .ovt-result { display: flex; flex-direction: column; gap: 2px; }
 .ovt-result-head { display: flex; align-items: baseline; gap: var(--s2); }
 .ovt-result-cmd { font-size: var(--fs-meta); color: var(--muted); }
-.ovt-result-meta { font-size: var(--fs-meta); }
+.ovt-result-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s2); font-size: var(--fs-meta); margin-top: 3px; }
 .ovt-result-purpose { font-size: var(--fs-meta); }
 .ovt-lanes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .ovt-lane { font-size: var(--fs-body); }
