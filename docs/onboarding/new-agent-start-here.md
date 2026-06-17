@@ -191,6 +191,14 @@ npm run demo:live-agent:full
 npm run smoke:live-agent:full
 ```
 
+Canonical CLI equivalents for the live smoke boundary:
+
+```powershell
+npm run swarm -- smoke live-agent reset
+npm run swarm -- smoke live-agent run
+npm run swarm -- smoke live-agent full --reset
+```
+
 Use `--port 0` if a fixed port is busy.
 
 ## Fresh-Agent Operating Procedure

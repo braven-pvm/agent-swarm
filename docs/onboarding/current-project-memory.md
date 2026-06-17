@@ -66,13 +66,14 @@ Implemented and covered by tests:
 - overseer command events/artifacts, Phase 5A state-command allowlist, and Phase 5B bounded child dispatch
 - overseer-dispatched worker/reviewer child agents with explicit actor, `--driver codex`, evidence gating, and visible command metadata
 - autonomous live acceptance loop through `npm run demo:live-agent:run`
+- live smoke CLI boundary through `swarm smoke live-agent reset|run|full`; npm scripts now wrap built `dist/cli.js` instead of source runner paths
 - live loop summary/artifacts for overseer turns, worker/reviewer evidence, deterministic verification, graph, timeline, report, artifact index, outcome classification, run history, and run comparison
-- source-mutation fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault source-mutation`
-- reviewer-repair fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair`
-- stale-run recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault stale-run`
-- supervised-revive recovery fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault supervised-revive`
-- context-handoff fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault context-handoff`
-- low-signal/proof-churn fault injection through `node scripts\run-live-agent-demo.mjs --reset --fault low-signal`
+- source-mutation fault injection through `swarm smoke live-agent run --reset --fault source-mutation`
+- reviewer-repair fault injection through `swarm smoke live-agent run --reset --fault reviewer-repair`
+- stale-run recovery fault injection through `swarm smoke live-agent run --reset --fault stale-run`
+- supervised-revive recovery fault injection through `swarm smoke live-agent run --reset --fault supervised-revive`
+- context-handoff fault injection through `swarm smoke live-agent run --reset --fault context-handoff`
+- low-signal/proof-churn fault injection through `swarm smoke live-agent run --reset --fault low-signal`
 - live-run artifact index and outcome classification through `live-agent-run-artifacts/artifact-index.json`, `artifact-index.md`, and `summary.outcomeClassification`
 - reset-resistant live-run history and comparison through `.swarm-demo/live-agent-run-history/` and `npm run demo:live-agent:compare`
 - web viewer History tab, read-only history APIs, latest-run comparison, and artifact-index detail for archived live runs

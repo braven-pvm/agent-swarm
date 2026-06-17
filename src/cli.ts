@@ -77,6 +77,7 @@ import type {
 } from "./types.js";
 
 const program = new Command();
+const cliRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 type WorkerRunResult = {
   sliceId: string;
@@ -152,6 +153,24 @@ type ScenarioManifestLoad = {
   path: string;
   exists: boolean;
   data: Record<string, unknown>;
+};
+
+type LiveAgentSmokeRunOptions = {
+  reset?: boolean;
+  workspace?: string;
+  driver?: string;
+  scenario?: string;
+  fault?: string;
+  maxTurns?: number;
+  maxRuntimeSeconds?: number;
+  executeLimit?: number;
+  maxSlices?: number;
+  maxAgentRuns?: number;
+  summary?: string;
+  artifacts?: string;
+  historyRoot?: string;
+  runId?: string;
+  history?: boolean;
 };
 
 program
@@ -236,6 +255,64 @@ program
   .description("Show current harness status")
   .action(() => {
     printStatus();
+  });
+
+const smokeCommand = program.command("smoke").description("Run resettable smoke harness scenarios");
+const liveAgentSmokeCommand = smokeCommand.command("live-agent").description("Run the live-agent smoke harness");
+
+liveAgentSmokeCommand
+  .command("reset")
+  .description("Reset and initialize the disposable live-agent smoke workspace")
+  .option("--workspace <path>", "workspace to reset; defaults to .swarm-demo/live-agent-smoke")
+  .option("--stop-related-processes", "stop related viewer/product processes before reset")
+  .action((options: { workspace?: string; stopRelatedProcesses?: boolean }) => {
+    const args = buildLiveAgentResetArgs(options);
+    runRepoScript("scripts/reset-live-agent-smoke.mjs", args);
+  });
+
+liveAgentSmokeCommand
+  .command("run")
+  .description("Run the autonomous acceptance-loop live-agent smoke")
+  .option("--reset", "reset the smoke workspace before running")
+  .option("--workspace <path>", "workspace to run; defaults to .swarm-demo/live-agent-smoke")
+  .option("--driver <driver>", "agent driver", "codex")
+  .option("--scenario <scenario>", "scenario id", "live-agent-smoke")
+  .option("--fault <mode>", "fault injection mode", "none")
+  .option("--max-turns <count>", "maximum overseer turns", parseInteger)
+  .option("--max-runtime-seconds <count>", "maximum runtime in seconds", parseInteger)
+  .option("--execute-limit <count>", "maximum overseer commands per turn", parseInteger)
+  .option("--max-slices <count>", "maximum slices to coordinate", parseInteger)
+  .option("--max-agent-runs <count>", "maximum child agent runs", parseInteger)
+  .option("--summary <path>", "summary output path")
+  .option("--artifacts <path>", "artifact output directory")
+  .option("--history-root <path>", "durable run-history root")
+  .option("--run-id <id>", "explicit run id")
+  .option("--no-history", "disable durable run-history archiving")
+  .action((options: LiveAgentSmokeRunOptions) => {
+    const args = buildLiveAgentRunArgs("acceptance-loop", options);
+    runRepoScript("scripts/run-live-agent-demo.mjs", args);
+  });
+
+liveAgentSmokeCommand
+  .command("full")
+  .description("Run the full-product live-agent smoke")
+  .option("--reset", "reset the smoke workspace before running")
+  .option("--workspace <path>", "workspace to run; defaults to .swarm-demo/live-agent-smoke")
+  .option("--driver <driver>", "agent driver", "codex")
+  .option("--scenario <scenario>", "scenario id", "live-agent-smoke")
+  .option("--max-turns <count>", "maximum overseer turns", parseInteger, 80)
+  .option("--max-runtime-seconds <count>", "maximum runtime in seconds", parseInteger, 7200)
+  .option("--execute-limit <count>", "maximum overseer commands per turn", parseInteger, 4)
+  .option("--max-slices <count>", "maximum slices to coordinate", parseInteger, 20)
+  .option("--max-agent-runs <count>", "maximum child agent runs", parseInteger, 150)
+  .option("--summary <path>", "summary output path")
+  .option("--artifacts <path>", "artifact output directory")
+  .option("--history-root <path>", "durable run-history root")
+  .option("--run-id <id>", "explicit run id")
+  .option("--no-history", "disable durable run-history archiving")
+  .action((options: LiveAgentSmokeRunOptions) => {
+    const args = buildLiveAgentRunArgs("full-product", options);
+    runRepoScript("scripts/run-live-agent-demo.mjs", args);
   });
 
 const runModeCommand = program.command("run-mode").description("Manage the current harness run mode label");
@@ -3254,6 +3331,55 @@ function parsePort(value: string): number {
     throw new Error(`Expected a port between 0 and 65535, got ${value}`);
   }
   return parsed;
+}
+
+function buildLiveAgentResetArgs(options: { workspace?: string; stopRelatedProcesses?: boolean }): string[] {
+  const args: string[] = [];
+  pushOption(args, "--workspace", options.workspace);
+  if (options.stopRelatedProcesses) args.push("--stop-related-processes");
+  return args;
+}
+
+function buildLiveAgentRunArgs(mode: "acceptance-loop" | "full-product", options: LiveAgentSmokeRunOptions): string[] {
+  const args = ["--mode", mode];
+  if (options.reset) args.push("--reset");
+  pushOption(args, "--workspace", options.workspace);
+  pushOption(args, "--driver", options.driver);
+  pushOption(args, "--scenario", options.scenario);
+  if (mode === "acceptance-loop") pushOption(args, "--fault", options.fault);
+  pushOption(args, "--max-turns", options.maxTurns);
+  pushOption(args, "--max-runtime-seconds", options.maxRuntimeSeconds);
+  pushOption(args, "--execute-limit", options.executeLimit);
+  pushOption(args, "--max-slices", options.maxSlices);
+  pushOption(args, "--max-agent-runs", options.maxAgentRuns);
+  pushOption(args, "--summary", options.summary);
+  pushOption(args, "--artifacts", options.artifacts);
+  pushOption(args, "--history-root", options.historyRoot);
+  pushOption(args, "--run-id", options.runId);
+  if (options.history === false) args.push("--history", "false");
+  return args;
+}
+
+function pushOption(args: string[], flag: string, value: string | number | undefined): void {
+  if (value === undefined) return;
+  args.push(flag, String(value));
+}
+
+function runRepoScript(scriptRelativePath: string, args: string[]): void {
+  const scriptPath = path.join(cliRepoRoot, scriptRelativePath);
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    cwd: cliRepoRoot,
+    stdio: "inherit",
+    env: process.env,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  if (result.signal) {
+    console.error(`Smoke script terminated by signal ${result.signal}`);
+    process.exitCode = 1;
+    return;
+  }
+  process.exitCode = result.status ?? 1;
 }
 
 function listSourceFiles(dirInput: string): string[] {

@@ -34,6 +34,16 @@ The live smoke viewer includes a History tab. By default, serving `.swarm-demo/l
 
 Use `--history-root <path>` with `swarm serve` to inspect a different archive root.
 
+The live smoke now has a first-class CLI boundary:
+
+```powershell
+npm run swarm -- smoke live-agent reset
+npm run swarm -- smoke live-agent run
+npm run swarm -- smoke live-agent full --reset
+```
+
+The `demo:live-agent:*` and `smoke:live-agent:full` npm scripts are convenience wrappers over those built CLI commands.
+
 Launch the real overseer/planner:
 
 ```powershell
@@ -92,13 +102,13 @@ The same archived runs are available in the web viewer:
 Useful bounded options:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --max-turns 8 --max-runtime-seconds 600 --execute-limit 3
+npm run swarm -- smoke live-agent run --reset --max-turns 8 --max-runtime-seconds 600 --execute-limit 3
 ```
 
 Run the Phase 6A source-mutation fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault source-mutation
+npm run swarm -- smoke live-agent run --reset --fault source-mutation
 ```
 
 This mutates a registered disposable source spec after registration. The loop should stop before any overseer, worker, or reviewer agent runs, raise a `human_required` escalation on `harness:scenario:live-agent-smoke`, and record the mutation in `live-agent-run-summary.json`.
@@ -106,7 +116,7 @@ This mutates a registered disposable source spec after registration. The loop sh
 Run the Phase 6B reviewer-repair fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault reviewer-repair
+npm run swarm -- smoke live-agent run --reset --fault reviewer-repair
 ```
 
 This forces the first independent review to return `repair_required`. The loop should keep the same slice visible, dispatch a repair worker, run a second reviewer, clear only the resolved review blocker after reviewer acceptance, and then run deterministic verification.
@@ -114,7 +124,7 @@ This forces the first independent review to return `repair_required`. The loop s
 Run the Phase 6C stale-run recovery fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault stale-run
+npm run swarm -- smoke live-agent run --reset --fault stale-run
 ```
 
 This lets the overseer create the slice, injects a stale worker run on that slice, marks it through `recovery scan --mark-stale`, restarts a fresh worker, clears the stale-run blocker only after independent review accepts the restarted work, and then runs deterministic verification.
@@ -122,7 +132,7 @@ This lets the overseer create the slice, injects a stale worker run on that slic
 Run the Phase 6F supervised-revive fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault supervised-revive
+npm run swarm -- smoke live-agent run --reset --fault supervised-revive
 ```
 
 This runs a real child-worker process through the configured driver path, lets it emit JSONL and then go quiet without a structured result, terminates it through child idle supervision, records `worker.child_idle_timeout`, revives the captured session through `recovery revive`, and still requires independent review plus deterministic verification before acceptance. For local fake-Codex tests the timeout is usually set with `SWARM_AGENT_IDLE_TIMEOUT_SECONDS=1`; real runs can use environment overrides or target protocol `recovery.childIdleTimeoutSeconds`.
@@ -130,7 +140,7 @@ This runs a real child-worker process through the configured driver path, lets i
 Run the Phase 6D context-handoff fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault context-handoff
+npm run swarm -- smoke live-agent run --reset --fault context-handoff
 ```
 
 This waits until a worker has produced evidence, simulates a context compaction/handoff point by refreshing checkpoints, writes worker/reviewer/verifier/overseer/recovery resume packets, and then requires the loop to continue through independent review and deterministic verification.
@@ -138,7 +148,7 @@ This waits until a worker has produced evidence, simulates a context compaction/
 Run the Phase 6E low-signal/proof-churn fault:
 
 ```powershell
-node scripts\run-live-agent-demo.mjs --reset --fault low-signal
+npm run swarm -- smoke live-agent run --reset --fault low-signal
 ```
 
 This waits until a worker has produced evidence, injects a lane-scoped low-signal warning and `planner.low_signal_work` event, writes a warning artifact, refreshes the planner checkpoint, and then requires independent review plus deterministic verification before acceptance.

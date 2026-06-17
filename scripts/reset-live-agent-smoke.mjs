@@ -119,6 +119,9 @@ const manifest = {
     scripted: "npm run demo:live-agent:scripted",
     fullProduct: "npm run demo:live-agent:full",
     resetAndFullProduct: "npm run smoke:live-agent:full",
+    cliReset: "swarm smoke live-agent reset",
+    cliRun: "swarm smoke live-agent run",
+    cliFullProduct: "swarm smoke live-agent full",
   },
 };
 

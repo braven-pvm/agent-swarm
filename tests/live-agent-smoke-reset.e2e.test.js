@@ -41,6 +41,9 @@ test("live agent smoke reset creates a labeled resettable workspace", () => {
   assert.equal(manifest.fullProductMode.childIdleTimeoutSeconds, 300);
   assert.equal(manifest.commands.fullProduct, "npm run demo:live-agent:full");
   assert.equal(manifest.commands.resetAndFullProduct, "npm run smoke:live-agent:full");
+  assert.equal(manifest.commands.cliReset, "swarm smoke live-agent reset");
+  assert.equal(manifest.commands.cliRun, "swarm smoke live-agent run");
+  assert.equal(manifest.commands.cliFullProduct, "swarm smoke live-agent full");
 
   const snapshot = JSON.parse(runSwarm(["observe", "--events", "20"], workspace));
   assert.equal(snapshot.runMode, "live-agent-smoke");
