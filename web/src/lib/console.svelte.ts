@@ -45,7 +45,7 @@ export interface OverseerLogRow {
   id: string;          // newest event id in the run — the click target (onSelect)
   type: string;        // raw overseer.* event type (e.g. "overseer.command_completed")
   action: string;      // humanized action label ("Command completed")
-  summary?: string;    // decision summary, when this run is a recorded decision
+  summary?: string;    // per-event detail: command subject + exit, decision summary, counts, next action
   ts: string;          // newest event timestamp in the run (ISO)
   count: number;       // how many consecutive same-type events folded in
 }
@@ -72,11 +72,46 @@ function decisionSummary(ev: HarnessEvent, checkpoints: CheckpointRecord[]): str
   return s || undefined;
 }
 
+function asStr(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+// Concise "meat" for a loop event — WHAT command/decision/turn it actually was, pulled
+// from the event payload, so "Command completed" reads "review SLICE-… (reviewer) · exit 0"
+// and "Completed" reads its chosen next action instead of a bare label.
+function eventDetail(ev: HarnessEvent, checkpoints: CheckpointRecord[]): string | undefined {
+  const p = (ev.payload ?? {}) as Record<string, unknown>;
+  switch (ev.type) {
+    case "overseer.decision_recorded":
+      return decisionSummary(ev, checkpoints);
+    case "overseer.command_started":
+    case "overseer.command_completed": {
+      let label = [asStr(p.commandKey), asStr(p.sliceId)].filter(Boolean).join(" ");
+      const role = asStr(p.childRole);
+      if (role) label = label ? `${label} (${role})` : role;
+      if (ev.type === "overseer.command_completed" && p.exitCode != null) label += `${label ? " · " : ""}exit ${p.exitCode}`;
+      return label || asStr(p.purpose);
+    }
+    case "overseer.commands_completed": {
+      const ex = Number(p.executed ?? 0), bl = Number(p.blocked ?? 0), fa = Number(p.failed ?? 0);
+      const parts = [`${ex} executed`];
+      if (bl) parts.push(`${bl} blocked`);
+      if (fa) parts.push(`${fa} failed`);
+      return parts.join(", ");
+    }
+    case "overseer.completed":
+      return asStr(p.nextAction) ?? asStr(p.status);
+    case "overseer.started":
+      return p.attempt != null ? `attempt ${p.attempt}` : undefined;
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Build the overseer loop log from the raw event stream (ASC by timestamp) and the
- * checkpoints. Consecutive same-type events collapse into one row (newest event id +
- * timestamp kept, ×N count accumulated); 'overseer.decision_recorded' rows attach the
- * matching decision summary. Returned NEWEST-FIRST. Pure — DOM/store-free for tests.
+ * checkpoints. Each row carries concise per-event detail (command subject + exit code,
+ * decision summary, executed counts, next action). Only TRULY identical consecutive rows
+ * (same type AND same detail) fold into one ×N row. Returned NEWEST-FIRST. Pure.
  */
 export function buildOverseerLog(
   events: HarnessEvent[],
@@ -86,17 +121,17 @@ export function buildOverseerLog(
   const loop = events.filter(isOverseerLoopEvent);
   const rows: OverseerLogRow[] = [];
   for (const ev of loop) {
+    const detail = eventDetail(ev, checkpoints);
     const last = rows[rows.length - 1];
-    if (last && last.type === ev.type) {
-      // fold a consecutive repeat into the running row; keep the NEWEST event as the target
+    // Fold only TRUE repeats (same type AND same detail) so distinct commands keep their meat.
+    if (last && last.type === ev.type && last.summary === detail) {
       last.count += 1;
       last.id = ev.id;
       last.ts = ev.timestamp;
       continue;
     }
     const bare = ev.type.replace("overseer.", "");
-    const summary = ev.type === "overseer.decision_recorded" ? decisionSummary(ev, checkpoints) : undefined;
-    rows.push({ id: ev.id, type: ev.type, action: humanize(bare) || bare, summary, ts: ev.timestamp, count: 1 });
+    rows.push({ id: ev.id, type: ev.type, action: humanize(bare) || bare, summary: detail, ts: ev.timestamp, count: 1 });
   }
   return rows.reverse(); // newest-first
 }

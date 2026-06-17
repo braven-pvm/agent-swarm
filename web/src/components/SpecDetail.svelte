@@ -116,33 +116,27 @@
     expandedRef = null;
   });
 
-  // ── Per-family roll-up (collapsible, attention-first) ──────────────────
-  // Default state is attention-first: a family with ANY incomplete ref starts
-  // EXPANDED; an all-done family starts COLLAPSED to just its summary row. A click
-  // records a component-local override that wins over the default. An active find
-  // query or status filter force-expands any family with matching refs (so a search
-  // hit is never hidden inside a collapsed all-done family).
+  // ── Per-family roll-up (collapsible) ───────────────────────────────────
+  // Families are COLLAPSED by default — the header (progress bar + done/total +
+  // worst-status glyph) conveys the family's state at a glance, and the operator
+  // expands only the families they want to drill into. A click records a
+  // component-local override. An active find query or status filter force-expands
+  // any family with matching refs (so a search hit is never hidden in a collapsed family).
   let familyOverride = $state<Record<string, boolean>>({});
 
-  // Clear overrides on spec change so the attention-first default reasserts per spec.
+  // Clear overrides on spec change so families re-collapse per spec.
   $effect(() => {
     void source.uri;
     familyOverride = {};
   });
 
-  function familyHasIncomplete(counts: { done: number; total: number }): boolean {
-    return counts.done < counts.total;
-  }
-  // open by default when the family has incomplete work; an override flips it.
-  function familyOpen(family: string, counts: { done: number; total: number }): boolean {
+  function familyOpen(family: string): boolean {
     const filtering = !!find.trim() || !!statusFilter;
     if (filtering) return true; // a matching ref exists (familyRows already filtered) → reveal it
-    if (family in familyOverride) return familyOverride[family];
-    return familyHasIncomplete(counts);
+    return familyOverride[family] ?? false; // collapsed by default
   }
-  function toggleFamily(family: string, counts: { done: number; total: number }) {
-    const current = family in familyOverride ? familyOverride[family] : familyHasIncomplete(counts);
-    familyOverride = { ...familyOverride, [family]: !current };
+  function toggleFamily(family: string) {
+    familyOverride = { ...familyOverride, [family]: !(familyOverride[family] ?? false) };
   }
 
   // A ref matches the active status filter when its (blocked|failed) collapse to "blocked".
@@ -409,14 +403,14 @@
       <p class="empty">No requirements match the current filter.</p>
     {:else}
       {#each familyRows as row (row.family)}
-        {@const open = familyOpen(row.family, row.counts)}
+        {@const open = familyOpen(row.family)}
         {@const tone = refTone(row.worst)}
         <div class="spec-family" class:collapsed={!open}>
           <button
             type="button"
             class="spec-family-head"
             aria-expanded={open}
-            onclick={() => toggleFamily(row.family, row.counts)}
+            onclick={() => toggleFamily(row.family)}
           >
             <span class="spec-family-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
             <span class="run-subhead spec-family-name">{row.family}</span>

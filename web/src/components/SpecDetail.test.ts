@@ -57,8 +57,8 @@ function ledgerChip(container: HTMLElement, r: string): HTMLButtonElement {
   return container.querySelector<HTMLButtonElement>(`.spec-family-refs button[data-ref="${r}"]`)!;
 }
 
-// Force every family open (all-done families collapse by default) so a ledger chip
-// is rendered regardless of its family's attention-first state.
+// Force every family open (every family collapses by default) so a ledger chip
+// is rendered regardless of its family's collapsed state.
 async function expandAllFamilies(container: HTMLElement): Promise<void> {
   for (const head of container.querySelectorAll<HTMLButtonElement>("button.spec-family-head")) {
     if (head.getAttribute("aria-expanded") === "false") await fireEvent.click(head);
@@ -69,7 +69,7 @@ async function expandAllFamilies(container: HTMLElement): Promise<void> {
 const MD = "## Spec\nWe deliver AC-API-1, AC-API-2 and FR-DATA-1 then FR-DATA-2.\n";
 
 describe("SpecDetail roll-up + chip-as-expander", () => {
-  it("starts an all-done family collapsed and an incomplete family expanded (attention-first)", () => {
+  it("starts every family collapsed by default", () => {
     const refs = [
       ref("AC-API-1", "done"),
       ref("AC-API-2", "done"),
@@ -80,16 +80,17 @@ describe("SpecDetail roll-up + chip-as-expander", () => {
       props: { source: source(), markdown: MD, refMap: refMapOf(refs), slices: [] },
     });
 
-    // Family headers carry aria-expanded reflecting the attention-first default.
+    // Every family starts collapsed — the header (bar + count + status glyph) conveys
+    // state at a glance; the operator expands the ones they want to drill into.
     const heads = Array.from(container.querySelectorAll<HTMLButtonElement>("button.spec-family-head"));
     const byName = (name: string) =>
       heads.find((h) => h.querySelector(".spec-family-name")?.textContent?.trim() === name)!;
 
-    expect(byName("API").getAttribute("aria-expanded")).toBe("false"); // all done → collapsed
-    expect(byName("DATA").getAttribute("aria-expanded")).toBe("true"); // has a blocked ref → expanded
+    expect(byName("API").getAttribute("aria-expanded")).toBe("false"); // collapsed
+    expect(byName("DATA").getAttribute("aria-expanded")).toBe("false"); // collapsed, even with a blocked ref
 
-    // Collapsed family hides its chip cloud; expanded one shows its chips.
-    expect(byName("DATA").nextElementSibling?.querySelector('[data-ref="FR-DATA-1"]')).toBeTruthy();
+    // Collapsed families hide their chip clouds.
+    expect(container.querySelector('.spec-family-refs [data-ref="FR-DATA-1"]')).toBeNull();
     expect(container.querySelector('.spec-family-refs [data-ref="AC-API-1"]')).toBeNull();
   });
 
@@ -118,6 +119,7 @@ describe("SpecDetail roll-up + chip-as-expander", () => {
       props: { source: source(), markdown: MD, refMap: refMapOf(refs), slices: [] },
     });
 
+    await expandAllFamilies(container); // families collapse by default — open them to reach the chip
     // detail not present until the chip is clicked
     expect(queryByText(/returns all three seeded invoices/)).toBeNull();
     const chip = ledgerChip(container, "FR-DATA-1");
