@@ -730,6 +730,51 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .focus-packet .focus-pk-meta { font-size: 12px; margin: 2px 0; }
 .focus-packet .focus-pk-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0; }
 .focus-packet pre { max-height: 320px; overflow: auto; }
+/* ── Overseer turn detail (inspector) ────────────────────────────────────
+   Structured render of an overseer loop event: eyebrow sub-heads + muted body,
+   mono for ids/commands/paths, one accent, glyph+colour for status. Static
+   detail — tiers + spacing carry the hierarchy, not borders. */
+.ovt { display: flex; flex-direction: column; }
+.ovt-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); }
+.ovt-title { font-size: var(--fs-h); font-weight: 600; color: var(--ink); margin: 0; }
+.ovt-head-meta { display: inline-flex; align-items: baseline; gap: var(--s2); flex: none; }
+.ovt-runid { font-size: var(--fs-meta); color: var(--muted); }
+.ovt-age { font-size: var(--fs-meta); }
+.ovt-summary { color: var(--ink); font-size: var(--fs-body); margin: var(--s2) 0 0; }
+/* Eyebrow sub-head — reuses the .run-subhead vocabulary (uppercase, muted, 600). */
+.ovt-eyebrow { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); font-weight: 600; margin: var(--s3) 0 var(--s1); text-transform: uppercase; }
+.ovt-para { font-size: var(--fs-body); margin: 0; }
+.ovt-cmd-line { display: flex; align-items: baseline; gap: var(--s2); }
+.ovt-cmd-phrase { color: var(--ink); font-size: var(--fs-body); }
+.ovt-cmd-raw { margin: var(--s1) 0 0; max-height: 96px; }
+.ovt-kv { margin: var(--s2) 0 0; }
+.ovt-log { display: flex; align-items: baseline; gap: var(--s2); margin: var(--s1) 0; }
+.ovt-log-label { font-size: var(--fs-eyebrow); text-transform: uppercase; letter-spacing: .02em; flex: none; min-width: 42px; }
+.ovt-log-btn { background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; padding: 0; text-align: left; }
+.ovt-log-btn:hover { color: var(--ink); }
+.ovt-log-btn code, .ovt-log-ref { font-size: var(--fs-meta); color: var(--muted); }
+.ovt-log-state { margin: var(--s1) 0; font-size: var(--fs-meta); }
+.ovt-log-out { margin: var(--s1) 0 var(--s2); max-height: 180px; }
+/* Batch stat chips — failed turns red (glyph + colour) when > 0. */
+.ovt-stats { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s2) 0 0; }
+.ovt-stat { font-size: var(--fs-meta); color: var(--muted); background: rgba(255,255,255,.06); border-radius: 8px; padding: 1px 8px; }
+.ovt-stat-n { color: var(--ink); font-weight: 600; }
+.ovt-stat.bad { color: var(--red); background: rgba(239,107,97,.14); }
+.ovt-stat.bad .ovt-stat-n { color: var(--red); }
+.ovt-stat-glyph { margin-right: 4px; }
+.ovt-results { display: flex; flex-direction: column; gap: var(--s2); }
+.ovt-result { display: flex; flex-direction: column; gap: 2px; }
+.ovt-result-head { display: flex; align-items: baseline; gap: var(--s2); }
+.ovt-result-cmd { font-size: var(--fs-meta); color: var(--muted); }
+.ovt-result-meta { font-size: var(--fs-meta); }
+.ovt-result-purpose { font-size: var(--fs-meta); }
+.ovt-lanes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.ovt-lane { font-size: var(--fs-body); }
+.ovt-lane-name { font-size: var(--fs-meta); color: var(--ink); }
+.ovt-blockers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.ovt-blockers li { font-size: var(--fs-body); color: var(--red); }
+.ovt-blocker-glyph { margin-right: 4px; }
+.ovt-raw-toggle { margin-top: var(--s3); }
 /* Run-observability badges (StatusBar) */
 .ro-badge { font-size: var(--fs-meta); border-radius: 10px; padding: 1px 8px; }
 .ro-badge strong { font-weight: 600; }

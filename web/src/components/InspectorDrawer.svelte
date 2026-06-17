@@ -4,6 +4,7 @@
   import { formatDuration, describeActivity, fmtClock, shortAge, livenessLevel, groupRunActivity, summarizeCommand, prettifyTarget, refTone, statusLabel, cleanSliceTitle, type ActivityGroup } from "~/lib/format";
   import { api } from "~/lib/api";
   import Markdown from "~/components/Markdown.svelte";
+  import OverseerTurnDetail from "~/components/OverseerTurnDetail.svelte";
   let { store }: { store: ConsoleStore } = $props();
   const sel = $derived(store.selected);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
@@ -676,8 +677,7 @@
       <p>{escalation.message}</p>
       {#if escalation.reason}<p class="muted">{escalation.reason}</p>{/if}
     {:else if sel.kind === "overseerTurn" && overseerEvent}
-      <h4>{overseerEvent.type}</h4>
-      <pre class="json">{JSON.stringify(overseerEvent.payload, null, 2)}</pre>
+      <OverseerTurnDetail event={overseerEvent} />
     {:else if sel.kind === "focusSlice"}
       <div class="focus-packet">
         {#if focusLoading}
