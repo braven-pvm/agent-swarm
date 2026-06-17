@@ -875,3 +875,111 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .chip.ha-chip-danger  { color: var(--red);   border-color: rgba(239,107,97,.4); }
 .chip.ha-chip-warning { color: var(--amber); border-color: rgba(214,161,60,.4); }
 .chip.ha-chip:hover { background: var(--surface-2); }
+
+/* ── Run history ──────────────────────────────────────────────────────────
+   Reuses the Coverage vocabulary (.cov-table sticky/hover/pills, .cov-badge-*
+   tones, .spec-facets segmented control) so this screen introduces no new
+   colour decisions. Outward-increasing rhythm: --s5 between sections, --s2/3
+   within. Status is always glyph+colour; ids/timestamps are mono. */
+.history { display: flex; flex-direction: column; gap: var(--s5); }
+.hist-head { display: flex; flex-direction: column; gap: 2px; }
+.hist-title { font-size: var(--fs-h); font-weight: 600; margin: 0; }
+.hist-sub { font-size: var(--fs-meta); margin: 0; }
+
+/* 1. Summary overview */
+.hist-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s4); }
+.hist-outcomes { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hist-stat-chip { display: inline-flex; align-items: baseline; gap: 4px; font-size: var(--fs-meta); padding: 2px 9px; }
+.hist-stat-chip strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.hist-stat-glyph { font-size: .9em; }
+.hist-faults { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+/* Fault chips: control runs ("none") read neutral; injected faults take a subtle
+   amber tint so the eye separates control from injected at a glance. */
+.hist-fault-chip { display: inline-flex; align-items: baseline; gap: 4px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; white-space: nowrap; background: rgba(255,255,255,.06); color: var(--muted); }
+.hist-fault-chip .mono { font-variant-numeric: tabular-nums; }
+.hist-fault-injected { background: rgba(214,161,60,.13); color: var(--amber); }
+
+/* 2. Controls */
+.hist-controls { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.hist-facets { flex: 0 0 auto; }
+.hist-facets .spec-facet { padding: 4px 10px; }
+.hist-select, .hist-search { background: var(--bg); border: 1px solid var(--line-3); color: var(--ink); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: var(--fs-body); }
+.hist-search { flex: 1 1 200px; min-width: 160px; }
+.hist-count-shown { margin-left: auto; font-size: var(--fs-meta); white-space: nowrap; }
+
+/* Compare bar */
+.hist-compare-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+.hist-compare-title { margin: 0; text-transform: uppercase; }
+.hist-compare-picks { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hist-pick { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 2px 4px 2px 8px; font-size: var(--fs-meta); }
+.hist-pick-time { color: var(--ink); }
+.hist-pick-meta { font-size: var(--fs-eyebrow); }
+.hist-pick-empty { border-style: dashed; background: none; }
+.hist-pick-x { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; min-height: 22px; background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; line-height: 1; border-radius: 4px; }
+.hist-pick-x:hover { color: var(--red); background: var(--bg); }
+.hist-compare-hint { font-size: var(--fs-meta); }
+.hist-btn { background: var(--bg); border: 1px solid var(--line-3); color: var(--ink); border-radius: 6px; padding: 4px 12px; font: inherit; font-size: var(--fs-body); cursor: pointer; min-height: 30px; }
+.hist-btn:hover:not(:disabled) { background: var(--surface-2); }
+.hist-btn-primary { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+.hist-btn-primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+.hist-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* 3. Table — reuses .cov-table; history-specific columns + attention accent */
+.hist-table-scroll { max-height: 60vh; }
+.hist-th-pick, .hist-pick-cell { width: 34px; text-align: center; }
+.hist-th-caret { width: 30px; }
+.hist-pick-box { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+/* Rows needing a human carry a subtle left accent so they stand out in the scan. */
+.hist-row-attention td:first-child { box-shadow: inset 2px 0 0 var(--amber); }
+.hist-when { white-space: nowrap; }
+.hist-when-date { color: var(--ink); }
+.hist-when-time { margin-left: 6px; color: var(--muted); font-size: var(--fs-meta); }
+.hist-when-age { margin-left: 6px; font-size: var(--fs-meta); }
+.hist-outcome-chip { display: inline-flex; align-items: baseline; }
+.hist-reason { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-signals { white-space: nowrap; font-size: var(--fs-meta); }
+.hist-signals .mono { color: var(--ink); font-variant-numeric: tabular-nums; }
+.hist-esc { color: var(--amber); }
+.hist-id { white-space: nowrap; }
+.hist-show-all { margin-top: 0; }
+.hist-empty, .hist-error { padding: var(--s4) 0; }
+.hist-error { color: var(--red); }
+
+/* Inline detail row */
+.hist-detail { display: flex; flex-direction: column; gap: var(--s3); }
+.hist-detail-reason { margin: 0; color: var(--ink); font-size: var(--fs-body); line-height: 1.4; }
+.hist-detail-meta { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+.hist-dm { display: inline-flex; flex-direction: column; gap: 1px; }
+.hist-dm-k { font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); text-transform: uppercase; font-weight: 600; }
+.hist-dm-v { font-size: var(--fs-meta); color: var(--ink); }
+.hist-detail-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: var(--s2); }
+.hist-count-cell { display: flex; flex-direction: column; gap: 1px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+.hist-count-num { font-size: var(--fs-title); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.hist-count-label { font-size: var(--fs-eyebrow); }
+
+/* Structured compare result */
+.hist-compare-result { display: flex; flex-direction: column; gap: var(--s3); background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s4); }
+.hist-cmp-interp { margin: 0; color: var(--ink); font-size: var(--fs-body); line-height: 1.4; }
+.hist-cmp-nochange { margin: 0; }
+.hist-cmp-pairs { display: flex; flex-direction: column; gap: var(--s1); }
+.hist-cmp-pair { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; padding: 4px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); }
+.hist-cmp-changed { border-color: rgba(214,161,60,.4); }
+.hist-cmp-field { min-width: 110px; font-size: var(--fs-eyebrow); letter-spacing: .02em; color: var(--muted); text-transform: uppercase; font-weight: 600; }
+.hist-cmp-val { font-size: var(--fs-meta); color: var(--muted); }
+.hist-cmp-arrow { color: var(--faint); }
+.hist-cmp-val-changed { color: var(--ink); }
+.hist-cmp-flag { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; background: rgba(214,161,60,.16); color: var(--amber); }
+.hist-cmp-section { display: flex; flex-direction: column; gap: var(--s2); }
+.hist-cmp-counts { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.hist-cmp-count { display: inline-flex; align-items: baseline; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; font-size: var(--fs-meta); }
+.hist-cmp-count-label { color: var(--muted); }
+.hist-cmp-count-delta { font-variant-numeric: tabular-nums; color: var(--ink); }
+.hist-cmp-up .hist-cmp-count-delta { color: var(--green); }
+.hist-cmp-down .hist-cmp-count-delta { color: var(--red); }
+.hist-cmp-artifacts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.hist-cmp-artifact { display: flex; align-items: baseline; gap: var(--s2); }
+.hist-cmp-artifact-label { min-width: 130px; font-size: var(--fs-meta); color: var(--muted); }
+.hist-cmp-artifact-path { font-size: var(--fs-meta); color: var(--ink); }
+.hist-cmp-raw-toggle { align-self: flex-start; background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; padding: 2px 0; }
+.hist-cmp-raw-toggle:hover { color: var(--ink); }
+.hist-cmp-raw { margin: 0; max-height: 320px; overflow: auto; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: var(--s3); font-size: var(--fs-meta); color: var(--muted); }
