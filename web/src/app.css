@@ -364,9 +364,21 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .cov-badge { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; text-transform: none; white-space: nowrap; }
 .cov-badge-done { background: rgba(92,184,122,.14); color: var(--green); }
 .cov-badge-in_progress { background: rgba(91,157,255,.14); color: var(--blue); }
+.cov-badge-review_passed { background: rgba(91,157,255,.14); color: var(--blue); }
+.cov-badge-planned { background: rgba(255,255,255,.06); color: var(--muted); }
+.cov-badge-human { background: rgba(214,161,60,.16); color: var(--amber); }
 .cov-badge-blocked, .cov-badge-failed { background: rgba(239,107,97,.14); color: var(--red); }
 .cov-badge-not_started { background: rgba(255,255,255,.06); color: var(--muted); }
+.cov-ledger-glyph { font-size: .9em; margin-right: 3px; }
 .coverage select, .coverage .search { background: var(--bg); border: 1px solid var(--line-3); color: var(--ink); border-radius: 6px; padding: 4px 8px; }
+.cov-panel-head { display: flex; align-items: baseline; gap: var(--s2); margin-bottom: var(--s3); }
+.cov-panel-head .cov-panel-title { margin-bottom: 0; }
+.cov-ledger-origin { margin-left: auto; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 7px; background: rgba(255,255,255,.06); color: var(--muted); }
+.cov-ledger-panel { display: flex; flex-direction: column; gap: var(--s3); }
+.cov-ledger-facts { display: flex; flex-wrap: wrap; gap: var(--s2); color: var(--muted); font-size: var(--fs-meta); }
+.cov-ledger-facts span { display: inline-flex; gap: 4px; align-items: baseline; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; background: var(--bg); }
+.cov-ledger-facts strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cov-ledger-cards { display: flex; flex-wrap: wrap; gap: var(--s2); }
 /* Obligation disclosure on the requirements table — caret cell + present/missing marker. */
 .cov-th-caret { width: 36px; }
 .cov-caret-cell { width: 36px; white-space: nowrap; color: var(--faint); }
@@ -562,6 +574,25 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .rq-gate-warn { background: rgba(214,161,60,.16); color: var(--amber); }
 .rq-gate-neutral { background: rgba(255,255,255,.06); color: var(--muted); }
 .rq-verifiers { font-size: var(--fs-meta); }
+
+/* Ledger + human verification path inside RequirementDetail. Ledger is the
+   requirement truth; direct is the row's raw slice/evidence state. */
+.rq-ledger, .rq-human { display: flex; flex-direction: column; gap: var(--s2); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+.rq-ledger-head, .rq-human-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.rq-direct { font-size: var(--fs-meta); }
+.rq-ledger-reason { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s2) var(--s3); }
+.rq-ledger-reason .md { font-size: var(--fs-body); color: var(--muted); max-width: none; }
+.rq-rollup { display: flex; align-items: baseline; gap: var(--s2); min-width: 0; font-size: var(--fs-meta); }
+.rq-rollup-chip { display: inline-flex; align-items: center; border-radius: 8px; padding: 1px 7px; background: rgba(255,255,255,.06); color: var(--muted); font-size: var(--fs-eyebrow); }
+.rq-rollup-label { flex: none; }
+.rq-rollup-refs { color: var(--muted); overflow-wrap: anywhere; }
+.rq-human-state, .rq-human-packet-status { display: inline-flex; align-items: center; border-radius: 8px; padding: 1px 7px; font-size: var(--fs-eyebrow); }
+.rq-human-state.blocks { background: rgba(214,161,60,.16); color: var(--amber); }
+.rq-human-state.clear { background: rgba(92,184,122,.14); color: var(--green); }
+.rq-human-packet-status { background: rgba(255,255,255,.06); color: var(--muted); }
+.rq-human-reason { color: var(--muted); font-size: var(--fs-body); }
+.rq-human-packet { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); font-size: var(--fs-meta); }
+.rq-human-packet code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--ink); }
 
 /* Proof + reviewer-finding prose: quiet dark inset, rendered markdown (inline code). */
 .rq-proof, .rq-finding { background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s2) var(--s3); }

@@ -1,4 +1,4 @@
-import type { EscalationRecord } from "~/lib/types";
+import type { EscalationRecord, RequirementLedgerStatus } from "~/lib/types";
 
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "";
@@ -232,6 +232,37 @@ export function statusLabel(status: string): string {
     case "not_started": return "Not started";
     default: return "Not indexed";
   }
+}
+
+export interface LedgerTone {
+  cls: string;
+  glyph: string;
+  label: string;
+}
+
+const LEDGER_TONES: Record<RequirementLedgerStatus, LedgerTone> = {
+  accepted: { cls: "cov-badge-done", glyph: "✓", label: "Accepted" },
+  verified: { cls: "cov-badge-done", glyph: "✓", label: "Verified" },
+  human_verified: { cls: "cov-badge-done", glyph: "✓", label: "Human verified" },
+  review_passed: { cls: "cov-badge-review_passed", glyph: "◑", label: "Review passed" },
+  implemented_unverified: { cls: "cov-badge-in_progress", glyph: "◐", label: "Implemented, unverified" },
+  in_progress: { cls: "cov-badge-in_progress", glyph: "◐", label: "In progress" },
+  planned: { cls: "cov-badge-planned", glyph: "○", label: "Planned" },
+  not_started: { cls: "cov-badge-not_started", glyph: "○", label: "Not started" },
+  awaiting_human_verification: { cls: "cov-badge-human", glyph: "☐", label: "Awaiting human" },
+  human_input_required: { cls: "cov-badge-blocked", glyph: "!", label: "Human input required" },
+  failed: { cls: "cov-badge-failed", glyph: "✕", label: "Failed" },
+  blocked: { cls: "cov-badge-blocked", glyph: "✕", label: "Blocked" },
+};
+
+export function ledgerStatusLabel(status: string | undefined): string {
+  if (!status) return "Unknown";
+  return LEDGER_TONES[status as RequirementLedgerStatus]?.label ?? humanizeToken(status);
+}
+
+export function ledgerTone(status: string | undefined): LedgerTone {
+  if (!status) return { cls: "cov-badge-not_started", glyph: "–", label: "Unknown" };
+  return LEDGER_TONES[status as RequirementLedgerStatus] ?? { cls: "cov-badge-not_started", glyph: "•", label: humanizeToken(status) };
 }
 
 // ── Work board: slice status grouping, priority, and per-status tone ────────

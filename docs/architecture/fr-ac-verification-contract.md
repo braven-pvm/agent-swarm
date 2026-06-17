@@ -204,7 +204,7 @@ Current implementation note:
 - Verification for `human_verification_required` refs produces durable JSON and Markdown human verification packets, records them as `artifact` evidence with `type = human_verification_packet`, and keeps the ref at `awaiting_human_verification` until a human result is recorded.
 - `swarm human-verify <slice-id> <ref> --status human_verified|failed|needs_rework` records the human result as evidence. `human_verified` can complete leases and accept the slice when every in-scope ref is satisfied; `failed` and `needs_rework` keep affected work blocked/repairing.
 - Coverage rows expose the latest human verification packet through `humanVerificationPacket` and `humanPath.packet`.
-- This ledger is currently derived, not persisted. Persisting it as a dedicated table remains a later hardening step once the semantics stabilize.
+- This ledger is currently derived, not persisted. For the MVP, this is intentional: the durable facts remain source refs, leases, slice state, obligations, evidence, review results, dependencies, escalations, and human verification results. `/api/coverage` derives the latest ledger view from those facts. Persisting dedicated ledger snapshots remains a later hardening step only if audit/history or external status sinks need immutable point-in-time views.
 
 ## Evidence Coverage
 
@@ -217,7 +217,7 @@ Each in-scope FR/AC ref should have a verification result:
 - `human_input_required`: requirement cannot be safely implemented or verified without human input.
 - `overridden`: protocol-authorized override exists with reason and actor.
 
-MVP can store this coverage inside evidence payloads and events. The next implementation target should promote obligations and per-ref status into a dedicated requirement ledger.
+MVP stores per-ref verification coverage inside evidence payloads and events, then derives the latest requirement ledger from those durable facts. The next implementation target is UI and status-sink consumption of the derived ledger before deciding whether dedicated ledger snapshots are needed.
 
 Required evidence shape:
 
@@ -349,11 +349,8 @@ Implemented:
 Next hardening:
 
 - prevent worker-authored outputs from mutating obligation criteria/responsible party
-- add a requirement status ledger with status reasons and rollup rules
-- generate human verification packets for refs marked `human_verification_required`
-- distinguish `human_input_required` from `human_verification_required` in state, UI, and status sinks
-- make parent FR rollups explicit so coverage reflects real completion state
-- make per-ref obligation/evidence status easier to scan in the web viewer without opening the full slice report
+- consume derived ledger status, direct status, rollup reason, obligation mode, and human verification result fields in the web viewer and status sinks
+- decide later whether to persist ledger snapshots after the latest-derived model has proven stable in real runs
 - make Sleuth Review Gate thresholds protocol-configurable where projects need stricter or looser residual-risk handling
 - expose quality dimensions and blocking concerns as first-class UI/API fields, not only in slice reports
 - add browser/screenshot tests proving coverage and human verification surfaces are visible in the management UI

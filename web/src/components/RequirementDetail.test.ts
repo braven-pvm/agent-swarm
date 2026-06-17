@@ -71,6 +71,46 @@ describe("RequirementDetail", () => {
     expect(getByText("Blocked on dependency")).toBeTruthy();
   });
 
+  it("renders ledger rollup state and human verification packet state", () => {
+    const ref = baseRef({
+      directStatus: "not_started",
+      ledgerStatus: "awaiting_human_verification",
+      ledgerReason: "Automated checks passed, but a human verification packet is still open.",
+      rollup: {
+        rule: "children",
+        status: "awaiting_human_verification",
+        reason: "Child AC rollup is awaiting human verification.",
+        directStatus: "not_started",
+        directLedgerStatus: "not_started",
+        childRefs: ["AC-INV-001.1", "AC-INV-001.2"],
+        childStatusCounts: { awaiting_human_verification: 1, accepted: 1 } as any,
+      },
+      humanPath: {
+        state: "human_verification_required",
+        blocksAcceptance: true,
+        reason: "Visual acceptance is required.",
+        responsibleParty: "human-reviewer",
+        packet: {
+          evidenceId: "EVID-1",
+          markdownPath: "C:\\tmp\\packet.md",
+          jsonPath: "C:\\tmp\\packet.json",
+          status: "awaiting_human_verification",
+          generatedAt: "",
+        },
+      },
+    });
+
+    const { getByText, getAllByText } = render(RequirementDetail, { props: { ref } });
+
+    expect(getAllByText("Ledger").length).toBeGreaterThan(0);
+    expect(getAllByText("Awaiting human").length).toBeGreaterThan(0);
+    expect(getByText(/Automated checks passed/)).toBeTruthy();
+    expect(getByText("Human path")).toBeTruthy();
+    expect(getByText("human-reviewer")).toBeTruthy();
+    expect(getByText("packet.md")).toBeTruthy();
+    expect(getByText("packet.json")).toBeTruthy();
+  });
+
   it("invokes onOpenRef from the coverage cross-link", async () => {
     let opened = "";
     const ref = baseRef();

@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { CoverageRef, ReviewFinding } from "~/lib/types";
-  import { statusLabel } from "~/lib/format";
+  import { humanizeToken, ledgerTone, ledgerStatusLabel, statusLabel } from "~/lib/format";
   import RequirementDetail from "~/components/RequirementDetail.svelte";
   let { store, seed = "" }: { store: ConsoleStore; seed?: string } = $props();
-  let q = $state(""); let statusFilter = $state("all");
+  let q = $state(""); let statusFilter = $state("all"); let ledgerFilter = $state("all");
   // Reactive seed: follows `seed` on every navigation change (App sets it; manual
   // typing changes `q` not `seed`, so this never clobbers user input). An empty
   // seed (top-nav Coverage click) now correctly clears q even without a remount.
@@ -45,15 +45,56 @@
     ];
   });
 
+  const ledgerCards = $derived.by(() => {
+    const totals = cov?.ledger?.totals;
+    if (!totals) return [];
+    const order = [
+      "accepted",
+      "verified",
+      "human_verified",
+      "awaiting_human_verification",
+      "human_input_required",
+      "blocked",
+      "failed",
+      "in_progress",
+      "planned",
+      "not_started",
+    ];
+    return order
+      .map((status) => ({ status, count: Number((totals as Record<string, number>)[status] ?? 0), tone: ledgerTone(status) }))
+      .filter((item) => item.count > 0);
+  });
+
+  const ledgerFacts = $derived.by(() => {
+    const entries = cov?.ledger?.entries ?? [];
+    return {
+      total: cov?.ledger?.totals.total ?? entries.length,
+      rollups: cov?.ledger?.rollups.length ?? 0,
+      humanPending: entries.filter((e) => e.humanPath?.state === "human_verification_required" && e.humanPath.blocksAcceptance).length,
+      humanSigned: entries.filter((e) => e.status === "human_verified" || e.humanPath?.packet?.status === "human_verified").length,
+    };
+  });
+
   const rows = $derived.by(() => {
     const list = cov?.refs ?? [];
     const ql = q.trim().toLowerCase();
     return list.filter((r) =>
       (statusFilter === "all" || r.status === statusFilter) &&
-      (!ql || r.ref.toLowerCase().includes(ql) || r.domain.toLowerCase().includes(ql) || (r.sliceId ?? "").toLowerCase().includes(ql)),
+      (ledgerFilter === "all" || r.ledgerStatus === ledgerFilter) &&
+      (!ql ||
+        r.ref.toLowerCase().includes(ql) ||
+        r.domain.toLowerCase().includes(ql) ||
+        (r.sliceId ?? "").toLowerCase().includes(ql) ||
+        (r.ledgerStatus ?? "").toLowerCase().includes(ql) ||
+        (r.ledgerReason ?? "").toLowerCase().includes(ql) ||
+        (r.nextAction ?? "").toLowerCase().includes(ql) ||
+        (r.obligation?.mode ?? "").toLowerCase().includes(ql) ||
+        (r.humanPath?.state ?? "").toLowerCase().includes(ql) ||
+        (r.humanPath?.packet?.status ?? "").toLowerCase().includes(ql)),
     );
   });
   const STATUSES = ["all","done","in_progress","blocked","failed","not_started"];
+  const LEDGER_STATUSES = ["all","accepted","verified","human_verified","awaiting_human_verification","human_input_required","blocked","failed","in_progress","planned","not_started"];
   const C = 2 * Math.PI * 46;
 
   // ── Per-row requirement disclosure (collapsed by default) ──────────────
@@ -74,8 +115,24 @@
       (r.evidence?.length ?? 0) > 0 ||
       r.reviewStatus ||
       r.verification ||
+      r.ledgerStatus ||
+      r.rollup ||
+      (r.humanPath && r.humanPath.state !== "none") ||
       findingFor(r)
     );
+  }
+
+  function obligationLabel(r: CoverageRef): string {
+    if (!r.obligation) return "—";
+    if (r.obligation.status === "missing") return "Missing";
+    return r.obligation.mode ? humanizeToken(r.obligation.mode) : "Present";
+  }
+
+  function humanLabel(r: CoverageRef): string {
+    const packet = r.humanPath?.packet ?? r.humanVerificationPacket;
+    if (packet) return ledgerStatusLabel(packet.status);
+    if (r.humanPath?.state && r.humanPath.state !== "none") return humanizeToken(r.humanPath.state);
+    return "—";
   }
 
   // Resolve the richest per-AC reviewer finding for a ref: coverage row → owning slice
@@ -173,22 +230,49 @@
       </div>
     {/if}
 
-    <!-- E. Requirements table -->
+    <!-- E. Requirement ledger -->
+    {#if cov.ledger}
+      <div class="cov-panel cov-ledger-panel">
+        <div class="cov-panel-head">
+          <h3 class="cov-panel-title">Requirement ledger</h3>
+          <span class="cov-ledger-origin">derived</span>
+        </div>
+        <div class="cov-ledger-facts">
+          <span><strong>{ledgerFacts.total}</strong> refs</span>
+          <span><strong>{ledgerFacts.rollups}</strong> rollups</span>
+          <span><strong>{ledgerFacts.humanPending}</strong> human pending</span>
+          <span><strong>{ledgerFacts.humanSigned}</strong> human signed</span>
+        </div>
+        {#if ledgerCards.length}
+          <div class="cov-ledger-cards">
+            {#each ledgerCards as item (item.status)}
+              <span class="cov-badge {item.tone.cls}" title={item.status}>
+                <span class="cov-ledger-glyph">{item.tone.glyph}</span>{item.count} {item.tone.label}
+              </span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- F. Requirements table -->
     <div class="cov-panel cov-table-panel">
       <div class="cov-filters">
         <label class="sr-only" for="cov-filter">Filter requirements</label>
-        <input id="cov-filter" class="search" placeholder="Filter refs / domain / slice…" bind:value={q} />
-        <select bind:value={statusFilter} aria-label="Filter by status">{#each STATUSES as s}<option value={s}>{s === "all" ? "All" : statusLabel(s)}</option>{/each}</select>
+        <input id="cov-filter" class="search" placeholder="Filter refs / domain / slice / ledger…" bind:value={q} />
+        <select bind:value={statusFilter} aria-label="Filter by direct status">{#each STATUSES as s}<option value={s}>{s === "all" ? "All direct" : statusLabel(s)}</option>{/each}</select>
+        <select bind:value={ledgerFilter} aria-label="Filter by ledger status">{#each LEDGER_STATUSES as s}<option value={s}>{s === "all" ? "All ledger" : ledgerStatusLabel(s)}</option>{/each}</select>
         <span class="muted cov-count-shown">{rows.length} shown</span>
       </div>
       <div class="cov-table-scroll">
         <table class="cov-table">
-          <thead><tr><th class="cov-th-caret" aria-label="Expand"></th><th>Requirement</th><th>Domain</th><th>Status</th><th>Slice</th><th>Verification</th></tr></thead>
+          <thead><tr><th class="cov-th-caret" aria-label="Expand"></th><th>Requirement</th><th>Domain</th><th>Ledger</th><th>Direct</th><th>Obligation</th><th>Human</th><th>Slice</th><th>Verification</th><th>Next</th></tr></thead>
           <tbody>
             {#each rows as r (r.ref)}
               {@const detail = hasDetail(r)}
               {@const obl = r.obligation}
               {@const expanded = expandedRef === r.ref}
+              {@const lt = ledgerTone(r.ledgerStatus)}
               <tr
                 class="cov-row cov-{r.status}"
                 class:cov-row-obl={detail}
@@ -214,14 +298,22 @@
                 </td>
                 <td class="mono">{r.ref}</td>
                 <td>{r.domain}</td>
-                <td><span class="cov-badge cov-badge-{r.status}">{statusLabel(r.status)}</span></td>
+                <td>
+                  <span class="cov-badge {lt.cls}" title={r.ledgerReason ?? lt.label}>
+                    <span class="cov-ledger-glyph">{lt.glyph}</span>{lt.label}
+                  </span>
+                </td>
+                <td><span class="cov-badge cov-badge-{r.directStatus ?? r.status}">{statusLabel(r.directStatus ?? r.status)}</span></td>
+                <td class="muted">{obligationLabel(r)}</td>
+                <td class="muted">{humanLabel(r)}</td>
                 <td class="mono muted" title={r.sliceId ?? ""}>{r.sliceId ? r.sliceId.slice(-8) : "—"}</td>
                 <td class="muted">{r.verification ?? r.reviewStatus ?? "—"}</td>
+                <td class="muted">{humanizeToken(r.nextAction)}</td>
               </tr>
               {#if detail && expanded}
                 <tr class="cov-obl-row">
                   <td></td>
-                  <td colspan="5"><RequirementDetail ref={r} finding={findingFor(r)} /></td>
+                  <td colspan="9"><RequirementDetail ref={r} finding={findingFor(r)} /></td>
                 </tr>
               {/if}
             {/each}
