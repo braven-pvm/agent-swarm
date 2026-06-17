@@ -858,6 +858,8 @@ Phase 10C-1C fixed the first real 100%-coverage calibration gap. A clean real ru
 
 Phase 10C-1D makes review quality a first-class acceptance gate. Reviewer output now includes a structured Sleuth Review Gate with seven dimensions: runtime path, stub/hardcode, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness. Reviewer prompts require the gate, slice reports/UI show it, and deterministic verification blocks failed gates, blocking concerns, failed dimensions, or high-risk dimensions. This is the answer to "review the functionality and implementation, not just AC/FR evidence."
 
+Phase 10C-2A adds the first derived requirement ledger. `/api/coverage` now exposes `ledger.entries`, `ledger.totals`, and `ledger.rollups`, and every coverage row can carry `kind`, `directStatus`, `ledgerStatus`, `ledgerReason`, `parentRefs`, `childRefs`, `humanPath`, and `rollup`. Parent FRs with child ACs are explicit: container parents can roll up from accepted child ACs, and parents with incomplete child ACs remain visibly incomplete. The ledger is still derived from existing source refs, slices, leases, obligations, evidence, review results, dependencies, and escalations; it is not yet persisted as a separate table.
+
 Clean 100%-coverage real run confirmed:
 
 - Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`
@@ -873,13 +875,12 @@ Clean 100%-coverage real run confirmed:
 
 The next recommended implementation steps for Phase 10C-2 are:
 
-- distinguish `human_input_required` from `human_verification_required` in state and API payloads
+- strengthen `human_input_required` vs `human_verification_required` behavior beyond the current derived API fields
 - add a human verification packet artifact generator
-- add parent FR rollup semantics so coverage can explain direct FR vs child AC completion
 - decide whether the requirement ledger stays derived for one more slice or becomes a persisted table now
-- update the Coverage tab to show obligation status, verification mode, and human path
+- update the Coverage tab to show ledger status, direct status, rollup reason, obligation status, verification mode, and human path
 
-Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and should be confirmed in the next focused/full verification pass. Phase 10C-2 remains the next design/implementation slice after that: requirement-ledger semantics, parent FR rollups, and human verification/input state.
+Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and confirmed by the next real full-product smoke. Phase 10C-2A now implements derived requirement-ledger semantics and parent FR rollups. Phase 10C-2B should focus on human verification packet artifacts, persistent ledger decision, and UI consumption of the new ledger/rollup fields.
 
 Previous next goal is complete: the clean real full-product smoke reran with the hardened coverage-completion path and reached `83/83`.
 

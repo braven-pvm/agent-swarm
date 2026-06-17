@@ -294,6 +294,161 @@ async function seedCoverageWorkspace() {
   return { workspace, sourceId, sliceId };
 }
 
+async function seedParentRollupWorkspace() {
+  const { SwarmStore } = await import("../dist/storage.js");
+
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-rollup-"));
+  const store = new SwarmStore(workspace);
+  store.init();
+
+  const now = new Date().toISOString();
+  const targetId = "TARGET-rollup";
+  store.addOrUpdateTarget({
+    id: targetId,
+    path: path.join(workspace, "app"),
+    name: "app",
+    config: { verificationCommand: "npm test" },
+    now,
+  });
+
+  const specsDir = path.join(workspace, "app", "specs");
+  fs.mkdirSync(specsDir, { recursive: true });
+  const specUri = path.join(specsDir, "ledger-rollup.md");
+  fs.writeFileSync(
+    specUri,
+    [
+      "# Ledger Rollup Spec",
+      "",
+      "FR-LED-001: Customers can see invoice totals.",
+      "- AC-LED-001.1: Total invoice count is visible.",
+      "- AC-LED-001.2: Open invoice count is visible.",
+      "FR-LED-002: Customers can export invoices.",
+      "- AC-LED-002.1: Export button downloads CSV.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const sourceId = "SOURCE-rollup-01";
+  store.addOrUpdateSource({
+    id: sourceId,
+    adapterId: "file",
+    kind: "spec",
+    uri: specUri,
+    title: "Ledger Rollup Spec",
+    hash: "rollup-hash",
+    metadata: {
+      domain: "Ledger",
+      tags: ["ledger"],
+      priority: 1,
+      frAcRefs: ["FR-LED-001", "AC-LED-001.1", "AC-LED-001.2", "FR-LED-002", "AC-LED-002.1"],
+      sections: [
+        {
+          id: `${sourceId}#ledger-rollup`,
+          title: "Ledger Rollup Spec",
+          level: 1,
+          startLine: 1,
+          endLine: 7,
+          refs: ["FR-LED-001", "AC-LED-001.1", "AC-LED-001.2", "FR-LED-002", "AC-LED-002.1"],
+          snippet: "FR-LED-001 with AC-LED-001.1 and AC-LED-001.2; FR-LED-002 with AC-LED-002.1.",
+        },
+      ],
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const laneId = "LANE-rollup";
+  store.insertLane({
+    id: laneId,
+    name: "ledger",
+    purpose: "Implement ledger rollup children",
+    focusLabels: ["ledger"],
+    targetId,
+    orchestrator: "test-orchestrator",
+    worktree: workspace,
+    state: "active",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const sliceId = "SLICE-rollup-children";
+  const childRefs = ["AC-LED-001.1", "AC-LED-001.2"];
+  store.insertSlice({
+    id: sliceId,
+    laneId,
+    targetId,
+    title: "Implement FR-LED-001 child ACs",
+    status: "accepted",
+    sourceRefs: childRefs.map((frAcRef) => ({ sourceId, frAcRef })),
+    frAcRefs: childRefs,
+    deliveryQuestion: "Can invoice totals be displayed?",
+    workPackageType: "component_pack",
+    minimumMeaningfulOutcome: "changes_runtime_path",
+    scope: ["src/ledger.js"],
+    outOfScope: [],
+    expectedEvidence: ["child AC verification passes"],
+    verificationObligations: childRefs.map((ref) => ({
+      ref,
+      sourceRef: ref,
+      sourceUri: specUri,
+      sourceTitle: "Ledger Rollup Spec",
+      sourceText: `${ref}: expected behavior`,
+      mode: "automated",
+      responsibleParty: "deterministic-verifier",
+      criteria: [
+        {
+          id: `${ref}.result`,
+          expectedOutcome: `${ref} is implemented and proven by deterministic evidence.`,
+          evidenceRequired: ["test"],
+          acceptanceThreshold: "pass",
+        },
+      ],
+      createdBy: "planner",
+      createdAt: now,
+      immutable: true,
+      guidance: [],
+    })),
+    unblockTargets: [],
+    verificationRequirements: [],
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  for (const ref of childRefs) {
+    store.insertLease({
+      id: `LEASE-${ref}`,
+      frAcRef: ref,
+      sliceId,
+      laneId,
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  const verifyEvidenceId = "EVID-rollup-verify";
+  store.insertEvidence({
+    id: verifyEvidenceId,
+    sliceId,
+    kind: "command",
+    summary: "child rollup verification run",
+    payload: {
+      passed: true,
+      frAcResults: childRefs.map((ref) => ({
+        ref,
+        status: "passed",
+        evidenceIds: [verifyEvidenceId],
+        proof: `${ref} verified by tests.`,
+        verifiedBy: "deterministic-verifier",
+      })),
+    },
+    createdAt: now,
+  });
+
+  store.close();
+  return { workspace, sliceId };
+}
+
 test("buildCoverage enumerates every indexed FR/AC ref incl. not-started", async () => {
   const { buildCoverage } = await import("../dist/observability.js");
   const { SwarmStore } = await import("../dist/storage.js");
@@ -394,6 +549,58 @@ test("buildCoverage enumerates every indexed FR/AC ref incl. not-started", async
       sorted.map((r) => r.ref),
       "refs should be sorted by domain then ref",
     );
+  } finally {
+    store.close();
+  }
+});
+
+test("buildCoverage derives requirement ledger entries and parent FR rollups", async () => {
+  const { buildCoverage } = await import("../dist/observability.js");
+  const { SwarmStore } = await import("../dist/storage.js");
+  const { workspace, sliceId } = await seedParentRollupWorkspace();
+
+  const store = new SwarmStore(workspace);
+  try {
+    const coverage = buildCoverage(store);
+
+    assert.ok(coverage.ledger, "coverage should expose a derived requirement ledger");
+    assert.equal(coverage.ledger.entries.length, 5, "ledger should include every indexed requirement ref");
+    assert.equal(coverage.ledger.totals.total, 5, "ledger totals should count every indexed ref");
+
+    const byRef = Object.fromEntries(coverage.refs.map((r) => [r.ref, r]));
+    const byLedgerRef = Object.fromEntries(coverage.ledger.entries.map((r) => [r.ref, r]));
+
+    const acceptedParent = byRef["FR-LED-001"];
+    assert.equal(acceptedParent.kind, "fr", "parent should be classified as an FR");
+    assert.equal(acceptedParent.directStatus, "not_started", "parent should preserve its direct, unsliced status");
+    assert.equal(acceptedParent.status, "done", "parent should be done through accepted child rollup");
+    assert.equal(acceptedParent.ledgerStatus, "accepted", "parent ledger status should be accepted");
+    assert.equal(acceptedParent.nextAction, "none", "accepted rollup parent should need no action");
+    assert.deepEqual(acceptedParent.childRefs, ["AC-LED-001.1", "AC-LED-001.2"], "parent should list child ACs");
+    assert.equal(acceptedParent.rollup.rule, "children", "unsliced parent should roll up from children");
+    assert.equal(acceptedParent.rollup.directLedgerStatus, "not_started", "rollup should expose direct ledger status");
+    assert.equal(acceptedParent.rollup.childStatusCounts.accepted, 2, "rollup should count accepted children");
+    assert.match(acceptedParent.ledgerReason, /container/i, "rollup reason should explain container semantics");
+
+    assert.deepEqual(byRef["AC-LED-001.1"].parentRefs, ["FR-LED-001"], "child AC should point to parent FR");
+    assert.deepEqual(byRef["AC-LED-001.2"].parentRefs, ["FR-LED-001"], "second child AC should point to parent FR");
+    assert.equal(byRef["AC-LED-001.1"].sliceId, sliceId, "child AC should retain owning slice");
+    assert.equal(byRef["AC-LED-001.1"].ledgerStatus, "accepted", "accepted child should be accepted in ledger");
+
+    const incompleteParent = byRef["FR-LED-002"];
+    assert.equal(incompleteParent.status, "not_started", "parent with only not-started children should not appear complete");
+    assert.equal(incompleteParent.ledgerStatus, "not_started", "parent ledger should reflect not-started child rollup");
+    assert.equal(incompleteParent.directStatus, "not_started", "incomplete parent should preserve direct status");
+    assert.deepEqual(incompleteParent.childRefs, ["AC-LED-002.1"], "incomplete parent should list its child AC");
+    assert.match(incompleteParent.ledgerReason, /child AC rollup is not_started/i, "incomplete rollup should explain child state");
+
+    const ledgerParent = byLedgerRef["FR-LED-001"];
+    assert.equal(ledgerParent.rollup.rule, "children", "ledger entry should carry rollup metadata");
+    assert.equal(ledgerParent.humanPath.state, "none", "normal automated rollup should have no human path");
+    assert.equal(coverage.ledger.rollups.length, 2, "ledger should expose rollups for both parent FRs");
+    assert.equal(coverage.totals.done, 3, "coverage totals should count accepted parent rollup plus accepted child ACs");
+    assert.equal(coverage.totals.inProgress, 0, "coverage totals should not invent progress for entirely not-started rollups");
+    assert.equal(coverage.totals.notStarted, 2, "coverage totals should keep not-started parent and child visible");
   } finally {
     store.close();
   }

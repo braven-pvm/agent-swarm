@@ -87,6 +87,67 @@ export interface AgentFocusItem {
   error?: string;
 }
 
+export type CoverageStatus = "done" | "in_progress" | "blocked" | "failed" | "not_started";
+export type RequirementKind = "fr" | "ac" | "unknown";
+export type RequirementLedgerStatus =
+  | "not_started"
+  | "planned"
+  | "in_progress"
+  | "implemented_unverified"
+  | "review_passed"
+  | "verified"
+  | "awaiting_human_verification"
+  | "human_verified"
+  | "human_input_required"
+  | "failed"
+  | "blocked"
+  | "accepted";
+export interface RequirementRollup {
+  rule: "none" | "direct" | "children" | "direct_and_children";
+  status: RequirementLedgerStatus;
+  reason: string;
+  directStatus: CoverageStatus;
+  directLedgerStatus: RequirementLedgerStatus;
+  childRefs: string[];
+  childStatusCounts: Record<RequirementLedgerStatus, number>;
+}
+export interface RequirementHumanPath {
+  state: "none" | "human_verification_required" | "human_input_required";
+  blocksAcceptance: boolean;
+  reason: string;
+  responsibleParty?: string;
+}
+export interface RequirementLedgerEntry {
+  ref: string;
+  kind: RequirementKind;
+  status: RequirementLedgerStatus;
+  reason: string;
+  coverageStatus: CoverageStatus;
+  directStatus: CoverageStatus;
+  domain: string;
+  sourceId: string;
+  sourceTitle: string;
+  sourceUri: string;
+  sliceId?: string;
+  sliceStatus?: string;
+  parentRefs: string[];
+  childRefs: string[];
+  obligation?: CoverageRef["obligation"];
+  verification?: CoverageRef["verification"];
+  reviewStatus?: CoverageRef["reviewStatus"];
+  evidenceIds?: string[];
+  activeEscalations?: CoverageRef["activeEscalations"];
+  humanPath: RequirementHumanPath;
+  rollup?: RequirementRollup;
+  lastChangedAt: string;
+}
+export interface RequirementLedgerSummary {
+  generatedAt: string;
+  totals: Record<RequirementLedgerStatus, number> & { total: number };
+  entries: RequirementLedgerEntry[];
+  rollups: RequirementRollup[];
+}
+
 export interface SnapshotResponse {
   workspace: string; runMode: RunMode; generatedAt: string;
   scenario?: string; phase?: string; turnCount?: number;   // scenario derivable in M1; phase/turn surfaced in M3 (— until then)
@@ -109,8 +170,16 @@ export interface CoverageRef {
   sourceUri: string;
   sourceSectionId?: string;
   sourceSectionTitle?: string;
-  status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  status: CoverageStatus;
+  directStatus?: CoverageStatus;
   statusReason: string;
+  kind?: RequirementKind;
+  ledgerStatus?: RequirementLedgerStatus;
+  ledgerReason?: string;
+  parentRefs?: string[];
+  childRefs?: string[];
+  humanPath?: RequirementHumanPath;
+  rollup?: RequirementRollup;
   nextAction:
     | "none"
     | "pull_slice"
@@ -163,6 +232,7 @@ export interface CoverageSummary {
   interpretation: CoverageInterpretation;
   byDomain: CoverageDomain[];
   refs: CoverageRef[];
+  ledger: RequirementLedgerSummary;
 }
 
 export interface CoverageInterpretation {

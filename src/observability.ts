@@ -298,6 +298,73 @@ export function latestFrAcResults(evidence: Array<ReturnType<SwarmStore["listEvi
   return commandEvidence.payload.frAcResults as unknown as FrAcVerificationResult[];
 }
 
+export type CoverageStatus = "done" | "in_progress" | "blocked" | "failed" | "not_started";
+
+export type RequirementKind = "fr" | "ac" | "unknown";
+
+export type RequirementLedgerStatus =
+  | "not_started"
+  | "planned"
+  | "in_progress"
+  | "implemented_unverified"
+  | "review_passed"
+  | "verified"
+  | "awaiting_human_verification"
+  | "human_verified"
+  | "human_input_required"
+  | "failed"
+  | "blocked"
+  | "accepted";
+
+export interface RequirementRollup {
+  rule: "none" | "direct" | "children" | "direct_and_children";
+  status: RequirementLedgerStatus;
+  reason: string;
+  directStatus: CoverageStatus;
+  directLedgerStatus: RequirementLedgerStatus;
+  childRefs: string[];
+  childStatusCounts: Record<RequirementLedgerStatus, number>;
+}
+
+export interface RequirementHumanPath {
+  state: "none" | "human_verification_required" | "human_input_required";
+  blocksAcceptance: boolean;
+  reason: string;
+  responsibleParty?: string;
+}
+
+export interface RequirementLedgerEntry {
+  ref: string;
+  kind: RequirementKind;
+  status: RequirementLedgerStatus;
+  reason: string;
+  coverageStatus: CoverageStatus;
+  directStatus: CoverageStatus;
+  domain: string;
+  sourceId: string;
+  sourceTitle: string;
+  sourceUri: string;
+  sliceId?: string;
+  sliceStatus?: string;
+  parentRefs: string[];
+  childRefs: string[];
+  obligation?: CoverageRef["obligation"];
+  verification?: CoverageRef["verification"];
+  reviewStatus?: CoverageRef["reviewStatus"];
+  evidenceIds?: string[];
+  activeEscalations?: CoverageRef["activeEscalations"];
+  humanPath: RequirementHumanPath;
+  rollup?: RequirementRollup;
+  lastChangedAt: string;
+}
+
+export interface RequirementLedgerSummary {
+  generatedAt: string;
+  totals: Record<RequirementLedgerStatus, number> & { total: number };
+  entries: RequirementLedgerEntry[];
+  rollups: RequirementRollup[];
+}
+
 export interface CoverageRef {
   ref: string;
   domain: string;
@@ -306,8 +373,16 @@ export interface CoverageRef {
   sourceUri: string;
   sourceSectionId?: string;
   sourceSectionTitle?: string;
-  status: "done" | "in_progress" | "blocked" | "failed" | "not_started";
+  status: CoverageStatus;
+  directStatus?: CoverageStatus;
   statusReason: string;
+  kind?: RequirementKind;
+  ledgerStatus?: RequirementLedgerStatus;
+  ledgerReason?: string;
+  parentRefs?: string[];
+  childRefs?: string[];
+  humanPath?: RequirementHumanPath;
+  rollup?: RequirementRollup;
   nextAction:
     | "none"
     | "pull_slice"
@@ -366,6 +441,7 @@ export interface CoverageSummary {
   interpretation: CoverageInterpretation;
   byDomain: CoverageDomain[];
   refs: CoverageRef[];
+  ledger: RequirementLedgerSummary;
 }
 
 export interface CoverageInterpretation {
@@ -651,6 +727,9 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
     return coverageRef;
   });
 
+  const generatedAt = new Date().toISOString();
+  const ledger = buildRequirementLedger(refs, generatedAt);
+
   refs.sort((a, b) => a.domain.localeCompare(b.domain) || a.ref.localeCompare(b.ref));
 
   // 3. Aggregate totals + byDomain from the deduped refs.
@@ -669,7 +748,300 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
   const byDomain = [...domains.values()].sort((a, b) => b.total - a.total || a.domain.localeCompare(b.domain));
 
   const interpretation = buildCoverageInterpretation(totals, byDomain, refs);
-  return { generatedAt: new Date().toISOString(), totals, interpretation, byDomain, refs };
+  return { generatedAt, totals, interpretation, byDomain, refs, ledger };
+}
+
+const LEDGER_STATUSES: RequirementLedgerStatus[] = [
+  "not_started",
+  "planned",
+  "in_progress",
+  "implemented_unverified",
+  "review_passed",
+  "verified",
+  "awaiting_human_verification",
+  "human_verified",
+  "human_input_required",
+  "failed",
+  "blocked",
+  "accepted",
+];
+
+function buildRequirementLedger(refs: CoverageRef[], generatedAt: string): RequirementLedgerSummary {
+  const byRef = new Map(refs.map((ref) => [ref.ref.toUpperCase(), ref]));
+  const childrenByParent = new Map<string, CoverageRef[]>();
+
+  for (const row of refs) {
+    row.kind = requirementKind(row.ref);
+    row.directStatus = row.status;
+    row.parentRefs = [];
+    row.childRefs = [];
+  }
+
+  for (const row of refs) {
+    if (row.kind !== "ac") continue;
+    const parentRef = inferredParentFrRef(row.ref);
+    if (!parentRef || !byRef.has(parentRef.toUpperCase())) continue;
+    row.parentRefs = [parentRef];
+    const siblings = childrenByParent.get(parentRef.toUpperCase()) ?? [];
+    siblings.push(row);
+    childrenByParent.set(parentRef.toUpperCase(), siblings);
+  }
+
+  for (const [parentKey, children] of childrenByParent.entries()) {
+    const parent = byRef.get(parentKey);
+    if (parent) parent.childRefs = children.map((child) => child.ref).sort((a, b) => a.localeCompare(b));
+  }
+
+  for (const row of refs) {
+    const directStatus = directLedgerStatus(row);
+    row.ledgerStatus = directStatus;
+    row.ledgerReason = directLedgerReason(row, directStatus);
+    row.humanPath = requirementHumanPath(row, directStatus);
+  }
+
+  for (const [parentKey, children] of childrenByParent.entries()) {
+    const parent = byRef.get(parentKey);
+    if (!parent) continue;
+    const rollup = buildParentRequirementRollup(parent, children);
+    parent.rollup = rollup;
+    parent.ledgerStatus = rollup.status;
+    parent.ledgerReason = rollup.reason;
+    parent.humanPath = requirementHumanPath(parent, rollup.status);
+    parent.statusReason = rollup.reason;
+    parent.status = coverageStatusFromLedgerStatus(rollup.status);
+    parent.nextAction = nextActionFromLedgerStatus(parent.nextAction, rollup.status);
+    parent.lastChangedAt = maxIso([parent.lastChangedAt, ...children.map((child) => child.lastChangedAt)]);
+  }
+
+  const entries = refs
+    .map((row) => {
+      const status = row.ledgerStatus ?? directLedgerStatus(row);
+      const entry: RequirementLedgerEntry = {
+        ref: row.ref,
+        kind: row.kind ?? requirementKind(row.ref),
+        status,
+        reason: row.ledgerReason ?? directLedgerReason(row, status),
+        coverageStatus: row.status,
+        directStatus: row.directStatus ?? row.status,
+        domain: row.domain,
+        sourceId: row.sourceId,
+        sourceTitle: row.sourceTitle,
+        sourceUri: row.sourceUri,
+        sliceId: row.sliceId,
+        sliceStatus: row.sliceStatus,
+        parentRefs: row.parentRefs ?? [],
+        childRefs: row.childRefs ?? [],
+        obligation: row.obligation,
+        verification: row.verification,
+        reviewStatus: row.reviewStatus,
+        evidenceIds: row.evidenceIds,
+        activeEscalations: row.activeEscalations,
+        humanPath: row.humanPath ?? requirementHumanPath(row, status),
+        rollup: row.rollup,
+        lastChangedAt: row.lastChangedAt,
+      };
+      return entry;
+    })
+    .sort((a, b) => a.domain.localeCompare(b.domain) || a.ref.localeCompare(b.ref));
+
+  const totals = emptyRequirementLedgerTotals();
+  for (const entry of entries) {
+    totals.total += 1;
+    totals[entry.status] += 1;
+  }
+
+  return {
+    generatedAt,
+    totals,
+    entries,
+    rollups: entries.map((entry) => entry.rollup).filter((rollup): rollup is RequirementRollup => Boolean(rollup)),
+  };
+}
+
+function emptyRequirementLedgerTotals(): RequirementLedgerSummary["totals"] {
+  return {
+    total: 0,
+    not_started: 0,
+    planned: 0,
+    in_progress: 0,
+    implemented_unverified: 0,
+    review_passed: 0,
+    verified: 0,
+    awaiting_human_verification: 0,
+    human_verified: 0,
+    human_input_required: 0,
+    failed: 0,
+    blocked: 0,
+    accepted: 0,
+  };
+}
+
+function requirementKind(ref: string): RequirementKind {
+  if (/^FR[-_]/i.test(ref)) return "fr";
+  if (/^AC[-_]/i.test(ref)) return "ac";
+  return "unknown";
+}
+
+function inferredParentFrRef(ref: string): string | undefined {
+  const match = /^AC-(.+)-(\d+)(?:\.\d+)?$/i.exec(ref);
+  if (!match) return undefined;
+  return `FR-${match[1]}-${match[2]}`;
+}
+
+function directLedgerStatus(row: CoverageRef): RequirementLedgerStatus {
+  if (row.verification === "human_input_required" || hasHumanRequiredEscalation(row)) return "human_input_required";
+  if (row.verification === "awaiting_human_verification") return "awaiting_human_verification";
+  if (row.verification === "failed" || row.reviewStatus === "failed" || row.status === "failed") return "failed";
+  if (row.status === "blocked") return "blocked";
+  if (row.status === "not_started") return "not_started";
+  if (row.status === "done") {
+    if (row.obligation?.mode === "human_verification_required" && row.verification !== "passed") {
+      return "awaiting_human_verification";
+    }
+    if (row.sliceStatus === "accepted" || row.sliceStatus === "closed") return "accepted";
+    return "verified";
+  }
+  if (row.reviewStatus === "passed") return "review_passed";
+  if (row.verification === "missing_evidence") return "implemented_unverified";
+  if (row.sliceStatus && ["candidate", "ready", "claimed"].includes(row.sliceStatus)) return "planned";
+  if (row.sliceStatus && ["implemented", "verifying", "ready_for_review", "repairing"].includes(row.sliceStatus)) {
+    return "implemented_unverified";
+  }
+  return "in_progress";
+}
+
+function directLedgerReason(row: CoverageRef, status: RequirementLedgerStatus): string {
+  if (status === "accepted") return "Accepted by the owning slice after verifier/reviewer evidence satisfied the requirement.";
+  if (status === "verified") return "Verifier evidence passed, but the owning slice has not reached final acceptance.";
+  if (status === "human_verified") return "Human verification has been recorded for this requirement.";
+  if (status === "awaiting_human_verification") {
+    return "Implementation evidence exists or is expected, but the verification obligation requires human sign-off before acceptance.";
+  }
+  if (status === "human_input_required") return "Human input is required before this requirement can be safely implemented or verified.";
+  if (status === "failed") return row.statusReason || "Verification or independent review failed for this requirement.";
+  if (status === "blocked") return row.statusReason || "The requirement is blocked by an active escalation or dependency.";
+  if (status === "implemented_unverified") return "Implementation has progressed, but requirement-level verification is not complete.";
+  if (status === "review_passed") return "Independent review passed, but verifier or acceptance evidence is not final.";
+  if (status === "planned") return "The requirement is included in a planned or claimed slice.";
+  if (status === "in_progress") return row.statusReason || "The requirement is actively leased by a slice.";
+  return row.statusReason || "The requirement is indexed but not currently owned by a slice.";
+}
+
+function requirementHumanPath(row: CoverageRef, status: RequirementLedgerStatus): RequirementHumanPath {
+  if (status === "human_input_required") {
+    return {
+      state: "human_input_required",
+      blocksAcceptance: true,
+      reason: "The requirement needs clarification or an external decision; downstream dependent work must stay blocked.",
+      responsibleParty: row.obligation?.responsibleParty,
+    };
+  }
+  if (status === "awaiting_human_verification" || row.obligation?.mode === "human_verification_required") {
+    const accepted = status === "accepted" || status === "human_verified";
+    return {
+      state: "human_verification_required",
+      blocksAcceptance: !accepted,
+      reason: accepted
+        ? "Human-verification requirement has been satisfied for this accepted ref."
+        : "Human verification is required before this ref can be accepted.",
+      responsibleParty: row.obligation?.responsibleParty,
+    };
+  }
+  return { state: "none", blocksAcceptance: false, reason: "No human-specific verification path is active." };
+}
+
+function hasHumanRequiredEscalation(row: CoverageRef): boolean {
+  return row.activeEscalations?.some((item) => item.level === "human_required") ?? false;
+}
+
+function buildParentRequirementRollup(parent: CoverageRef, children: CoverageRef[]): RequirementRollup {
+  const directStatus = parent.directStatus ?? parent.status;
+  const directLedger = directLedgerStatus({ ...parent, status: directStatus });
+  const childStatuses = children.map((child) => child.ledgerStatus ?? directLedgerStatus(child));
+  const childRollupStatus = combineLedgerStatuses(childStatuses);
+  const hasDirectContract = Boolean(parent.sliceId || parent.obligation?.status === "present");
+  const rule: RequirementRollup["rule"] = hasDirectContract ? "direct_and_children" : "children";
+  const status = hasDirectContract ? combineLedgerStatuses([directLedger, ...childStatuses]) : childRollupStatus;
+  const childStatusCounts = countLedgerStatuses(childStatuses);
+  return {
+    rule,
+    status,
+    reason: parentRollupReason({
+      parent,
+      rule,
+      directLedger,
+      childRollupStatus,
+      status,
+      children,
+      childStatusCounts,
+    }),
+    directStatus,
+    directLedgerStatus: directLedger,
+    childRefs: children.map((child) => child.ref).sort((a, b) => a.localeCompare(b)),
+    childStatusCounts,
+  };
+}
+
+function combineLedgerStatuses(statuses: RequirementLedgerStatus[]): RequirementLedgerStatus {
+  if (statuses.length === 0) return "not_started";
+  if (statuses.every((status) => status === "accepted" || status === "human_verified")) return "accepted";
+  if (statuses.every((status) => ["accepted", "verified", "human_verified"].includes(status))) return "verified";
+  if (statuses.every((status) => status === "not_started")) return "not_started";
+  if (statuses.some((status) => status === "human_input_required")) return "human_input_required";
+  if (statuses.some((status) => status === "failed")) return "failed";
+  if (statuses.some((status) => status === "blocked")) return "blocked";
+  if (statuses.some((status) => status === "awaiting_human_verification")) return "awaiting_human_verification";
+  if (statuses.some((status) => status === "implemented_unverified")) return "implemented_unverified";
+  if (statuses.some((status) => status === "review_passed")) return "review_passed";
+  if (statuses.some((status) => status === "in_progress")) return "in_progress";
+  if (statuses.some((status) => status === "planned")) return "planned";
+  if (statuses.some((status) => status === "not_started")) return "in_progress";
+  return "in_progress";
+}
+
+function countLedgerStatuses(statuses: RequirementLedgerStatus[]): Record<RequirementLedgerStatus, number> {
+  const counts = Object.fromEntries(LEDGER_STATUSES.map((status) => [status, 0])) as Record<RequirementLedgerStatus, number>;
+  for (const status of statuses) counts[status] += 1;
+  return counts;
+}
+
+function parentRollupReason(input: {
+  parent: CoverageRef;
+  rule: RequirementRollup["rule"];
+  directLedger: RequirementLedgerStatus;
+  childRollupStatus: RequirementLedgerStatus;
+  status: RequirementLedgerStatus;
+  children: CoverageRef[];
+  childStatusCounts: Record<RequirementLedgerStatus, number>;
+}): string {
+  const childCount = input.children.length;
+  if (input.rule === "children") {
+    if (input.status === "accepted") {
+      return `Parent FR is treated as a container and rolls up from ${childCount} accepted child AC refs.`;
+    }
+    return `Parent FR is treated as a container; child AC rollup is ${input.childRollupStatus} across ${childCount} refs.`;
+  }
+  if (input.status === "accepted") {
+    return `Parent FR has direct evidence and ${childCount} child AC refs; all required direct and child statuses are accepted.`;
+  }
+  return `Parent FR combines direct status ${input.directLedger} with child AC rollup ${input.childRollupStatus}; overall status is ${input.status}.`;
+}
+
+function coverageStatusFromLedgerStatus(status: RequirementLedgerStatus): CoverageStatus {
+  if (status === "accepted" || status === "verified" || status === "human_verified") return "done";
+  if (status === "failed") return "failed";
+  if (status === "blocked" || status === "human_input_required") return "blocked";
+  if (status === "not_started") return "not_started";
+  return "in_progress";
+}
+
+function nextActionFromLedgerStatus(existing: CoverageRef["nextAction"], status: RequirementLedgerStatus): CoverageRef["nextAction"] {
+  if (status === "accepted" || status === "verified" || status === "human_verified") return "none";
+  if (status === "human_input_required" || status === "blocked") return "resolve_blocker";
+  if (status === "awaiting_human_verification") return "await_verification";
+  if (status === "failed") return "repair_or_review";
+  if (status === "not_started") return existing === "wait_for_dependency" ? existing : "pull_slice";
+  return existing;
 }
 
 export function buildRunObservability(store: SwarmStore, workspace: string): RunObservabilitySummary {

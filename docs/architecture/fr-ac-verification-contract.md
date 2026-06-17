@@ -195,6 +195,14 @@ Parent FR rollups must be explicit:
 - A parent FR that is only a container may roll up from child ACs.
 - The rollup rule should be visible so coverage does not show "not started" for a parent whose child ACs fully satisfy it, or "done" for a parent whose required child ACs are incomplete.
 
+Current implementation note:
+
+- `/api/coverage` derives a requirement ledger from indexed source refs, leases, slice state, verification evidence, review evidence, obligations, dependencies, and active escalations.
+- Coverage rows preserve `directStatus` for the ref's own lease/evidence state and expose `ledgerStatus`/`ledgerReason` for the derived requirement state.
+- Parent FR rows expose `childRefs` and `rollup`. Container parents use `rollup.rule = "children"`; parents with direct evidence plus children use `rollup.rule = "direct_and_children"`.
+- Parent rollups can change the visible coverage status: a container parent with all accepted child ACs becomes done/accepted, while a parent with incomplete child ACs remains incomplete even if the parent ref itself was indexed.
+- This ledger is currently derived, not persisted. Persisting it as a dedicated table remains a later hardening step once the semantics stabilize.
+
 ## Evidence Coverage
 
 Each in-scope FR/AC ref should have a verification result:
