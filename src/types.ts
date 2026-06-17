@@ -208,6 +208,7 @@ export type FrAcVerificationStatus =
   | "failed"
   | "missing_evidence"
   | "awaiting_human_verification"
+  | "human_verified"
   | "human_input_required"
   | "overridden";
 

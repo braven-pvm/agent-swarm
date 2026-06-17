@@ -12,7 +12,7 @@ export interface LeaseRecord { id: string; frAcRef: string; sliceId: string; lan
 export interface HeartbeatRecord { id: string; actor: string; state: HeartbeatState; detail?: string; entityType?: EntityType; entityId?: string; timestamp: string; }
 export interface AgentRunRecord { id: string; sliceId: string; role?: AgentRole; entityType?: EntityType; entityId?: string; actor: string; driver: string; status: "running" | "completed" | "failed" | "stale" | "released"; sessionId?: string; attempt: number; eventsPath?: string; resultPath?: string; stderrPath?: string; startedAt: string; updatedAt: string; }
 export interface EvidenceRecord { id: string; sliceId: string; kind: "command" | "worker_result" | "review_result" | "artifact" | "note"; summary: string; ref?: string; payload: Record<string, unknown>; createdAt: string; }
-export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_input_required" | "overridden";
+export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_verified" | "human_input_required" | "overridden";
 export interface VerificationCriterionResult { criterionId: string; status: FrAcVerificationStatus; expectedOutcome: string; actualOutcome: string; evidenceIds: string[]; }
 export interface FrAcVerificationResult { ref: string; status: FrAcVerificationStatus; evidenceIds: string[]; proof: string; verifiedBy: string; criteriaResults?: VerificationCriterionResult[]; }
 export type VerificationObligationMode = "automated" | "reviewer" | "human_verification_required" | "hybrid";

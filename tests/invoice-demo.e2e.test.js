@@ -384,6 +384,69 @@ test("human-verification obligations produce packets and block acceptance", () =
   assert.equal(coverageRef.humanPath.state, "human_verification_required");
   assert.equal(coverageRef.humanPath.blocksAcceptance, true);
   assert.equal(coverageRef.humanPath.packet.markdownPath, packetEvidence.payload.markdownPath);
+
+  const reworkOutput = runSwarm(workspace, [
+    "human-verify",
+    sliceId,
+    humanRef,
+    "--status",
+    "needs_rework",
+    "--actor",
+    "human-qa",
+    "--notes",
+    "The display value did not match the expected acceptance note.",
+  ]);
+  assert.match(reworkOutput, /Human verification needs_rework recorded/);
+  assert.match(reworkOutput, /final slice status: repairing/);
+
+  store = new SwarmStore(workspace);
+  slice = store.listSlices().find((item) => item.id === sliceId);
+  const reworkLeases = store.listLeases().filter((lease) => lease.sliceId === sliceId);
+  const reworkEvidence = store.listEvidence(sliceId).filter((item) => item.kind === "command").at(-1);
+  const reworkCoverage = buildCoverage(store);
+  store.close();
+
+  assert.equal(slice?.status, "repairing", "needs_rework should keep the slice out of accepted state");
+  assert.ok(reworkLeases.every((lease) => lease.status === "active"), "needs_rework should keep leases active");
+  assert.equal(reworkEvidence.payload.humanVerificationResult.status, "needs_rework");
+  assert.equal(reworkEvidence.payload.frAcResults.find((item) => item.ref === humanRef).status, "failed");
+  const reworkCoverageRef = reworkCoverage.refs.find((item) => item.ref === humanRef);
+  assert.equal(reworkCoverageRef.ledgerStatus, "failed");
+  assert.equal(reworkCoverageRef.humanPath.packet.status, "needs_rework");
+
+  const signedOutput = runSwarm(workspace, [
+    "human-verify",
+    sliceId,
+    humanRef,
+    "--status",
+    "human_verified",
+    "--actor",
+    "human-qa",
+    "--notes",
+    "Rechecked against the packet and accepted.",
+  ]);
+  assert.match(signedOutput, /Human verification human_verified recorded/);
+  assert.match(signedOutput, /final slice status: accepted/);
+
+  store = new SwarmStore(workspace);
+  slice = store.listSlices().find((item) => item.id === sliceId);
+  const signedLeases = store.listLeases().filter((lease) => lease.sliceId === sliceId);
+  const signedEvidence = store.listEvidence(sliceId).filter((item) => item.kind === "command").at(-1);
+  const signedCoverage = buildCoverage(store);
+  const humanRecorded = store.listEvents().find((event) => event.type === "human_verification.recorded" && event.entityId === sliceId);
+  store.close();
+
+  assert.equal(slice?.status, "accepted", "human_verified should accept the slice once all refs are satisfied");
+  assert.ok(signedLeases.every((lease) => lease.status === "completed"), "accepted human verification should complete leases");
+  assert.equal(signedEvidence.payload.humanVerificationResult.status, "human_verified");
+  assert.equal(signedEvidence.payload.frAcResults.find((item) => item.ref === humanRef).status, "human_verified");
+  const signedCoverageRef = signedCoverage.refs.find((item) => item.ref === humanRef);
+  assert.equal(signedCoverageRef.status, "done");
+  assert.equal(signedCoverageRef.ledgerStatus, "accepted");
+  assert.equal(signedCoverageRef.verification, "human_verified");
+  assert.equal(signedCoverageRef.humanPath.blocksAcceptance, false);
+  assert.equal(signedCoverageRef.humanPath.packet.status, "human_verified");
+  assert.ok(humanRecorded, "human verification result should be visible as an event");
 });
 
 test("worker dispatch blocks explicit slices with missing verification obligations", () => {

@@ -202,6 +202,7 @@ Current implementation note:
 - Parent FR rows expose `childRefs` and `rollup`. Container parents use `rollup.rule = "children"`; parents with direct evidence plus children use `rollup.rule = "direct_and_children"`.
 - Parent rollups can change the visible coverage status: a container parent with all accepted child ACs becomes done/accepted, while a parent with incomplete child ACs remains incomplete even if the parent ref itself was indexed.
 - Verification for `human_verification_required` refs produces durable JSON and Markdown human verification packets, records them as `artifact` evidence with `type = human_verification_packet`, and keeps the ref at `awaiting_human_verification` until a human result is recorded.
+- `swarm human-verify <slice-id> <ref> --status human_verified|failed|needs_rework` records the human result as evidence. `human_verified` can complete leases and accept the slice when every in-scope ref is satisfied; `failed` and `needs_rework` keep affected work blocked/repairing.
 - Coverage rows expose the latest human verification packet through `humanVerificationPacket` and `humanPath.packet`.
 - This ledger is currently derived, not persisted. Persisting it as a dedicated table remains a later hardening step once the semantics stabilize.
 

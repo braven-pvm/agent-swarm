@@ -413,7 +413,7 @@ export interface CoverageRef {
   targetId?: string;
   targetName?: string;
   worktree?: string;
-  verification?: "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_input_required" | "overridden";
+  verification?: "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_verified" | "human_input_required" | "overridden";
   obligation?: {
     status: "present" | "missing";
     mode?: string;
@@ -658,7 +658,10 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
     );
 
     let status: CoverageRef["status"];
-    if (!hasBlockingEscalation && (frAcResult?.status === "passed" || (lease?.status === "completed" && owning.status === "accepted"))) {
+    if (
+      !hasBlockingEscalation &&
+      (frAcResult?.status === "passed" || frAcResult?.status === "human_verified" || (lease?.status === "completed" && owning.status === "accepted"))
+    ) {
       status = "done";
     } else if (frAcResult?.status === "failed" || reviewFinding?.status === "failed") {
       status = "failed";
@@ -901,6 +904,7 @@ function inferredParentFrRef(ref: string): string | undefined {
 
 function directLedgerStatus(row: CoverageRef): RequirementLedgerStatus {
   if (row.verification === "human_input_required" || hasHumanRequiredEscalation(row)) return "human_input_required";
+  if (row.verification === "human_verified") return row.sliceStatus === "accepted" || row.sliceStatus === "closed" ? "accepted" : "human_verified";
   if (row.verification === "awaiting_human_verification") return "awaiting_human_verification";
   if (row.verification === "failed" || row.reviewStatus === "failed" || row.status === "failed") return "failed";
   if (row.status === "blocked") return "blocked";
@@ -970,7 +974,7 @@ function latestHumanVerificationPacketLink(
   for (const item of [...evidence].reverse()) {
     if (item.kind !== "artifact") continue;
     if (item.ref && item.ref !== ref) continue;
-    if (item.payload.type !== "human_verification_packet") continue;
+    if (item.payload.type !== "human_verification_packet" && item.payload.type !== "human_verification_result") continue;
     const markdownPath = stringValue(item.payload.markdownPath);
     const jsonPath = stringValue(item.payload.jsonPath);
     if (!markdownPath || !jsonPath) continue;
