@@ -6,6 +6,8 @@
   import Markdown from "~/components/Markdown.svelte";
   import OverseerTurnDetail from "~/components/OverseerTurnDetail.svelte";
   import HumanActionDetail from "~/components/HumanActionDetail.svelte";
+  import SkillStacks from "~/components/SkillStacks.svelte";
+  import { skillsOf, type SkillBindingSummary } from "~/lib/skills";
   let { store, onResolved = () => {} }: { store: ConsoleStore; onResolved?: () => void } = $props();
   const sel = $derived(store.selected);
   // A queue action open for resolution takes priority over any entity 'sel' branch below.
@@ -91,6 +93,13 @@
     const latest = agentRuns[0]; // agentRuns is sorted newest-first by startedAt
     return latest ? sliceById(latest.sliceId) : undefined;
   })());
+  // ---- Skills: the protocol skill binding on the agent's LATEST run (newest by startedAt).
+  // Read via skillsOf (additive/optional, not on the shared AgentRunRecord type). undefined
+  // when the latest run has no binding (historical / pre-Phase-10D) → the Skills section is
+  // skipped entirely (neutral, not an error).
+  const agentSkills = $derived<SkillBindingSummary | undefined>(
+    sel?.kind === "agent" ? skillsOf(agentRuns[0]) : undefined,
+  );
   // Coverage lookup to color the working-slice refs + name the spec/domain. Empty when coverage is null.
   const covByRef = $derived.by(() => {
     const map = new Map<string, CoverageRef>();
@@ -523,6 +532,32 @@
         </section>
       {/if}
 
+      <!-- 2c. Skills — the protocol skills bound to the latest run + their provenance.
+           Rendered only when the latest run carries a skill binding (skillsOf). Absent
+           skill data renders nothing (neutral) — historical / pre-Phase-10D runs. -->
+      {#if agentSkills}
+        <section class="agent-section ag-skills">
+          <h4>Skills</h4>
+          <SkillStacks binding={agentSkills} />
+          {#if agentSkills.bindingPath || agentSkills.packetPath}
+            <div class="skill-refs">
+              {#if agentSkills.bindingPath}
+                <div class="skill-ref" title="Binding (machine-readable provenance) · {agentSkills.bindingPath}">
+                  <span class="skill-ref-label">Binding</span>
+                  <code class="ovt-log-ref">{prettifyTarget(agentSkills.bindingPath)}</code>
+                </div>
+              {/if}
+              {#if agentSkills.packetPath}
+                <div class="skill-ref" title="Packet (what the agent was told to read) · {agentSkills.packetPath}">
+                  <span class="skill-ref-label">Packet</span>
+                  <code class="ovt-log-ref">{prettifyTarget(agentSkills.packetPath)}</code>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </section>
+      {/if}
+
       <!-- 3. Runs — what it HAS DONE. Collapsible per-run cards, newest first. -->
       {#if historyLoading && resolvedRuns.length === 0}
         <p class="empty">Loading…</p>
@@ -864,6 +899,35 @@
             </div>
             {#if outputTail}
               <pre class="json" style="max-height:160px">{outputTail}</pre>
+            {/if}
+          {/if}
+
+          <!-- Skills — protocol skills bound to this run + their binding/packet artifacts.
+               skillsOf reads the packet's .skills binding (additive/optional); absent skill
+               data renders nothing (neutral) — historical / pre-Phase-10D runs. -->
+          {#if pick(focusPacket, "skills")}
+            {@const skillBinding = skillsOf(focusPacket)}
+            {#if skillBinding}
+              {@const bindingArt = asStr(pick(artifacts, "skillBinding.path")) ?? skillBinding.bindingPath}
+              {@const packetArt = asStr(pick(artifacts, "skillPacket.path")) ?? skillBinding.packetPath}
+              <div class="run-subhead">Skills</div>
+              <SkillStacks binding={skillBinding} />
+              {#if bindingArt || packetArt}
+                <div class="skill-refs">
+                  {#if bindingArt}
+                    <div class="skill-ref" title="Binding (machine-readable provenance) · {bindingArt}">
+                      <span class="skill-ref-label">Binding</span>
+                      <code class="ovt-log-ref">{prettifyTarget(bindingArt)}</code>
+                    </div>
+                  {/if}
+                  {#if packetArt}
+                    <div class="skill-ref" title="Packet (what the agent was told to read) · {packetArt}">
+                      <span class="skill-ref-label">Packet</span>
+                      <code class="ovt-log-ref">{prettifyTarget(packetArt)}</code>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             {/if}
           {/if}
 

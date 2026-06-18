@@ -54,6 +54,11 @@
       <span class="spacer"></span>
       <span class="agent-state lv-{state}">{state}</span>
       {#if row.runtimeMs}<span class="runtime" title="agent runtime">{formatDuration(row.runtimeMs)}</span>{/if}
+      {#if row.skillCount && row.skillCount > 0}
+        <span class="agent-skills" title="{row.skillCount} protocol skill{row.skillCount === 1 ? '' : 's'} bound">
+          <span class="agent-skills-glyph" aria-hidden="true">⚙</span>{row.skillCount}
+        </span>
+      {/if}
       <span class="agent-age age-{level}" title="last signal age">{shortAge(age)}</span>
     </div>
     <div class="agent-now" title={row.nowTarget ?? row.now}>{working ? d.present : d.past}{#if d.target} <code class="now-target">{d.target}</code>{/if}</div>

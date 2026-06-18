@@ -4,6 +4,7 @@ import type {
 } from "~/lib/types";
 import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
 import type { HumanActionQueue } from "~/lib/human-actions";
+import { skillsOf } from "~/lib/skills";
 
 export interface AgentRosterRow {
   actor: string;
@@ -25,6 +26,9 @@ export interface AgentRosterRow {
   focusReason?: string;
   recommendedInterventions?: string[];
   focusPriority?: number;
+  // Count of protocol skills bound to the LATEST run (skillsOf(latest)?.count). Undefined
+  // when the latest run carries no skill binding (historical / pre-Phase-10D) → neutral.
+  skillCount?: number;
 }
 
 export interface ProofChainRow {
@@ -203,6 +207,10 @@ export function createConsoleStore() {
       if (actorRuns.length > 0) {
         const latest = actorRuns.reduce((a, b) => (a.startedAt >= b.startedAt ? a : b));
         row.runStatus = latest.status;
+        // Protocol skills bound to this latest run (additive/optional on the run record;
+        // read via skillsOf so we never touch the shared AgentRunRecord type). Undefined
+        // when the run has no binding → the roster renders no skill chip (neutral).
+        row.skillCount = skillsOf(latest)?.count;
         const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
         const rt = endMs - Date.parse(latest.startedAt);
         if (Number.isFinite(rt)) row.runtimeMs = rt;

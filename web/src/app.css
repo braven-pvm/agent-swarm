@@ -733,6 +733,33 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .focus-packet .focus-pk-meta { font-size: 12px; margin: 2px 0; }
 .focus-packet .focus-pk-chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0; }
 .focus-packet pre { max-height: 320px; overflow: auto; }
+/* ── Skill observability (read-only display) ─────────────────────────────
+   Roster chip: neutral protocol-skill count on the agent card head. The detail
+   stacks (SkillStacks): required/optional skill rows with a source chip + short
+   hash, plus binding/packet path references. Static — reuses chip/eyebrow/ref
+   vocabulary; the only new colours are the source tones (project/path). */
+.agent-skills { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--muted); background: rgba(255,255,255,.06); border-radius: 8px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+.agent-skills-glyph { font-size: .9em; opacity: .8; }
+.agent.active .agent-skills, .agent.stalled .agent-skills { color: var(--muted); }
+/* Detail stacks */
+.skill-stacks { display: flex; flex-direction: column; gap: var(--s2); }
+.skill-stack-head { margin: 6px 0 2px; }
+.skill-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; padding: 2px 0; font-size: var(--fs-meta); }
+.skill-glyph { flex: none; color: var(--muted); font-size: .9em; }
+.skill-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); flex: none; }
+.skill-title { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.skill-hash { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); font-size: var(--fs-eyebrow); flex: none; }
+.skill-desc { font-size: var(--fs-eyebrow); padding-left: 18px; margin: 0 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Source chip: glyph + label tone (paired, never colour-alone). */
+.skill-src { display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; }
+.skill-src-glyph { font-size: .8em; }
+.skill-src-builtin { background: rgba(255,255,255,.06); color: var(--muted); }
+.skill-src-project { background: rgba(91,157,255,.14); color: var(--blue); }
+.skill-src-path { background: rgba(167,139,250,.16); color: var(--violet); }
+/* Binding / packet path references (filesystem paths shown as references). */
+.skill-refs { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.skill-ref { display: flex; align-items: baseline; gap: var(--s2); }
+.skill-ref-label { font-size: var(--fs-eyebrow); text-transform: uppercase; letter-spacing: .02em; color: var(--muted); flex: none; min-width: 48px; }
 /* ── Overseer turn detail (inspector) ────────────────────────────────────
    Structured render of an overseer loop event: eyebrow sub-heads + muted body,
    mono for ids/commands/paths, one accent, glyph+colour for status. Static
