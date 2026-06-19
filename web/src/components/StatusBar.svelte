@@ -44,11 +44,11 @@
       <span class="ro-badge ro-{b.tone}" title={b.tooltip}>{b.label}: <strong>{b.value}</strong></span>
     {/each}
     {#if snap?.focusQueue?.length}
-      <span class="chip focus-chip" title="slices needing attention">⚑ focus {snap.focusQueue.length}</span>
+      <span class="chip focus-chip focus-chip-pulse" title="slices needing attention">⚑ focus {snap.focusQueue.length}</span>
     {/if}
     {#if actionCount > 0}
-      <button class="chip ha-chip ha-chip-{actionTone}" title="open the most urgent action" onclick={openTopAction}>
-        ⚑ {actionCount} action{actionCount === 1 ? "" : "s"}
+      <button class="chip ha-chip ha-chip-{actionTone} ha-chip-pulse" title="open the most urgent action" onclick={openTopAction}>
+        <span class="ha-chip-flag" aria-hidden="true">⚑</span> {actionCount} action{actionCount === 1 ? "" : "s"}
       </button>
     {/if}
     <span class="sb-stat">uptime {uptime}</span>

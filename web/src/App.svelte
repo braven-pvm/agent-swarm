@@ -12,6 +12,7 @@
   import FocusRail from "~/components/FocusRail.svelte";
   import InspectorDrawer from "~/components/InspectorDrawer.svelte";
   import ObservabilityCallout from "~/components/ObservabilityCallout.svelte";
+  import Toaster from "~/components/Toaster.svelte";
   import { fetchHumanActions } from "~/lib/human-actions";
 
   const store = createConsoleStore();
@@ -94,6 +95,9 @@
     return () => { clearInterval(poll); handle.close(); };
   });
 </script>
+
+<!-- New-action toasts: mounted once, OUTSIDE the route switch, so they surface on any tab. -->
+<Toaster {store} />
 
 <div class="bridge">
   <StatusBar {store} />

@@ -20,6 +20,80 @@
   const sevClass = (s: HumanActionItem["severity"]) =>
     s === "danger" ? "verdict-blocked" : s === "warning" ? "verdict-repair_required" : "verdict-other";
 
+  function truncate(s: string, n: number): string {
+    const clean = s.replace(/\s+/g, " ").trim();
+    return clean.length > n ? clean.slice(0, n - 1) + "…" : clean;
+  }
+
+  // ── "Why this needs you" context, joined from the snapshot already in the store (NO new fetch). ──
+  // The slice this action concerns (when resolvable). Its reviewResult is the verdict + what-is-needed.
+  const slice = $derived(
+    action.sliceId ? store.snapshot?.slices.find((s) => s.id === action.sliceId) : undefined,
+  );
+  const review = $derived(slice?.reviewResult);
+
+  // Blocker reasons: the active escalations whose entity is THIS action's entity or its slice. These
+  // are the literal "why it is blocked" lines. A 'blocker'/'critical'/'human_required' level reads red;
+  // 'warning' amber; anything else neutral. A glyph pairs with the colour (never colour alone).
+  const escalations = $derived(
+    (store.snapshot?.activeEscalations ?? []).filter(
+      (e) => e.entityId === action.entityId || (action.sliceId != null && e.entityId === action.sliceId),
+    ),
+  );
+  function escTone(level: string): { cls: string; glyph: string } {
+    if (level === "blocker" || level === "critical" || level === "human_required")
+      return { cls: "reason-red", glyph: "✕" };
+    if (level === "warning") return { cls: "reason-amber", glyph: "⚠" };
+    return { cls: "reason-muted", glyph: "ℹ" };
+  }
+
+  // Findings that explain the block: the FR/AC review findings that did NOT pass.
+  const openFindings = $derived((review?.frAcFindings ?? []).filter((f) => f.status !== "passed"));
+
+  // Required fixes + recommendation = the headline "what to do".
+  const requiredFixes = $derived(review?.requiredFixes ?? []);
+  const recommendation = $derived(review?.recommendation?.trim() || undefined);
+
+  // Recommended interventions: the engine's per-slice triage, flat-mapped + deduped across every
+  // agentFocusQueue item bound to this action's slice.
+  const interventions = $derived.by<string[]>(() => {
+    if (!action.sliceId) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const f of store.snapshot?.agentFocusQueue ?? []) {
+      if (f.sliceId !== action.sliceId) continue;
+      for (const r of f.recommendedInterventions ?? []) {
+        if (seen.has(r)) continue;
+        seen.add(r);
+        out.push(r);
+      }
+    }
+    return out;
+  });
+
+  const reviewClass = (s: string) =>
+    s === "accepted" ? "verdict-accepted"
+    : s === "blocked" || s === "human_required" ? "verdict-blocked"
+    : s === "repair_required" ? "verdict-repair_required"
+    : "verdict-other";
+
+  function findingClass(status: string): string {
+    if (status === "passed") return "passed";
+    if (status === "uncertain" || status === "missing_evidence") return "missing_evidence";
+    return "failed";
+  }
+
+  // Show the whole context region only when at least one sub-section has data. An action with no
+  // resolvable slice/escalation still renders title + summary + the resolve form below.
+  const hasContext = $derived(
+    escalations.length > 0 ||
+      review != null ||
+      requiredFixes.length > 0 ||
+      recommendation != null ||
+      openFindings.length > 0 ||
+      interventions.length > 0,
+  );
+
   // ── Form state (per the action currently open). Reset whenever the action id changes. ──
   let reason = $state("");
   let notes = $state("");
@@ -85,6 +159,64 @@
     <div class="run-subhead">Links</div>
     <div class="ha-links">
       {#each action.links as l (l.href)}<a class="ha-link" href={l.href}>{l.label}</a>{/each}
+    </div>
+  {/if}
+
+  <!-- "Why this needs you" — the joined context. Each sub-section renders only when it has data;
+       the whole region is skipped when there's nothing to show. WHY = blockers + findings;
+       WHAT = required fixes + recommendation + interventions. -->
+  {#if hasContext}
+    <div class="ha-context">
+      <div class="run-subhead ha-context-head">Why this needs you</div>
+
+      {#if escalations.length > 0}
+        <div class="run-subhead">Blockers</div>
+        <ul class="ha-esc-list">
+          {#each escalations as e (e.id)}
+            {@const tone = escTone(e.level)}
+            <li class="ha-esc-item {tone.cls}">
+              <span class="ha-esc-glyph" aria-hidden="true">{tone.glyph}</span>
+              <div class="ha-esc-text">
+                <span class="ha-esc-msg">{e.message}</span>
+                {#if e.reason}<span class="ha-esc-reason muted">{e.reason}</span>{/if}
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if requiredFixes.length > 0 || recommendation}
+        <div class="run-subhead">What is needed</div>
+        {#if requiredFixes.length > 0}
+          <ul class="run-fixes">{#each requiredFixes as fix}<li>{fix}</li>{/each}</ul>
+        {/if}
+        {#if recommendation}<p class="ha-recommendation">{recommendation}</p>{/if}
+      {/if}
+
+      {#if review}
+        <div class="run-subhead">Review verdict</div>
+        <div class="ha-verdict-row">
+          <span class="verdict {reviewClass(review.status)}">{review.status}</span>
+          {#if review.summary}<span class="ha-verdict-summary">{review.summary}</span>{/if}
+        </div>
+      {/if}
+
+      {#if openFindings.length > 0}
+        <div class="run-subhead">Findings</div>
+        <ul class="ha-findings">
+          {#each openFindings as f (f.ref)}
+            <li class="ha-finding" title={f.finding}>
+              <span class="ref ref-{findingClass(f.status)}">{f.ref}</span>
+              {#if f.finding}<span class="ha-finding-text">{truncate(f.finding, 110)}</span>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if interventions.length > 0}
+        <div class="run-subhead">Recommended interventions</div>
+        <ul class="ha-interventions">{#each interventions as r}<li>{r}</li>{/each}</ul>
+      {/if}
     </div>
   {/if}
 

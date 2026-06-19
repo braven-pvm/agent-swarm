@@ -3,8 +3,17 @@ import type {
   AgentFocusItem, CheckpointRecord,
 } from "~/lib/types";
 import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
-import type { HumanActionQueue } from "~/lib/human-actions";
+import type { HumanActionItem, HumanActionQueue } from "~/lib/human-actions";
 import { skillsOf } from "~/lib/skills";
+
+// A transient toast for a GENUINELY NEW human action (an id present on a later poll that was not
+// seen on any prior poll). Holds the id (dedupe + selectAction target) + the action itself (title
+// + summary + severity for rendering). The Toaster owns the auto-dismiss timer; the store just
+// holds the list and exposes dismissToast(id).
+export interface ActionToast {
+  id: string;
+  action: HumanActionItem;
+}
 
 export interface AgentRosterRow {
   actor: string;
@@ -156,6 +165,15 @@ export function createConsoleStore() {
   // the entity selection; select(entity) clears this; either way only one thing is selected.
   let selectedActionId = $state<string | null>(null);
 
+  // ── New-action toasts ──────────────────────────────────────────────────
+  // Toasts fire only for GENUINELY NEW action ids — ids seen on a later poll that were never seen
+  // before. The FIRST setHumanActions call marks the whole backlog as already-seen and emits NO
+  // toasts (we don't yell about pre-existing work on page load). `seenActionIds` is the running
+  // set of every id ever observed; `hadFirstLoad` gates the initial silent seed.
+  const seenActionIds = new Set<string>();
+  let hadFirstLoad = false;
+  let toasts = $state<ActionToast[]>([]);
+
   const escalationGroups = $derived<EscalationGroup[]>(snapshot ? groupEscalations(snapshot.activeEscalations) : []);
 
   // The action currently open in the inspector, resolved from the live queue by id. Returns null
@@ -266,6 +284,7 @@ export function createConsoleStore() {
     get coverage() { return coverage; },
     get humanActions() { return humanActions; },
     get selectedAction() { return selectedAction; },
+    get toasts() { return toasts; },
     hydrate(s: SnapshotResponse) { snapshot = s; },
     setConnected(v: boolean) { connected = v; },
     // Selecting an entity clears any open action, so only one inspector body shows at a time.
@@ -273,7 +292,27 @@ export function createConsoleStore() {
     // Selecting an action clears the entity selection (same mutual-exclusion rule).
     selectAction(id: string | null) { selectedActionId = id; selected = null; },
     setCoverage(c: CoverageSummary) { coverage = c; },
-    setHumanActions(q: HumanActionQueue) { humanActions = q; },
+    setHumanActions(q: HumanActionQueue) {
+      humanActions = q;
+      const actions = q?.actions ?? [];
+      if (!hadFirstLoad) {
+        // First load: seed the seen-set silently so the initial backlog never toasts.
+        for (const a of actions) seenActionIds.add(a.id);
+        hadFirstLoad = true;
+        return;
+      }
+      // Later polls: any id we've never seen is genuinely new → push a toast (newest first).
+      const fresh: ActionToast[] = [];
+      for (const a of actions) {
+        if (seenActionIds.has(a.id)) continue;
+        seenActionIds.add(a.id);
+        fresh.push({ id: a.id, action: a });
+      }
+      if (fresh.length > 0) toasts = [...fresh, ...toasts];
+    },
+    dismissToast(id: string) {
+      toasts = toasts.filter((t) => t.id !== id);
+    },
     invalidate() { /* App re-fetches snapshot and calls hydrate(); see App.svelte */ },
     applyEvent(event: HarnessEvent) {
       if (!snapshot) return;

@@ -35,10 +35,17 @@
   };
   const kindGlyph = (a: HumanActionItem) => KIND_GLYPH[a.kind] ?? "•";
   const kindLabel = (a: HumanActionItem) => KIND_LABEL[a.kind] ?? a.kind;
+
+  // Urgency tone for the rail header: red when any action is danger, else amber when any exist.
+  // Drives the flag glyph + the tinted header band, so the rail reads as urgent at a glance.
+  const railTone = $derived(
+    actions.some((a) => a.severity === "danger") ? "danger" : total > 0 ? "warning" : "none",
+  );
 </script>
 
-<section class="rail rail-actions">
-  <h2 class="rail-title">
+<section class="rail rail-actions" class:rail-actions-alert={total > 0} class:rail-actions-danger={railTone === "danger"}>
+  <h2 class="rail-title" class:ha-title-alert={total > 0} class:ha-title-danger={railTone === "danger"}>
+    {#if total > 0}<span class="ha-title-flag" aria-hidden="true">⚑</span>{/if}
     Action required
     {#if total > 0}<span class="ha-count">{total}</span>{/if}
   </h2>
