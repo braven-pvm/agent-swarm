@@ -14,9 +14,10 @@
   import ObservabilityCallout from "~/components/ObservabilityCallout.svelte";
   import Toaster from "~/components/Toaster.svelte";
   import { fetchHumanActions } from "~/lib/human-actions";
+  import { fetchControlCommands, fetchDevServers } from "~/lib/control";
 
   const store = createConsoleStore();
-  let route = $state<"bridge" | "specs" | "history" | "coverage">("bridge");
+  let route = $state<"bridge" | "specs" | "history" | "coverage" | "control">("bridge");
   // Cross-link seed: a requirement ref clicked in Specs opens Coverage filtered to it.
   // The top Coverage nav button resets this to "" so it always opens unfiltered.
   let coverageSeed = $state<string>("");
@@ -40,6 +41,11 @@
     // onResolved), but a failed queue fetch must never stop the snapshot from hydrating — so it
     // gets its own independent fetch + swallow rather than riding the Promise.all.
     fetchHumanActions().then(store.setHumanActions).catch(() => {});
+    // Local Control API feed: background control commands + human-review dev servers. These ride
+    // their own swallow-on-error fetches (like the action queue) so a control-endpoint hiccup never
+    // stops the snapshot from hydrating.
+    fetchControlCommands().then(store.setControlCommands).catch(() => {});
+    fetchDevServers().then(store.setDevServers).catch(() => {});
     try {
       const [snap, cov] = await Promise.all([api.snapshot(200), api.coverage().catch(() => null)]);
       store.hydrate(snap);
@@ -100,15 +106,16 @@
 <Toaster {store} />
 
 <div class="bridge">
-  <StatusBar {store} />
+  <StatusBar {store} onOpenControl={() => (route = "control")} />
   <nav class="routes">
     <button class:active={route === "bridge"} onclick={() => (route = "bridge")}>Bridge</button>
     <button class:active={route === "coverage"} onclick={openCoverageNav}>Coverage</button>
     <button class:active={route === "specs"} onclick={() => (route = "specs")}>Specs</button>
     <button class:active={route === "history"} onclick={() => (route = "history")}>History</button>
+    <button class:active={route === "control"} onclick={() => (route = "control")}>Control</button>
   </nav>
   {#if route !== "coverage"}
-    <ObservabilityCallout {store} onGoCoverage={() => (route = "coverage")} />
+    <ObservabilityCallout {store} onGoCoverage={() => (route = "coverage")} onGoControl={() => (route = "control")} />
   {/if}
 
   {#if route === "bridge"}
@@ -159,5 +166,7 @@
     {#await import("~/routes/History.svelte") then m}<m.default />{:catch}<div class="error">Route failed to load.</div>{/await}
   {:else if route === "coverage"}
     {#await import("~/routes/Coverage.svelte") then m}<m.default {store} seed={coverageSeed} />{:catch}<div class="error">Route failed to load.</div>{/await}
+  {:else if route === "control"}
+    {#await import("~/routes/Control.svelte") then m}<m.default {store} onRefresh={refresh} />{:catch}<div class="error">Route failed to load.</div>{/await}
   {/if}
 </div>

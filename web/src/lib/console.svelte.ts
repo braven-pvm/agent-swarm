@@ -4,6 +4,8 @@ import type {
 } from "~/lib/types";
 import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
 import type { HumanActionItem, HumanActionQueue } from "~/lib/human-actions";
+import type { ControlCommand, DevServer } from "~/lib/control";
+import { commandKindLabel } from "~/lib/control";
 import { skillsOf } from "~/lib/skills";
 
 // A transient toast for a GENUINELY NEW human action (an id present on a later poll that was not
@@ -165,6 +167,12 @@ export function createConsoleStore() {
   // the entity selection; select(entity) clears this; either way only one thing is selected.
   let selectedActionId = $state<string | null>(null);
 
+  // ── Local Control API state ──────────────────────────────────────────────
+  // Background control commands (continue/revive/restart/scan) + human-review dev servers, polled
+  // alongside the snapshot in App.refresh() and replaced wholesale (the server order is preserved).
+  let controlCommands = $state<ControlCommand[]>([]);
+  let devServers = $state<DevServer[]>([]);
+
   // ── New-action toasts ──────────────────────────────────────────────────
   // Toasts fire only for GENUINELY NEW action ids — ids seen on a later poll that were never seen
   // before. The FIRST setHumanActions call marks the whole backlog as already-seen and emits NO
@@ -285,6 +293,17 @@ export function createConsoleStore() {
     get humanActions() { return humanActions; },
     get selectedAction() { return selectedAction; },
     get toasts() { return toasts; },
+    get controlCommands() { return controlCommands; },
+    get devServers() { return devServers; },
+    // Newest-first view of the control feed, regardless of server order (id/startedAt may both be
+    // present; prefer startedAt, fall back to a stable tail-first reverse).
+    get controlCommandsNewestFirst() {
+      const byStart = controlCommands.every((c) => c.startedAt);
+      if (byStart) return [...controlCommands].sort((a, b) => (a.startedAt! < b.startedAt! ? 1 : a.startedAt! > b.startedAt! ? -1 : 0));
+      return [...controlCommands].reverse();
+    },
+    get runningControlCommands() { return controlCommands.filter((c) => c.status === "running"); },
+    commandKindLabel(kind: string | undefined) { return commandKindLabel(kind); },
     hydrate(s: SnapshotResponse) { snapshot = s; },
     setConnected(v: boolean) { connected = v; },
     // Selecting an entity clears any open action, so only one inspector body shows at a time.
@@ -292,6 +311,8 @@ export function createConsoleStore() {
     // Selecting an action clears the entity selection (same mutual-exclusion rule).
     selectAction(id: string | null) { selectedActionId = id; selected = null; },
     setCoverage(c: CoverageSummary) { coverage = c; },
+    setControlCommands(c: ControlCommand[]) { controlCommands = Array.isArray(c) ? c : []; },
+    setDevServers(s: DevServer[]) { devServers = Array.isArray(s) ? s : []; },
     setHumanActions(q: HumanActionQueue) {
       humanActions = q;
       const actions = q?.actions ?? [];

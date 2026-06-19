@@ -123,4 +123,32 @@ describe("console store", () => {
     const row = s.agents.find((a) => a.actor === "backend-worker")!;
     expect(row.now).toBe("Running npm test"); // newest wins, not "Editing a.ts"
   });
+
+  it("control commands: setters hold the feed, newest-first sorts by startedAt, running filter", () => {
+    const s = createConsoleStore();
+    s.setControlCommands([
+      { id: "c1", kind: "continue-run", status: "completed", command: "swarm", args: [], startedAt: "2026-06-19T08:00:00Z" },
+      { id: "c2", kind: "recovery-revive", status: "running", command: "swarm", args: [], startedAt: "2026-06-19T08:05:00Z" },
+    ]);
+    expect(s.controlCommands).toHaveLength(2);
+    // newest-first by startedAt → c2 (08:05) before c1 (08:00)
+    expect(s.controlCommandsNewestFirst.map((c) => c.id)).toEqual(["c2", "c1"]);
+    expect(s.runningControlCommands.map((c) => c.id)).toEqual(["c2"]);
+  });
+
+  it("control commands: newest-first falls back to tail-first reverse when startedAt is absent", () => {
+    const s = createConsoleStore();
+    s.setControlCommands([
+      { id: "a", kind: "recovery-scan", status: "completed", command: "swarm", args: [] },
+      { id: "b", kind: "continue-run", status: "running", command: "swarm", args: [] },
+    ]);
+    expect(s.controlCommandsNewestFirst.map((c) => c.id)).toEqual(["b", "a"]);
+  });
+
+  it("setDevServers holds the list and commandKindLabel humanizes a kind", () => {
+    const s = createConsoleStore();
+    s.setDevServers([{ id: "d1", status: "running", targetName: "ui", command: "npm", args: ["run", "start"] }]);
+    expect(s.devServers).toHaveLength(1);
+    expect(s.commandKindLabel("recovery-restart")).toBe("Recovery restart");
+  });
 });

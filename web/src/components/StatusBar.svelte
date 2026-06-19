@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ConsoleStore } from "~/lib/console.svelte";
   import { formatDuration } from "~/lib/format";
-  let { store }: { store: ConsoleStore } = $props();
+  let { store, onOpenControl }: { store: ConsoleStore; onOpenControl?: () => void } = $props();
   const snap = $derived(store.snapshot);
   const accepted = $derived(snap ? snap.slices.filter((s) => s.status === "accepted").length : 0);
   const total = $derived(snap ? snap.slices.length : 0);
@@ -22,6 +22,19 @@
     const first = actionList[0];
     if (first) store.selectAction(first.id);
   }
+
+  // ── Local Control API indicators ─────────────────────────────────────────
+  // "running N" when any background control command is in flight; opens the Control tab.
+  const runningControl = $derived(store.runningControlCommands.length);
+  // The run "looks stopped" when nothing is actively running AND the run reached a terminal/blocked
+  // resting state: no agentRuns in "running", and either the observability outcome flags
+  // human_required / a finalOutcome is present, or there simply are no live runs. We surface the
+  // continue affordance only when there is a snapshot to act on (a scenario to continue).
+  const anyRunActive = $derived((snap?.agentRuns ?? []).some((r) => r.status === "running"));
+  const finalOutcome = $derived(snap?.runObservability?.outcome?.finalOutcome);
+  const runStopped = $derived(
+    !!snap && !anyRunActive && runningControl === 0 && (!!finalOutcome || (snap?.agentRuns?.length ?? 0) > 0),
+  );
 </script>
 
 <header class="statusbar">
@@ -49,6 +62,15 @@
     {#if actionCount > 0}
       <button class="chip ha-chip ha-chip-{actionTone} ha-chip-pulse" title="open the most urgent action" onclick={openTopAction}>
         <span class="ha-chip-flag" aria-hidden="true">⚑</span> {actionCount} action{actionCount === 1 ? "" : "s"}
+      </button>
+    {/if}
+    {#if runningControl > 0}
+      <button class="chip ctl-chip ctl-chip-running ctl-chip-pulse" title="background control commands in flight — open Control" onclick={onOpenControl}>
+        <span class="ctl-chip-dot" aria-hidden="true">●</span> running {runningControl}
+      </button>
+    {:else if runStopped}
+      <button class="chip ctl-chip ctl-chip-continue" title="the run looks stopped — open Control to continue it" onclick={onOpenControl}>
+        <span class="ctl-chip-glyph" aria-hidden="true">▸</span> Continue run
       </button>
     {/if}
     <span class="sb-stat">uptime {uptime}</span>

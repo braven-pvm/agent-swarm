@@ -1098,3 +1098,145 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .hist-cmp-raw-toggle { align-self: flex-start; background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; padding: 2px 0; }
 .hist-cmp-raw-toggle:hover { color: var(--ink); }
 .hist-cmp-raw { margin: 0; max-height: 320px; overflow: auto; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: var(--s3); font-size: var(--fs-meta); color: var(--muted); }
+
+/* ── StatusBar control chips ───────────────────────────────────────────────
+   "running N" (blue, gentle pulse) when background control commands are in flight; a quiet
+   "Continue run" affordance when the run looks stopped. Both open the Control tab. Glyph+colour. */
+.chip.ctl-chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font: inherit; font-size: var(--fs-meta); }
+.chip.ctl-chip:hover { background: var(--surface-2); }
+.chip.ctl-chip-running { color: var(--blue); border-color: rgba(91,157,255,.4); }
+.chip.ctl-chip-continue { color: var(--ink); border-color: var(--line-3); }
+.ctl-chip-dot { font-size: .8em; line-height: 1; }
+.ctl-chip-glyph { font-size: .9em; line-height: 1; color: var(--blue); }
+@keyframes ctl-pulse-blue {
+  0%,100% { box-shadow: 0 0 0 0 rgba(91,157,255,0); opacity: 1; }
+  50%     { box-shadow: 0 0 0 3px rgba(91,157,255,.18); opacity: .84; }
+}
+.chip.ctl-chip-pulse { animation: ctl-pulse-blue 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .chip.ctl-chip-pulse { animation: none; background: rgba(91,157,255,.14); }
+}
+
+/* ── Control route ─────────────────────────────────────────────────────────
+   Reuses the .cov-table vocabulary (sticky head, hover, cov-badge-* tones), the .ha-primary
+   button, the .run-subhead eyebrow, and the .json inset for command logs — so this screen
+   introduces no new colour decisions. Outward-increasing rhythm: --s5 between panels. */
+.control { display: flex; flex-direction: column; gap: var(--s5); }
+.ctl-head { display: flex; flex-direction: column; gap: 2px; }
+.ctl-title { font-size: var(--fs-h); font-weight: 600; margin: 0; }
+.ctl-sub { font-size: var(--fs-meta); margin: 0; max-width: 70ch; }
+
+.ctl-panel { background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); padding: var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.ctl-panel-head { margin: 0; }
+.ctl-panel-lede { color: var(--muted); font-size: var(--fs-body); margin: 0; max-width: 80ch; }
+.ctl-panel-lede code { font-size: var(--fs-meta); color: var(--ink); }
+
+/* Continue run */
+.ctl-continue-meta { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); margin-top: 2px; }
+.ctl-kv { display: inline-flex; align-items: baseline; gap: 6px; }
+.ctl-kv-k { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.ctl-kv-v { font-size: var(--fs-meta); color: var(--ink); }
+.ctl-reset { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-body); color: var(--ink); cursor: pointer; margin-top: var(--s1); align-self: flex-start; }
+.ctl-reset input { accent-color: var(--accent); cursor: pointer; }
+.ctl-warn { display: flex; align-items: flex-start; gap: 6px; color: var(--amber); font-size: var(--fs-meta); margin: 0; border-left: 2px solid var(--amber); padding-left: var(--s2); }
+.ctl-warn-glyph { flex: none; line-height: 1.4; }
+.ctl-error { color: var(--red); padding: 0; font-size: var(--fs-meta); margin: 0; }
+.ctl-continue-btn { margin-top: var(--s1); }
+.ctl-hint { font-size: var(--fs-meta); margin: 0; }
+.ctl-started { margin-top: var(--s2); display: flex; flex-direction: column; gap: 4px; }
+.ctl-started-head { margin: 0; }
+.ctl-started-cmd { margin: 0; }
+.ctl-started-meta { display: flex; gap: var(--s3); font-size: var(--fs-meta); }
+
+/* Recovery scan */
+.ctl-btn { align-self: flex-start; background: none; border: 1px solid var(--line-3); border-radius: 6px; color: var(--ink); font: inherit; font-size: var(--fs-body); font-weight: 600; padding: 7px var(--s4); cursor: pointer; min-height: 34px; margin-top: var(--s1); }
+.ctl-btn:hover:not(:disabled) { background: var(--surface-2); }
+.ctl-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ctl-scan-result { display: flex; align-items: baseline; gap: 6px; color: var(--green); font-size: var(--fs-body); margin: var(--s1) 0 0; }
+.ctl-scan-result.ctl-scan-hit { color: var(--amber); }
+.ctl-scan-glyph { font-size: .9em; }
+
+/* Background commands table */
+.ctl-table-scroll { overflow: auto; max-height: 56vh; }
+.ctl-table .ctl-kind { color: var(--ink); }
+.ctl-runid { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-status-chip { display: inline-flex; align-items: center; gap: 4px; }
+.ctl-status-glyph { font-size: .85em; line-height: 1; }
+.ctl-badge-stale { background: rgba(214,161,60,.14); color: var(--amber); }
+@keyframes ctl-status-blink { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+.ctl-status-pulse .ctl-status-glyph { animation: ctl-status-blink 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ctl-status-pulse .ctl-status-glyph { animation: none; } }
+.ctl-th-logs { width: 1%; white-space: nowrap; }
+.ctl-logs-cell { display: flex; gap: var(--s2); white-space: nowrap; }
+.ctl-log-toggle { background: none; border: none; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; padding: 0; }
+.ctl-log-toggle:hover:not(:disabled) { color: var(--ink); }
+.ctl-log-toggle:disabled { opacity: .4; cursor: not-allowed; }
+.ctl-detail-row td { background: var(--bg); }
+.ctl-log-state { margin: var(--s1) 0; font-size: var(--fs-meta); }
+.ctl-log-out { margin: var(--s1) 0; max-height: 220px; }
+.ctl-args-out { margin: var(--s1) 0 4px; white-space: pre-wrap; word-break: break-all; }
+.ctl-args-cwd { margin: 0; font-size: var(--fs-meta); }
+.ctl-args-cwd code { font-size: var(--fs-meta); color: var(--muted); }
+
+/* ── Recovery controls (InspectorDrawer agent + focusRun branches) ─────────
+   Lifecycle write surface for a stale/failed/stalled run. Reuses .ha-primary
+   (revive), .ctl-btn (restart / mark-stale), .run-subhead eyebrow, and the
+   amber/green/red status vocabulary — no new colour decisions. */
+.rec { margin-top: var(--s2); }
+.rec-reason { font-size: var(--fs-meta); margin: 0 0 var(--s2); max-width: 60ch; }
+.rec-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.rec-btn { margin-top: 0; align-self: auto; }
+.rec-hint { font-size: var(--fs-meta); }
+.rec-error { color: var(--red); padding: 0; font-size: var(--fs-meta); margin: 0 0 var(--s1); }
+.rec-started { display: flex; align-items: baseline; gap: 6px; color: var(--green); font-size: var(--fs-meta); margin: var(--s2) 0 0; }
+.rec-started-glyph { font-size: .9em; }
+
+/* ── Dev servers (Control route, BUILD 3) ──────────────────────────────────
+   Human-review dev-server start/stop + URL. Reuses .ctl-panel / .ha-primary (start) /
+   .ctl-btn (stop) / .cov-badge status tones / .ctl-log-toggle (stderr) / .ctl-error —
+   no new colour decisions. A failed start is surfaced (message + stderr), never silent. */
+.ctl-dev-start { display: flex; flex-direction: column; gap: var(--s2); }
+.ctl-dev-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3); }
+.ctl-dev-field { display: flex; flex-direction: column; gap: 4px; }
+.ctl-dev-field-port { max-width: 120px; }
+.ctl-dev-flabel { font-size: var(--fs-eyebrow); letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.ctl-dev-opt { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); }
+.ctl-dev-input { background: var(--surface-2); border: 1px solid var(--line-3); border-radius: 6px; color: var(--ink); font-size: var(--fs-body); padding: 7px var(--s2); min-height: 34px; min-width: 200px; }
+.ctl-dev-field-port .ctl-dev-input { min-width: 80px; }
+.ctl-dev-input:disabled { opacity: .5; cursor: not-allowed; }
+.ctl-dev-start-btn { margin: 0; min-height: 34px; padding: 7px var(--s4); }
+.ctl-dev-startres { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-body); margin: 0; }
+.ctl-dev-startres-ok { color: var(--green); }
+.ctl-dev-startres-fail { color: var(--red); }
+.ctl-dev-glyph { font-size: .85em; flex: none; }
+.ctl-dev-link { color: var(--blue); text-decoration: none; }
+.ctl-dev-link:hover { text-decoration: underline; }
+
+.ctl-dev-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.ctl-dev-item { border: 1px solid var(--line-2); border-radius: 6px; padding: var(--s2) var(--s3); display: flex; flex-direction: column; gap: var(--s1); }
+.ctl-dev-item-fail { border-color: rgba(239,107,97,.35); background: rgba(239,107,97,.05); }
+.ctl-dev-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.ctl-dev-target { font-size: var(--fs-body); color: var(--ink); font-weight: 600; }
+.ctl-dev-urlchip { text-decoration: none; }
+.ctl-dev-urlchip:hover { text-decoration: underline; }
+.ctl-dev-chip-muted { opacity: .8; }
+.ctl-dev-meta { font-size: var(--fs-meta); }
+.ctl-dev-actions { display: flex; align-items: center; gap: var(--s3); margin-left: auto; }
+.ctl-dev-stop { margin-top: 0; align-self: auto; min-height: 30px; padding: 5px var(--s3); }
+.ctl-dev-fail-msg { display: flex; align-items: flex-start; gap: 6px; color: var(--red); font-size: var(--fs-meta); margin: 0; }
+.ctl-dev-stderr { margin-top: 2px; }
+
+/* Failed-dev-server readiness blocker banner — reuses .obs-callout.danger. */
+.obs-devfail .obs-headline { font-weight: 600; }
+
+/* "Start dev server to verify" affordance inside the human-verification form. */
+.ha-verify-server { display: flex; flex-direction: column; gap: var(--s1); margin: var(--s3) 0; padding: var(--s3); border: 1px solid var(--line-2); border-radius: 6px; background: var(--surface-2); }
+.ha-verify-lede { font-size: var(--fs-meta); margin: 0; max-width: 60ch; }
+.ha-verify-lede code { font-size: var(--fs-meta); color: var(--ink); }
+.ha-verify-btn { margin-top: var(--s1); }
+.ha-verify-hint { font-size: var(--fs-meta); margin: 0; }
+.ha-verify-err { margin: var(--s1) 0 0; }
+.ha-verify-ok, .ha-verify-fail { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-meta); margin: var(--s1) 0 0; }
+.ha-verify-ok { color: var(--green); }
+.ha-verify-fail { color: var(--red); }
+.ha-verify-glyph { font-size: .85em; flex: none; }

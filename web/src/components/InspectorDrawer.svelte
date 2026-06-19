@@ -7,6 +7,7 @@
   import OverseerTurnDetail from "~/components/OverseerTurnDetail.svelte";
   import HumanActionDetail from "~/components/HumanActionDetail.svelte";
   import SkillStacks from "~/components/SkillStacks.svelte";
+  import RecoveryControls from "~/components/RecoveryControls.svelte";
   import { skillsOf, type SkillBindingSummary } from "~/lib/skills";
   let { store, onResolved = () => {} }: { store: ConsoleStore; onResolved?: () => void } = $props();
   const sel = $derived(store.selected);
@@ -226,6 +227,12 @@
   const escalationCount = $derived(agentHistory.filter((e) => /escalation_raised$/.test(e.type)).length);
   const role = $derived(agentRuns[0]?.role);
   const driver = $derived(agentRuns[0]?.driver);
+  // ---- Recovery (agent branch): the agent's LATEST run + whether it's stalled. ----
+  // The latest run record (newest by startedAt) is the recovery target. It is "stalled" when it is
+  // still running but its liveness has gone dead (live but no signal); `level` above already encodes
+  // that (livenessLevel(runStatus, sigAge) === "dead" for a running run that hasn't signalled in 5m).
+  const latestRun = $derived<AgentRunRecord | undefined>(agentRuns[0]);
+  const latestRunStalled = $derived(latestRun?.status === "running" && level === "dead");
 
   // ---- "Now" line. ----
   // Newest agent_event WITH a target across the whole history (history is newest-first from server).
@@ -499,6 +506,20 @@
           <span class="muted">idle</span>
         {/if}
       </div>
+
+      <!-- 2a. Recovery — lifecycle controls for the agent's LATEST run. Self-gates: renders nothing
+           unless that run is stale/failed, or running-but-stalled (then "Mark stale" first). -->
+      {#if latestRun}
+        <RecoveryControls
+          runId={latestRun.id}
+          status={latestRun.status}
+          role={latestRun.role}
+          driver={latestRun.driver}
+          sessionId={latestRun.sessionId}
+          stalled={latestRunStalled}
+          onRefresh={onResolved}
+        />
+      {/if}
 
       <!-- 2b. Focus — the engine's per-agent triage. Rendered only when this agent has a focus item. -->
       {#if agentFocus}
@@ -831,13 +852,19 @@
           <p class="error">Failed to load focus packet — {focusError}</p>
         {:else if focusPacket}
           {@const run = pick(focusPacket, "run")}
+          {@const runId = asStr(pick(run, "id"))}
           {@const runRole = asStr(pick(run, "role")) ?? "—"}
           {@const runActor = asStr(pick(run, "actor")) ?? "—"}
           {@const runStatus = asStr(pick(run, "status")) ?? "—"}
           {@const runAttempt = pick(run, "attempt")}
           {@const runDriver = asStr(pick(run, "driver"))}
+          {@const runSessionId = asStr(pick(run, "sessionId"))}
           {@const runStartedAt = asStr(pick(run, "startedAt"))}
           {@const hb = pick(focusPacket, "heartbeat")}
+          <!-- Stalled = a running run whose liveness has gone dead (live, no signal). The packet's
+               heartbeat.ageMs feeds the same livenessLevel() used in the agent branch. -->
+          {@const hbAgeMs = typeof pick(hb, "ageMs") === "number" ? (pick(hb, "ageMs") as number) : Infinity}
+          {@const focusRunStalled = pick(focusPacket, "run") ? livenessLevel(asStr(pick(run, "status")), hbAgeMs) === "dead" && asStr(pick(run, "status")) === "running" : false}
           {@const diag = pick(focusPacket, "diagnosis")}
           {@const failureClasses = strArr(pick(diag, "failureClasses"))}
           {@const recs = strArr(pick(diag, "recommendedInterventions"))}
@@ -868,6 +895,18 @@
               {/if}
             </div>
           {/if}
+
+          <!-- Recovery — lifecycle controls for THIS focused run. Self-gates: renders nothing unless
+               the run is stale/failed, or running-but-stalled (then "Mark stale" first). -->
+          <RecoveryControls
+            {runId}
+            status={asStr(pick(run, "status"))}
+            role={asStr(pick(run, "role"))}
+            driver={runDriver}
+            sessionId={runSessionId}
+            stalled={focusRunStalled}
+            onRefresh={onResolved}
+          />
 
           <!-- Failure classes -->
           <div class="run-subhead">Failure classes</div>

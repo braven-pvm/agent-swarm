@@ -2,6 +2,7 @@
   import type { ConsoleStore } from "~/lib/console.svelte";
   import type { HumanActionCommand, HumanActionItem, HumanActionKind } from "~/lib/human-actions";
   import { runActionCommand } from "~/lib/human-actions";
+  import DevServerVerify from "~/components/DevServerVerify.svelte";
 
   let {
     store,
@@ -31,6 +32,13 @@
     action.sliceId ? store.snapshot?.slices.find((s) => s.id === action.sliceId) : undefined,
   );
   const review = $derived(slice?.reviewResult);
+
+  // The registered target this action's slice belongs to → its NAME, which the dev-server start
+  // endpoint accepts. Resolved from the snapshot (slice.targetId → targets[].name). Undefined when
+  // there's no slice or no matching target; the verify affordance degrades gracefully then.
+  const verifyTargetName = $derived(
+    slice ? store.snapshot?.targets.find((t) => t.id === slice.targetId)?.name : undefined,
+  );
 
   // Blocker reasons: the active escalations whose entity is THIS action's entity or its slice. These
   // are the literal "why it is blocked" lines. A 'blocker'/'critical'/'human_required' level reads red;
@@ -245,6 +253,9 @@
         </button>
       </form>
     {:else if cmd.kind === "record_human_verification"}
+      <!-- Visual-verification affordance: start the review dev server + open its URL before sign-off.
+           Self-contained (own in-flight + error state); a failed start does NOT block the form below. -->
+      {#if verifyTargetName}<DevServerVerify targetName={verifyTargetName} />{/if}
       <form class="ha-form" onsubmit={(e) => { e.preventDefault(); submit(cmd, { status: verifyStatus, notes }); }}>
         <div class="run-subhead">Record verification</div>
         <fieldset class="ha-field ha-radios">
