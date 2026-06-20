@@ -10,7 +10,8 @@ export interface SourceRecord { id: string; adapterId: string; kind: string; uri
 export interface LaneRecord { id: string; name: string; purpose: string; focusLabels: string[]; targetId: string; orchestrator: string; worktree: string; state: "active" | "paused" | "closed"; createdAt: string; updatedAt: string; }
 export interface LeaseRecord { id: string; frAcRef: string; sliceId: string; laneId: string; status: "active" | "released" | "completed"; createdAt: string; updatedAt: string; }
 export interface HeartbeatRecord { id: string; actor: string; state: HeartbeatState; detail?: string; entityType?: EntityType; entityId?: string; timestamp: string; }
-export interface AgentRunRecord { id: string; sliceId: string; role?: AgentRole; entityType?: EntityType; entityId?: string; actor: string; driver: string; status: "running" | "completed" | "failed" | "stale" | "released"; sessionId?: string; attempt: number; eventsPath?: string; resultPath?: string; stderrPath?: string; startedAt: string; updatedAt: string; }
+export interface SkillIsolationFinding { kind: "global_user_skill_reference"; severity: "warning"; path: string; snippet: string; lineNumber?: number; }
+export interface AgentRunRecord { id: string; sliceId: string; role?: AgentRole; entityType?: EntityType; entityId?: string; actor: string; driver: string; status: "running" | "completed" | "failed" | "stale" | "released"; sessionId?: string; attempt: number; eventsPath?: string; resultPath?: string; stderrPath?: string; skills?: unknown; skillBindingPath?: string; skillPacketPath?: string; skillIsolationFindings?: SkillIsolationFinding[]; startedAt: string; updatedAt: string; }
 export interface EvidenceRecord { id: string; sliceId: string; kind: "command" | "worker_result" | "review_result" | "artifact" | "note"; summary: string; ref?: string; payload: Record<string, unknown>; createdAt: string; }
 export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_verified" | "human_input_required" | "overridden";
 export interface VerificationCriterionResult { criterionId: string; status: FrAcVerificationStatus; expectedOutcome: string; actualOutcome: string; evidenceIds: string[]; }
@@ -58,6 +59,7 @@ export interface FocusItem {
     promptPath?: string; resultExists: boolean; stderrExists: boolean;
     eventStreamExists: boolean; eventLineCount: number;
     lastCommand?: { command: string; status?: string; exitCode?: number; outputTail: string };
+    globalSkillReferences?: SkillIsolationFinding[];
   };
   activeEscalations: Array<{ id: string; level: string; status: string; entityType: string; entityId: string; message: string; reason?: string; updatedAt: string }>;
   recommendedInterventions: string[];
@@ -81,6 +83,7 @@ export interface AgentFocusItem {
   stderrExists: boolean;
   eventStreamExists: boolean;
   eventLineCount: number;
+  globalSkillReferences?: SkillIsolationFinding[];
   focusPriority: number;
   lastCommand?: { command: string; status?: string; exitCode?: number; outputTail: string };
   recommendedInterventions: string[];
@@ -298,7 +301,7 @@ export interface RunObservabilitySummary {
     };
     checks?: { total: number; passed: number; failed: number };
     blockers: Array<{ id?: string; label?: string; message?: string; severity?: string }>;
-    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean };
+    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean; workflow?: boolean };
     artifacts?: Record<string, string>;
   };
   slices: {

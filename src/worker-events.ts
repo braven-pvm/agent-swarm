@@ -1,5 +1,6 @@
 import { createEvent } from "./events.js";
 import { interpretAgentEvent } from "./activity-interpreter.js";
+import { detectGlobalSkillReferences, type SkillIsolationFinding } from "./skill-isolation.js";
 import type { SwarmStore } from "./storage.js";
 import type { EntityType, HeartbeatState } from "./types.js";
 
@@ -8,10 +9,12 @@ export interface WorkerEventIngestResult {
   parseErrorCount: number;
   inferredStates: HeartbeatState[];
   sessionId?: string;
+  skillIsolationFindings: SkillIsolationFinding[];
 }
 
 export interface WorkerJsonlIngestContext {
   store: SwarmStore;
+  runId?: string;
   actor: string;
   sliceId: string;
   driver?: string;
@@ -29,6 +32,7 @@ interface WorkerJsonlIngestState extends WorkerEventIngestResult {
 export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: string }): WorkerEventIngestResult {
   const ingestor = createWorkerJsonlIngestor({
     store: input.store,
+    runId: input.runId,
     actor: input.actor,
     sliceId: input.sliceId,
     driver: input.driver,
@@ -41,6 +45,20 @@ export function ingestWorkerJsonl(input: WorkerJsonlIngestContext & { jsonl: str
   return ingestor.flush();
 }
 
+export function extractSessionIdFromWorkerJsonl(jsonl: string): string | undefined {
+  const lines = jsonl
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const parsed = parseJsonLine(line);
+    if (!parsed.ok) continue;
+    const sessionId = findSessionId(asPayload(parsed.value));
+    if (sessionId) return sessionId;
+  }
+  return undefined;
+}
+
 export function createWorkerJsonlIngestor(input: WorkerJsonlIngestContext): {
   ingest: (chunk: string) => WorkerEventIngestResult;
   flush: () => WorkerEventIngestResult;
@@ -50,6 +68,7 @@ export function createWorkerJsonlIngestor(input: WorkerJsonlIngestContext): {
     eventCount: 0,
     parseErrorCount: 0,
     inferredStates: [],
+    skillIsolationFindings: [],
     lineNumber: 0,
     buffer: "",
   };
@@ -91,6 +110,8 @@ function ingestLine(
   const parsed = parseJsonLine(line);
   if (!parsed.ok) {
     state.parseErrorCount += 1;
+    const skillIsolationFindings = detectGlobalSkillReferences(line, { lineNumber: state.lineNumber });
+    state.skillIsolationFindings.push(...skillIsolationFindings);
     const eventPrefix = input.eventPrefix ?? "worker";
     const entityType = input.entityType ?? "slice";
     const entityId = input.entityId ?? input.sliceId;
@@ -105,9 +126,13 @@ function ingestLine(
           driver: input.driver,
           error: parsed.error,
           raw: line.slice(0, 2000),
+          skillIsolationFindings,
         },
       }),
     );
+    if (skillIsolationFindings.length > 0) {
+      recordSkillIsolationEvent(input, entityType, entityId, skillIsolationFindings);
+    }
     return;
   }
 
@@ -115,8 +140,14 @@ function ingestLine(
   const eventPrefix = input.eventPrefix ?? "worker";
   const entityType = input.entityType ?? "slice";
   const entityId = input.entityId ?? input.sliceId;
-  state.sessionId ??= findSessionId(payload);
+  const discoveredSessionId = findSessionId(payload);
+  if (!state.sessionId && discoveredSessionId) {
+    state.sessionId = discoveredSessionId;
+    if (input.runId) input.store.updateAgentRun(input.runId, { sessionId: discoveredSessionId });
+  }
   const activity = interpretAgentEvent(payload, { driver: input.driver, driverClassify: input.classify });
+  const skillIsolationFindings = detectGlobalSkillReferences(payload, { lineNumber: state.lineNumber });
+  state.skillIsolationFindings.push(...skillIsolationFindings);
   const heartbeatState = activity.state;
   state.inferredStates.push(heartbeatState);
   state.eventCount += 1;
@@ -132,9 +163,13 @@ function ingestLine(
         agentEventType: typeof payload.type === "string" ? payload.type : undefined,
         activity,
         event: payload,
+        skillIsolationFindings,
       },
     }),
   );
+  if (skillIsolationFindings.length > 0) {
+    recordSkillIsolationEvent(input, entityType, entityId, skillIsolationFindings);
+  }
   input.store.upsertHeartbeat({
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
@@ -151,7 +186,42 @@ function toResult(state: WorkerJsonlIngestState): WorkerEventIngestResult {
     parseErrorCount: state.parseErrorCount,
     inferredStates: [...state.inferredStates],
     sessionId: state.sessionId,
+    skillIsolationFindings: dedupeSkillIsolationFindings(state.skillIsolationFindings),
   };
+}
+
+function recordSkillIsolationEvent(
+  input: WorkerJsonlIngestContext,
+  entityType: EntityType,
+  entityId: string,
+  findings: SkillIsolationFinding[],
+): void {
+  const eventPrefix = input.eventPrefix ?? "worker";
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: `${eventPrefix}.skill_isolation_detected`,
+      entityType,
+      entityId,
+      payload: {
+        driver: input.driver,
+        findings,
+        message: "Agent referenced user-global Codex skill paths outside the harness-managed skill packet.",
+      },
+    }),
+  );
+}
+
+function dedupeSkillIsolationFindings(findings: SkillIsolationFinding[]): SkillIsolationFinding[] {
+  const seen = new Set<string>();
+  const result: SkillIsolationFinding[] = [];
+  for (const finding of findings) {
+    const key = `${finding.kind}:${finding.path.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(finding);
+  }
+  return result;
 }
 
 function parseJsonLine(line: string): { ok: true; value: unknown } | { ok: false; error: string } {

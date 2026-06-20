@@ -1,0 +1,118 @@
+{
+  "scenarioId": "live-agent-smoke-h2",
+  "name": "Customer Support Triage Board",
+  "status": "phase-11a-source-package",
+  "product": {
+    "target": "support-ui",
+    "expectedTitle": "Customer Support Triage Board",
+    "sources": [
+      "docs/requirements/live-smoke-support-triage-product-spec.md",
+      "docs/requirements/live-smoke-support-triage-api-requirements.md",
+      "docs/requirements/live-smoke-support-triage-ui-requirements.md",
+      "docs/requirements/live-smoke-support-triage-design-system.md"
+    ]
+  },
+  "targets": [
+    {
+      "name": "support-api",
+      "role": "backend",
+      "focus": ["Support Backend"],
+      "skillHints": {
+        "worker": ["support-triage-domain"],
+        "reviewer": ["support-triage-domain"]
+      }
+    },
+    {
+      "name": "support-ui",
+      "role": "frontend",
+      "focus": ["Support Dashboard", "Support Design System"],
+      "skillHints": {
+        "worker": [
+          "support-triage-domain",
+          "support-ui-implementation",
+          "support-ui-design-system"
+        ],
+        "reviewer": [
+          "support-triage-domain",
+          "support-ui-review",
+          "support-ui-design-system",
+          "support-accessibility-review"
+        ]
+      }
+    }
+  ],
+  "skills": {
+    "catalogs": ["builtin", ".swarm/skills"],
+    "roles": {
+      "overseer": {
+        "optional": ["support-triage-domain"]
+      },
+      "worker": {
+        "optional": [
+          "support-triage-domain",
+          "support-ui-implementation",
+          "support-ui-design-system"
+        ]
+      },
+      "reviewer": {
+        "optional": [
+          "support-triage-domain",
+          "support-ui-review",
+          "support-ui-design-system",
+          "support-accessibility-review"
+        ]
+      }
+    }
+  },
+  "productReadinessProbe": {
+    "ui": {
+      "path": "/",
+      "expectedText": ["Customer Support Triage Board"]
+    },
+    "api": {
+      "path": "/api/summary",
+      "expectedJsonFields": [
+        "openTicketCount",
+        "breachedSlaCount",
+        "urgentTicketCount",
+        "unassignedTicketCount"
+      ]
+    },
+    "workflow": {
+      "kind": "configured-http-workflow",
+      "steps": ["assign-ticket", "change-status", "add-note", "confirm-detail"],
+      "ticketId": "TCK-100",
+      "assignment": {
+        "method": "PATCH",
+        "path": "/api/tickets/TCK-100/assignment",
+        "body": { "assigneeId": "agent-ava" }
+      },
+      "status": {
+        "method": "PATCH",
+        "path": "/api/tickets/TCK-100/status",
+        "body": { "status": "waiting_customer" }
+      },
+      "note": {
+        "method": "POST",
+        "path": "/api/tickets/TCK-100/notes",
+        "body": { "author": "Ava", "body": "Contacted customer." }
+      },
+      "detail": {
+        "method": "GET",
+        "path": "/api/tickets/TCK-100",
+        "expectedNoteBody": "Contacted customer."
+      },
+      "summaryDelta": {
+        "field": "unassignedTicketCount",
+        "change": -1
+      }
+    }
+  },
+  "phase11BImplementationNotes": [
+    "Reset should register all product.sources as immutable source files.",
+    "Reset should copy .swarm/skills into the disposable target workspace.",
+    "Runner should consume productReadinessProbe instead of hard-coding support-triage routes.",
+    "Focused tests should prove invoice smoke remains the control scenario.",
+    "Phase 11B/11C should consume target skillHints or convert them into lane/slice skill hints so UI workers receive implementation/design guidance and UI reviewers receive review/accessibility guidance."
+  ]
+}

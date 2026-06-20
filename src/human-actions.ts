@@ -4,6 +4,7 @@ import { refreshCheckpoint } from "./checkpoints.js";
 import { makeId } from "./ids.js";
 import { artifactsDir } from "./paths.js";
 import { buildCoverage, latestFrAcResults, stringValue, type CoverageRef, type RequirementLedgerEntry } from "./observability.js";
+import { resolveReviewEnvironment } from "./review-target.js";
 import { SwarmStore } from "./storage.js";
 import type { EntityType, EscalationRecord, FrAcVerificationResult, SliceRecord } from "./types.js";
 
@@ -19,6 +20,33 @@ export interface HumanActionCommand {
   method: "POST";
   path: string;
   bodyTemplate: Record<string, unknown>;
+}
+
+export interface HumanReviewTarget {
+  targetId?: string;
+  targetName?: string;
+  targetPath?: string;
+  targetPathRelative?: string;
+  startCommand?: string;
+  commandName?: string;
+  commandSource?: string;
+  startAvailable: boolean;
+  startUnavailableReason?: string;
+  suggestedUrl?: string;
+  focusHref?: string;
+  sourceHref?: string;
+  packetHref?: string;
+  requirementRef: string;
+  requirementText?: string;
+  requirementContext?: string;
+  responsibleParty?: string;
+  expectedOutcomes: string[];
+  startAction?: {
+    method: "POST";
+    path: "/api/control/dev-server/start";
+    bodyTemplate: Record<string, unknown>;
+  };
+  instructions: string[];
 }
 
 export interface HumanActionItem {
@@ -44,6 +72,7 @@ export interface HumanActionItem {
     uri: string;
   };
   packet?: RequirementLedgerEntry["humanPath"]["packet"];
+  reviewTarget?: HumanReviewTarget;
   evidenceIds?: string[];
   links: HumanActionLink[];
   allowedActions: HumanActionCommand[];
@@ -73,6 +102,7 @@ export interface HumanVerificationRecordResult {
   packetEvidenceId: string;
   resultEvidenceId: string;
   commandEvidenceId: string;
+  clearedEscalationIds: string[];
   frAcResults: FrAcVerificationResult[];
 }
 
@@ -89,9 +119,10 @@ export function buildHumanActionQueue(store: SwarmStore, workspace?: string): Hu
 
   for (const entry of coverage.ledger.entries) {
     if (entry.status === "awaiting_human_verification") {
-      actions.push(humanVerificationAction(entry, workspace));
+      actions.push(humanVerificationAction(entry, store, workspace));
     } else if (entry.status === "failed" && entry.humanPath.state === "human_verification_required") {
-      actions.push(humanVerificationReworkAction(entry, workspace));
+      if (entry.sliceId && hasHumanRepairDecision(store, entry.sliceId, entry.ref)) continue;
+      actions.push(humanVerificationReworkAction(entry, store, workspace));
     } else if (entry.status === "human_input_required") {
       actions.push(humanInputRequirementAction(entry, workspace));
     } else if (entry.status === "blocked" || entry.status === "failed") {
@@ -105,10 +136,8 @@ export function buildHumanActionQueue(store: SwarmStore, workspace?: string): Hu
     totals: {
       total: actions.length,
       decisionRequired: actions.filter((action) => action.kind === "decision_required").length,
-      humanVerification: actions.filter((action) =>
-        action.kind === "human_verification" || action.kind === "human_verification_rework",
-      ).length,
-      blockers: actions.filter((action) => action.kind === "clear_blocker" || action.kind === "blocked_requirement").length,
+      humanVerification: actions.filter(countsAsHumanVerificationAction).length,
+      blockers: actions.filter(countsAsBlockerAction).length,
     },
     actions,
   };
@@ -174,6 +203,13 @@ export function recordHumanVerification(
   const jsonPath = stringValue(packetEvidence.payload.jsonPath);
   if (!markdownPath || !jsonPath) throw new Error(`Human verification packet ${packetEvidence.id} is missing packet paths`);
   const resultStatus: FrAcVerificationResult["status"] = status === "human_verified" ? "human_verified" : "failed";
+  const clearedEscalationIds = clearResolvedHumanVerificationEscalations(store, {
+    slice,
+    ref: input.ref,
+    actor,
+    status,
+    notes,
+  });
   const proof = humanVerificationProof({
     ref: input.ref,
     status,
@@ -268,6 +304,7 @@ export function recordHumanVerification(
         packetEvidenceId: packetEvidence.id,
         resultEvidenceId,
         commandEvidenceId,
+        clearedEscalationIds,
       },
     }),
   );
@@ -291,6 +328,7 @@ export function recordHumanVerification(
     packetEvidenceId: packetEvidence.id,
     resultEvidenceId,
     commandEvidenceId,
+    clearedEscalationIds,
     frAcResults,
   };
 }
@@ -321,7 +359,7 @@ function humanEscalationAction(escalation: EscalationRecord): HumanActionItem {
   };
 }
 
-function humanVerificationAction(entry: RequirementLedgerEntry, workspace?: string): HumanActionItem {
+function humanVerificationAction(entry: RequirementLedgerEntry, store: SwarmStore, workspace?: string): HumanActionItem {
   return {
     id: `human-verification:${entry.sliceId ?? "unknown"}:${entry.ref}`,
     kind: "human_verification",
@@ -331,6 +369,7 @@ function humanVerificationAction(entry: RequirementLedgerEntry, workspace?: stri
     status: entry.status,
     ...entryContext(entry),
     packet: entry.humanPath.packet,
+    reviewTarget: humanReviewTarget(entry, store, workspace),
     links: requirementLinks(entry, workspace),
     allowedActions: entry.sliceId
       ? [
@@ -346,24 +385,32 @@ function humanVerificationAction(entry: RequirementLedgerEntry, workspace?: stri
   };
 }
 
-function humanVerificationReworkAction(entry: RequirementLedgerEntry, workspace?: string): HumanActionItem {
+function humanVerificationReworkAction(entry: RequirementLedgerEntry, store: SwarmStore, workspace?: string): HumanActionItem {
+  const latestHumanStatus = entry.sliceId ? latestHumanVerificationDecision(store, entry.sliceId, entry.ref) : undefined;
+  const repairRequested = latestHumanStatus === "failed" || latestHumanStatus === "needs_rework";
+  const repairLabel = latestHumanStatus === "needs_rework" ? "needs rework" : "failed";
   return {
     id: `human-verification-rework:${entry.sliceId ?? "unknown"}:${entry.ref}`,
     kind: "human_verification_rework",
     severity: "danger",
-    title: `Human verification unresolved: ${entry.ref}`,
-    summary: entry.reason,
-    status: entry.status,
+    title: repairRequested
+      ? `Agent repair required from human verification: ${entry.ref}`
+      : `Human verification unresolved: ${entry.ref}`,
+    summary: repairRequested
+      ? `Human recorded ${repairLabel} for this ref. Continue the run so agents can repair the slice and produce fresh verification evidence; this is no longer waiting for another human click. ${entry.reason}`
+      : entry.reason,
+    status: repairRequested ? "repair_requested" : entry.status,
     ...entryContext(entry),
     packet: entry.humanPath.packet,
+    reviewTarget: humanReviewTarget(entry, store, workspace),
     links: requirementLinks(entry, workspace),
-    allowedActions: entry.sliceId
+    allowedActions: !repairRequested && entry.sliceId
       ? [
           {
             kind: "record_human_verification",
             method: "POST",
             path: "/api/human-verify",
-            bodyTemplate: { sliceId: entry.sliceId, ref: entry.ref, status: "human_verified", actor: "human", notes: "" },
+            bodyTemplate: { sliceId: entry.sliceId, ref: entry.ref, status: "needs_rework", actor: "human", notes: "" },
           },
         ]
       : [],
@@ -429,6 +476,70 @@ function requirementLinks(entry: RequirementLedgerEntry, workspace?: string): Hu
   ].filter((item): item is HumanActionLink => Boolean(item));
 }
 
+function humanReviewTarget(entry: RequirementLedgerEntry, store: SwarmStore, workspace?: string): HumanReviewTarget | undefined {
+  if (!entry.sliceId) return undefined;
+  const slice = store.listSlices().find((item) => item.id === entry.sliceId);
+  if (!slice) return undefined;
+  const target = store.targetById(slice.targetId);
+  if (!target) return undefined;
+
+  const reviewEnvironment = resolveReviewEnvironment(target, workspace);
+  const startAvailable = reviewEnvironment.commandAvailable;
+  const packetHref = artifactHref(entry.humanPath.packet?.markdownPath, workspace);
+  const focusHref = `/api/focus/slice/${encodeURIComponent(entry.sliceId)}`;
+  const sourceHref = `/api/source/${encodeURIComponent(entry.sourceId)}`;
+  const expectedOutcomes = entry.obligation?.expectedOutcomes ?? [];
+  return {
+    targetId: target.id,
+    targetName: target.name,
+    targetPath: target.path,
+    targetPathRelative: workspace ? path.relative(workspace, target.path).replace(/\\/g, "/") : undefined,
+    startCommand: reviewEnvironment.command,
+    commandName: reviewEnvironment.commandName,
+    commandSource: reviewEnvironment.commandSource,
+    startAvailable,
+    startUnavailableReason: reviewEnvironment.unavailableReason,
+    suggestedUrl: reviewEnvironment.suggestedUrl,
+    focusHref,
+    sourceHref,
+    packetHref,
+    requirementRef: entry.ref,
+    requirementText: sourceTextForEntry(entry, slice),
+    requirementContext: sourceContextForEntry(entry, slice),
+    responsibleParty: entry.obligation?.responsibleParty,
+    expectedOutcomes,
+    startAction: startAvailable
+      ? {
+          method: "POST",
+          path: "/api/control/dev-server/start",
+          bodyTemplate: { targetName: target.name, commandName: reviewEnvironment.commandName },
+        }
+      : undefined,
+    instructions: humanReviewInstructions(entry, startAvailable, reviewEnvironment.command),
+  };
+}
+
+function sourceTextForEntry(entry: RequirementLedgerEntry, slice: SliceRecord): string | undefined {
+  return slice.verificationObligations.find((item) => item.ref === entry.ref)?.sourceText;
+}
+
+function sourceContextForEntry(entry: RequirementLedgerEntry, slice: SliceRecord): string | undefined {
+  return slice.verificationObligations.find((item) => item.ref === entry.ref)?.sourceContext;
+}
+
+function humanReviewInstructions(entry: RequirementLedgerEntry, startAvailable: boolean, startCommand?: string): string[] {
+  const outcomes = entry.obligation?.expectedOutcomes ?? [];
+  return [
+    "Open the human packet before recording a result.",
+    startAvailable
+      ? `Start the review target through /api/control/dev-server/start (${startCommand}) and open the URL only after the server reports running.`
+      : "Do not sign off visually until a runnable review target is available.",
+    "Compare the visible product/component behavior against the immutable FR/AC criteria.",
+    ...outcomes.map((outcome) => `Expected: ${outcome}`),
+    "Record human_verified only when the criteria are actually visible and acceptable; otherwise record failed or needs_rework with notes.",
+  ];
+}
+
 function artifactHref(artifactPath: string | undefined, workspace: string | undefined): string | undefined {
   if (!artifactPath) return undefined;
   if (!workspace) return undefined;
@@ -447,6 +558,16 @@ function focusLinks(entityType: EntityType, entityId: string): HumanActionLink[]
 
 function compareHumanActions(left: HumanActionItem, right: HumanActionItem): number {
   const severityOrder = { danger: 0, warning: 1, info: 2 };
+  return (
+    severityOrder[left.severity] - severityOrder[right.severity] ||
+    humanActionOrder(left) - humanActionOrder(right) ||
+    (left.updatedAt ?? left.createdAt ?? "").localeCompare(right.updatedAt ?? right.createdAt ?? "") ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function humanActionOrder(action: HumanActionItem): number {
+  if (action.status === "repair_requested") return 3;
   const kindOrder: Record<HumanActionItem["kind"], number> = {
     decision_required: 0,
     human_verification: 1,
@@ -454,12 +575,88 @@ function compareHumanActions(left: HumanActionItem, right: HumanActionItem): num
     clear_blocker: 3,
     blocked_requirement: 4,
   };
-  return (
-    severityOrder[left.severity] - severityOrder[right.severity] ||
-    kindOrder[left.kind] - kindOrder[right.kind] ||
-    (left.updatedAt ?? left.createdAt ?? "").localeCompare(right.updatedAt ?? right.createdAt ?? "") ||
-    left.id.localeCompare(right.id)
-  );
+  return kindOrder[action.kind];
+}
+
+function countsAsHumanVerificationAction(action: HumanActionItem): boolean {
+  return action.kind === "human_verification" || (action.kind === "human_verification_rework" && action.status !== "repair_requested");
+}
+
+function countsAsBlockerAction(action: HumanActionItem): boolean {
+  return action.kind === "clear_blocker" || action.kind === "blocked_requirement" || action.status === "repair_requested";
+}
+
+function hasHumanRepairDecision(store: SwarmStore, sliceId: string, ref: string): boolean {
+  const latest = latestHumanVerificationDecision(store, sliceId, ref);
+  return latest === "failed" || latest === "needs_rework";
+}
+
+function clearResolvedHumanVerificationEscalations(
+  store: SwarmStore,
+  input: { slice: SliceRecord; ref: string; actor: string; status: HumanVerificationDecision; notes: string },
+): string[] {
+  const cleared: string[] = [];
+  const clearReason = humanVerificationEscalationClearReason(input);
+  for (const escalation of store.listEscalations("active")) {
+    if (escalation.level !== "human_required") continue;
+    if (!isResolvedHumanVerificationEscalation(escalation, input.slice, input.ref)) continue;
+    store.clearEscalation(escalation.id, { reason: clearReason, clearedBy: input.actor });
+    cleared.push(escalation.id);
+    store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason: clearReason,
+          sliceId: input.slice.id,
+          ref: input.ref,
+          clearedAfterHumanVerificationRecorded: true,
+          humanVerificationStatus: input.status,
+        },
+      }),
+    );
+  }
+  if (cleared.length > 0) {
+    store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "human_verification.escalations_cleared",
+        entityType: "slice",
+        entityId: input.slice.id,
+        payload: {
+          ref: input.ref,
+          status: input.status,
+          escalationIds: cleared,
+        },
+      }),
+    );
+  }
+  return cleared;
+}
+
+function isResolvedHumanVerificationEscalation(escalation: EscalationRecord, slice: SliceRecord, ref: string): boolean {
+  const sameSlice = escalation.entityType === "slice" && escalation.entityId === slice.id;
+  const haystack = `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""}`.toLowerCase();
+  const mentionsRef = haystack.includes(ref.toLowerCase());
+  const mentionsHumanVerification = /human[-_ ]verification|human sign[- ]off|awaiting human|visual qa|human qa/.test(haystack);
+  return (sameSlice && mentionsHumanVerification) || mentionsRef;
+}
+
+function humanVerificationEscalationClearReason(input: {
+  ref: string;
+  status: HumanVerificationDecision;
+  notes: string;
+}): string {
+  const label =
+    input.status === "human_verified"
+      ? "verified"
+      : input.status === "needs_rework"
+        ? "marked needs rework"
+        : "marked failed";
+  const notes = input.notes.trim();
+  return `Human verification ${label} for ${input.ref}.${notes ? ` Notes: ${notes}` : ""}`;
 }
 
 function labelForEscalationLevel(level: EscalationRecord["level"]): string {
@@ -487,6 +684,20 @@ function latestHumanVerificationPacketEvidence(
     .listEvidence(sliceId)
     .filter((item) => item.kind === "artifact" && item.ref === ref && item.payload.type === "human_verification_packet")
     .at(-1);
+}
+
+function latestHumanVerificationDecision(
+  store: SwarmStore,
+  sliceId: string,
+  ref: string,
+): HumanVerificationDecision | undefined {
+  for (const item of [...store.listEvidence(sliceId)].reverse()) {
+    if (item.kind !== "artifact" || item.ref !== ref) continue;
+    if (item.payload.type !== "human_verification_result") continue;
+    const status = stringValue(item.payload.status);
+    if (status === "human_verified" || status === "failed" || status === "needs_rework") return status;
+  }
+  return undefined;
 }
 
 function updateHumanVerificationResults(input: {

@@ -8,14 +8,28 @@ import type { ControlCommand, DevServer } from "~/lib/control";
 import { commandKindLabel } from "~/lib/control";
 import { skillsOf } from "~/lib/skills";
 
-// A transient toast for a GENUINELY NEW human action (an id present on a later poll that was not
-// seen on any prior poll). Holds the id (dedupe + selectAction target) + the action itself (title
-// + summary + severity for rendering). The Toaster owns the auto-dismiss timer; the store just
-// holds the list and exposes dismissToast(id).
+// A transient toast. Two shapes share one stack + the Toaster's auto-dismiss timer, discriminated
+// by `kind`:
+//   - "action": a GENUINELY NEW human action surfaced by a later poll (an id never seen before).
+//     Holds the id (dedupe + selectAction target) + the action (title/summary/severity). Clicking
+//     it opens the inspector. The store seeds/dedupes these; see setHumanActions.
+//   - "notice": a one-shot confirmation pushed imperatively after a human resolves an action — e.g.
+//     a failed/needs_rework verify that left the queue and closed the drawer, where a toast is the
+//     only surface left to confirm the POST landed ("Handed back to agent repair."). Non-interactive.
+// The store owns the list + exposes notify()/dismissToast(id); the Toaster owns the timers.
 export interface ActionToast {
   id: string;
+  kind: "action";
   action: HumanActionItem;
 }
+export interface NoticeToast {
+  id: string;
+  kind: "notice";
+  tone: "ok" | "info";
+  title: string;   // short eyebrow, e.g. "Recorded"
+  message: string; // the line the operator reads, e.g. "Handed back to agent repair."
+}
+export type Toast = ActionToast | NoticeToast;
 
 export interface AgentRosterRow {
   actor: string;
@@ -180,7 +194,10 @@ export function createConsoleStore() {
   // set of every id ever observed; `hadFirstLoad` gates the initial silent seed.
   const seenActionIds = new Set<string>();
   let hadFirstLoad = false;
-  let toasts = $state<ActionToast[]>([]);
+  let toasts = $state<Toast[]>([]);
+  // Monotonic id source for imperative notice toasts. A counter never collides with action ids
+  // (server ESC-/AC-style strings) and is deterministic across re-renders.
+  let noticeSeq = 0;
 
   const escalationGroups = $derived<EscalationGroup[]>(snapshot ? groupEscalations(snapshot.activeEscalations) : []);
 
@@ -327,9 +344,23 @@ export function createConsoleStore() {
       for (const a of actions) {
         if (seenActionIds.has(a.id)) continue;
         seenActionIds.add(a.id);
-        fresh.push({ id: a.id, action: a });
+        fresh.push({ id: a.id, kind: "action", action: a });
       }
       if (fresh.length > 0) toasts = [...fresh, ...toasts];
+    },
+    // Push a one-shot confirmation toast (newest-first). Used after a human verify result that
+    // removed the action from the queue and closed the drawer — the only place left to confirm the
+    // POST landed. The Toaster auto-dismisses it like any toast.
+    notify(message: string, opts?: { title?: string; tone?: "ok" | "info" }) {
+      noticeSeq += 1;
+      const t: NoticeToast = {
+        id: `notice-${noticeSeq}`,
+        kind: "notice",
+        tone: opts?.tone ?? "ok",
+        title: opts?.title ?? "Done",
+        message,
+      };
+      toasts = [t, ...toasts];
     },
     dismissToast(id: string) {
       toasts = toasts.filter((t) => t.id !== id);

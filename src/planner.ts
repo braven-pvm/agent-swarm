@@ -340,6 +340,13 @@ function buildVerificationObligations(input: {
 }): VerificationObligation[] {
   return input.refs.map((ref) => {
     const sourceMatch = findSourceTextForRef(input.sourceText, ref);
+    const mode = inferVerificationMode({
+      source: input.source,
+      ref,
+      sourceText: sourceMatch.text,
+      sourceContext: sourceMatch.context,
+    });
+    const responsibleParty = mode === "human_verification_required" ? "human-qa" : "deterministic-verifier";
     return {
       ref,
       sourceRef: input.source.id,
@@ -347,22 +354,54 @@ function buildVerificationObligations(input: {
       sourceTitle: input.source.title,
       sourceText: sourceMatch.text,
       sourceContext: sourceMatch.context,
-      mode: "automated",
-      responsibleParty: "deterministic-verifier",
+      mode,
+      responsibleParty,
       criteria: [
         {
           id: `${ref}.result`,
           expectedOutcome: sourceMatch.text,
-          evidenceRequired: ["worker_evidence", "review_result", "verification_command"],
-          acceptanceThreshold: "worker coverage, review, and deterministic verification all pass",
+          evidenceRequired:
+            mode === "human_verification_required"
+              ? ["worker_evidence", "review_result", "verification_command", "human_verification"]
+              : ["worker_evidence", "review_result", "verification_command"],
+          acceptanceThreshold:
+            mode === "human_verification_required"
+              ? "worker coverage, review, deterministic verification, and human verification all pass"
+              : "worker coverage, review, and deterministic verification all pass",
         },
       ],
       createdBy: "planner",
       createdAt: input.now,
       immutable: true,
-      guidance: ["Do not mutate source specs.", "Map worker/reviewer/verifier evidence to this exact FR/AC text."],
+      guidance:
+        mode === "human_verification_required"
+          ? [
+              "Do not mutate source specs.",
+              "Map worker/reviewer/verifier evidence to this exact FR/AC text.",
+              "Generate a human verification packet with concrete review instructions before final acceptance.",
+            ]
+          : ["Do not mutate source specs.", "Map worker/reviewer/verifier evidence to this exact FR/AC text."],
     };
   });
+}
+
+function inferVerificationMode(input: {
+  source: SourceRecord;
+  ref: string;
+  sourceText: string;
+  sourceContext?: string;
+}): VerificationObligation["mode"] {
+  const searchable = [input.ref, input.source.title, input.sourceText, input.sourceContext ?? ""].join(" ").toLowerCase();
+  if (
+    /\bhuman\b/.test(searchable) &&
+    /(verification|required|review|verify|visual|scannable|narrow|readable|overlap|color-only|usable)/.test(searchable)
+  ) {
+    return "human_verification_required";
+  }
+  if (/\bvisual\b/.test(searchable) && /\bverify|verification|review\b/.test(searchable)) {
+    return "human_verification_required";
+  }
+  return "automated";
 }
 
 function findSourceTextForRef(sourceText: string, ref: string): { text: string; context?: string } {
@@ -447,7 +486,9 @@ function inferUnblockTargets(source: SourceRecord, refs: string[]): string[] {
 }
 
 function isUiSource(source: SourceRecord): boolean {
-  return /(?:dashboard|frontend|\bui\b)/i.test(source.title);
+  return /(?:dashboard|frontend|\bui\b|web|design|design-system|accessibility)/i.test(
+    `${source.title} ${sourceDomain(source)} ${sourceTags(source).join(" ")}`,
+  );
 }
 
 function createDependencies(slice: SliceRecord, now: string): DependencyEdge[] {

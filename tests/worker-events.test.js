@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SwarmStore } from "../dist/storage.js";
-import { ingestWorkerJsonl } from "../dist/worker-events.js";
+import { extractSessionIdFromWorkerJsonl, ingestWorkerJsonl } from "../dist/worker-events.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -14,8 +14,23 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
   const store = new SwarmStore(workspace);
   try {
     store.init();
+    const now = new Date().toISOString();
+    store.insertAgentRun({
+      id: "RUN-worker-events-session",
+      sliceId: "SLICE-test",
+      role: "worker",
+      entityType: "slice",
+      entityId: "SLICE-test",
+      actor: "worker-events-test",
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      startedAt: now,
+      updatedAt: now,
+    });
     const result = ingestWorkerJsonl({
       store,
+      runId: "RUN-worker-events-session",
       actor: "worker-events-test",
       sliceId: "SLICE-test",
       driver: "codex",
@@ -44,9 +59,20 @@ test("ingests worker JSONL as events, heartbeat updates, parse failures, and ses
     const heartbeat = store.listHeartbeats().find((item) => item.actor === "worker-events-test");
     assert.equal(heartbeat?.state, "editing");
     assert.equal(heartbeat?.entityId, "SLICE-test");
+    const run = store.listAgentRuns().find((item) => item.id === "RUN-worker-events-session");
+    assert.equal(run?.sessionId, "session-123");
   } finally {
     store.close();
   }
+});
+
+test("extracts resumable session id from existing worker JSONL artifacts", () => {
+  const jsonl = [
+    JSON.stringify({ type: "turn.started" }),
+    JSON.stringify({ type: "thread.started", thread_id: "thread-from-artifact" }),
+  ].join("\n");
+
+  assert.equal(extractSessionIdFromWorkerJsonl(jsonl), "thread-from-artifact");
 });
 
 test("classifies structured command events before text fallback", () => {
@@ -134,5 +160,34 @@ test("ingest stores interpreted activity on the agent_event payload", () => {
   assert.equal(activity.state, "testing");
   assert.equal(activity.target, "npm test");
   assert.match(activity.label, /npm test/);
+  store.close();
+});
+
+test("ingest detects user-global Codex skill references in child events", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-wev-skill-isolation-"));
+  const store = new SwarmStore(dir);
+  store.init();
+  const result = ingestWorkerJsonl({
+    store,
+    actor: "skill-isolation-worker",
+    sliceId: "SLICE-skill-isolation",
+    driver: "codex",
+    jsonl: JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        command: "Get-Content C:\\Users\\Marius\\.codex\\skills\\project-overseer\\SKILL.md",
+        status: "completed",
+        exit_code: 0,
+      },
+    }),
+  });
+
+  assert.equal(result.skillIsolationFindings.length, 1);
+  assert.match(result.skillIsolationFindings[0].path, /\\.codex\\skills\\project-overseer\\SKILL\.md$/);
+  const agentEvent = store.recentEvents(10).find((event) => event.type === "worker.agent_event");
+  assert.equal(agentEvent?.payload.skillIsolationFindings.length, 1);
+  const warningEvent = store.recentEvents(10).find((event) => event.type === "worker.skill_isolation_detected");
+  assert.equal(warningEvent?.payload.findings.length, 1);
   store.close();
 });

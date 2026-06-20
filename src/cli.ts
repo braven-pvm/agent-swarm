@@ -27,8 +27,10 @@ import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { createWebViewerServer } from "./web-server.js";
 import { initTarget } from "./target-init.js";
-import { createWorkerJsonlIngestor, ingestWorkerJsonl } from "./worker-events.js";
+import { createWorkerJsonlIngestor, extractSessionIdFromWorkerJsonl, ingestWorkerJsonl } from "./worker-events.js";
 import { loadProtocol } from "./protocol.js";
+import { prepareSkillBindings, type SkillBindingResult } from "./skills.js";
+import type { SkillIsolationFinding } from "./skill-isolation.js";
 import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
 import { recordHumanVerification } from "./human-actions.js";
 import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
@@ -142,6 +144,33 @@ type OverseerCommandValidation =
     }
   | { ok: false; reason: string };
 
+type SliceRepairContext = {
+  review?: {
+    evidenceId: string;
+    status: ReviewResult["status"];
+    summary: string;
+    recommendation: string;
+    requiredFixes: string[];
+    nonPassingRefs: string[];
+    createdAt: string;
+  };
+  humanFeedback: Array<{
+    evidenceId: string;
+    ref?: string;
+    status?: string;
+    actor?: string;
+    notes?: string;
+    packetId?: string;
+    createdAt: string;
+  }>;
+  activeEscalations: Array<{
+    id: string;
+    level: EscalationRecord["level"];
+    message: string;
+    reason?: string;
+  }>;
+};
+
 type WorkerStreamingResult = {
   status: number | null;
   stdout: string;
@@ -167,11 +196,26 @@ type LiveAgentSmokeRunOptions = {
   executeLimit?: number;
   maxSlices?: number;
   maxAgentRuns?: number;
+  maxRepairAttempts?: number;
   summary?: string;
   artifacts?: string;
   historyRoot?: string;
   runId?: string;
   history?: boolean;
+};
+
+type LiveAgentSmokeResetOptions = {
+  workspace?: string;
+  scenario?: string;
+  stopRelatedProcesses?: boolean;
+};
+
+type LiveAgentSmokeFakeOptions = {
+  reset?: boolean;
+  workspace?: string;
+  scenario?: string;
+  summary?: string;
+  artifacts?: string;
 };
 
 program
@@ -265,8 +309,9 @@ liveAgentSmokeCommand
   .command("reset")
   .description("Reset and initialize the disposable live-agent smoke workspace")
   .option("--workspace <path>", "workspace to reset; defaults to .swarm-demo/live-agent-smoke")
+  .option("--scenario <scenario>", "scenario id", "live-agent-smoke")
   .option("--stop-related-processes", "stop related viewer/product processes before reset")
-  .action((options: { workspace?: string; stopRelatedProcesses?: boolean }) => {
+  .action((options: LiveAgentSmokeResetOptions) => {
     const args = buildLiveAgentResetArgs(options);
     runRepoScript("scripts/reset-live-agent-smoke.mjs", args);
   });
@@ -284,6 +329,7 @@ liveAgentSmokeCommand
   .option("--execute-limit <count>", "maximum overseer commands per turn", parseInteger)
   .option("--max-slices <count>", "maximum slices to coordinate", parseInteger)
   .option("--max-agent-runs <count>", "maximum child agent runs", parseInteger)
+  .option("--max-repair-attempts <count>", "maximum worker/reviewer repair attempts for one slice before blocking", parseInteger)
   .option("--summary <path>", "summary output path")
   .option("--artifacts <path>", "artifact output directory")
   .option("--history-root <path>", "durable run-history root")
@@ -291,7 +337,7 @@ liveAgentSmokeCommand
   .option("--no-history", "disable durable run-history archiving")
   .action((options: LiveAgentSmokeRunOptions) => {
     const args = buildLiveAgentRunArgs("acceptance-loop", options);
-    runRepoScript("scripts/run-live-agent-demo.mjs", args);
+    runRepoScript(liveAgentRunScriptFor(options.scenario), args);
   });
 
 liveAgentSmokeCommand
@@ -306,6 +352,7 @@ liveAgentSmokeCommand
   .option("--execute-limit <count>", "maximum overseer commands per turn", parseInteger, 4)
   .option("--max-slices <count>", "maximum slices to coordinate", parseInteger, 20)
   .option("--max-agent-runs <count>", "maximum child agent runs", parseInteger, 150)
+  .option("--max-repair-attempts <count>", "maximum worker/reviewer repair attempts for one slice before blocking", parseInteger, 8)
   .option("--summary <path>", "summary output path")
   .option("--artifacts <path>", "artifact output directory")
   .option("--history-root <path>", "durable run-history root")
@@ -313,7 +360,20 @@ liveAgentSmokeCommand
   .option("--no-history", "disable durable run-history archiving")
   .action((options: LiveAgentSmokeRunOptions) => {
     const args = buildLiveAgentRunArgs("full-product", options);
-    runRepoScript("scripts/run-live-agent-demo.mjs", args);
+    runRepoScript(liveAgentRunScriptFor(options.scenario), args);
+  });
+
+liveAgentSmokeCommand
+  .command("fake")
+  .description("Run a deterministic fake-agent E2E for a live-agent smoke scenario")
+  .option("--reset", "reset the smoke workspace before running")
+  .option("--workspace <path>", "workspace to run; defaults to .swarm-demo/live-agent-smoke-h2")
+  .option("--scenario <scenario>", "scenario id", "live-agent-smoke-h2")
+  .option("--summary <path>", "summary output path")
+  .option("--artifacts <path>", "artifact output directory")
+  .action((options: LiveAgentSmokeFakeOptions) => {
+    const args = buildLiveAgentFakeArgs(options);
+    runRepoScript("scripts/run-support-triage-fake-demo.mjs", args);
   });
 
 const runModeCommand = program.command("run-mode").description("Manage the current harness run mode label");
@@ -1336,6 +1396,8 @@ program
     server.listen(options.port, options.host, () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : options.port;
+      process.env.SWARM_CONTROL_HOST = options.host;
+      process.env.SWARM_CONTROL_PORT = String(port);
       console.log("Agent Swarm web observability viewer");
       console.log(`  workspace: ${workspace}`);
       console.log(`  history: ${historyRoot}`);
@@ -1524,7 +1586,9 @@ recovery
       if (!adapter?.capabilities.resume) {
         throw new Error(`Agent run ${runId} uses driver ${previousRun.driver}, which does not support resume.`);
       }
-      if (!previousRun.sessionId) throw new Error(`Agent run ${runId} does not have a captured worker session id.`);
+      const recoveredSessionId = previousRun.sessionId ?? sessionIdFromAgentRunEvents(previousRun);
+      if (!recoveredSessionId) throw new Error(`Agent run ${runId} does not have a captured worker session id.`);
+      if (!previousRun.sessionId) store.updateAgentRun(previousRun.id, { sessionId: recoveredSessionId });
       const slice = store.listSlices().find((item) => item.id === previousRun.sliceId);
       if (!slice) throw new Error(`Slice not found for run ${runId}: ${previousRun.sliceId}`);
       const target = store.targetById(slice.targetId);
@@ -1545,6 +1609,15 @@ recovery
         previousRun.resultPath && fs.existsSync(previousRun.resultPath)
           ? `Prior structured result exists at ${previousRun.resultPath}. Inspect it only if needed.`
           : "No prior structured worker result artifact was captured for this run.";
+      const protocol = loadProtocol(target.path);
+      const skillBinding = prepareSkillBindings({
+        workspace,
+        targetPath: target.path,
+        artifactPath,
+        runId: revivedRunId,
+        role: "recovery",
+        protocol,
+      });
       const prompt = buildWorkerRevivePrompt({
         slice,
         targetPath: target.path,
@@ -1552,6 +1625,7 @@ recovery
         previousRunId: previousRun.id,
         previousStatus: previousRun.status,
         priorResultState,
+        skillPacket: skillBinding.promptSection,
       });
       fs.writeFileSync(promptPath, prompt, "utf8");
 
@@ -1564,7 +1638,7 @@ recovery
         actor: previousRun.actor,
         driver: previousRun.driver,
         status: "running",
-        sessionId: previousRun.sessionId,
+        sessionId: recoveredSessionId,
         attempt,
         eventsPath: jsonlPath,
         startedAt: now,
@@ -1575,7 +1649,7 @@ recovery
         id: `heartbeat:${previousRun.actor}`,
         actor: previousRun.actor,
         state: "thinking",
-        detail: `Reviving worker session ${previousRun.sessionId}`,
+        detail: `Reviving worker session ${recoveredSessionId}`,
         entityType: "slice",
         entityId: slice.id,
       });
@@ -1588,10 +1662,13 @@ recovery
           payload: {
             previousRunId: previousRun.id,
             sliceId: slice.id,
-            sessionId: previousRun.sessionId,
+            sessionId: recoveredSessionId,
             attempt,
             promptPath,
             eventsPath: jsonlPath,
+            skills: summarizeSkillBinding(skillBinding),
+            skillBindingPath: skillBinding.bindingPath,
+            skillPacketPath: skillBinding.packetPath,
           },
         }),
       );
@@ -1604,14 +1681,13 @@ recovery
         reason: "Revive started.",
       });
 
-      const protocol = loadProtocol(target.path);
       const spec: WorkerRunSpec = {
         prompt,
         targetPath: target.path,
         schemaPath,
         resultPath: lastMessagePath,
         model: options.model,
-        resumeSessionId: previousRun.sessionId,
+        resumeSessionId: recoveredSessionId,
         driverConfig: protocol.protocol.workers.drivers[previousRun.driver] ?? {},
       };
       const invocation = adapter.buildInvocation(spec);
@@ -1635,7 +1711,7 @@ recovery
       const workerEvents = result.workerEvents;
       store.updateAgentRun(revivedRunId, {
         status: finalization.ok ? "completed" : "failed",
-        sessionId: workerEvents.sessionId ?? previousRun.sessionId,
+        sessionId: workerEvents.sessionId ?? recoveredSessionId,
         eventsPath: jsonlPath,
         resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
         stderrPath,
@@ -1652,6 +1728,15 @@ recovery
         });
       }
       store.updateSliceStatus(slice.id, finalization.ok ? "implemented" : "blocked");
+      if (finalization.ok) {
+        clearSupersededRecoveryEscalations({
+          store,
+          previousRun,
+          newRunId: revivedRunId,
+          actor: options.actor,
+          recoveryKind: "revive",
+        });
+      }
       store.upsertHeartbeat({
         id: `heartbeat:${previousRun.actor}`,
         actor: previousRun.actor,
@@ -1680,6 +1765,9 @@ recovery
             promptPath,
             eventsPath: jsonlPath,
             resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
+            skills: summarizeSkillBinding(skillBinding),
+            skillBindingPath: skillBinding.bindingPath,
+            skillPacketPath: skillBinding.packetPath,
           },
         }),
       );
@@ -1693,7 +1781,7 @@ recovery
       });
       console.log(`${finalization.ok ? "Revived" : "Revive failed"} for ${runId}`);
       console.log(`  new run: ${revivedRunId}`);
-      console.log(`  session: ${previousRun.sessionId}`);
+      console.log(`  session: ${recoveredSessionId}`);
       console.log(`  prompt: ${promptPath}`);
       console.log(`  events: ${jsonlPath}`);
       console.log(`  ingested events: ${workerEvents.eventCount}`);
@@ -1750,6 +1838,15 @@ recovery
         reason: "restart",
         previousRunId: previousRun.id,
       });
+      if (result.ok) {
+        clearSupersededRecoveryEscalations({
+          store,
+          previousRun,
+          newRunId: result.runId,
+          actor: "recovery-agent",
+          recoveryKind: "restart",
+        });
+      }
       store.addEvent(
         createEvent({
           actor: "recovery-agent",
@@ -1776,6 +1873,48 @@ recovery
       store.close();
     }
   });
+
+function clearSupersededRecoveryEscalations(input: {
+  store: SwarmStore;
+  previousRun: AgentRunRecord;
+  newRunId: string;
+  actor: string;
+  recoveryKind: "restart" | "revive";
+}): void {
+  const entityType = input.previousRun.entityType ?? "slice";
+  const entityId = input.previousRun.entityId ?? input.previousRun.sliceId;
+  const runNeedle = input.previousRun.id.toLowerCase();
+  const clearable = input.store.listEscalations("active").filter((escalation) => {
+    if (escalation.entityType !== entityType || escalation.entityId !== entityId) return false;
+    if (!["warning", "blocker", "human_required", "critical"].includes(escalation.level)) return false;
+    const haystack = `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""}`.toLowerCase();
+    return haystack.includes(runNeedle) && /stale|recovery|reviv|restart/.test(haystack);
+  });
+  for (const escalation of clearable) {
+    const reason = `Superseded by successful ${input.recoveryKind} run ${input.newRunId} for ${input.previousRun.id}.`;
+    input.store.clearEscalation(escalation.id, { reason, clearedBy: input.actor });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason,
+          previousRunId: input.previousRun.id,
+          recoveryRunId: input.newRunId,
+          recoveryKind: input.recoveryKind,
+          clearedAfterRecovery: true,
+        },
+      }),
+    );
+  }
+}
+
+function sessionIdFromAgentRunEvents(run: AgentRunRecord): string | undefined {
+  if (!run.eventsPath || !fs.existsSync(run.eventsPath)) return undefined;
+  return extractSessionIdFromWorkerJsonl(fs.readFileSync(run.eventsPath, "utf8"));
+}
 
 program
   .command("watch")
@@ -1856,6 +1995,15 @@ async function executeOverseerRun(input: {
 
   const manifest = loadScenarioManifest(input.workspace, input.scenario);
   const snapshot = buildObservabilitySnapshot(input.store, input.workspace, 120);
+  const protocol = loadProtocol(input.workspace);
+  const skillBinding = prepareSkillBindings({
+    workspace: input.workspace,
+    targetPath: input.workspace,
+    artifactPath,
+    runId,
+    role: "overseer",
+    protocol,
+  });
   const prompt = buildOverseerPrompt({
     workspace: input.workspace,
     store: input.store,
@@ -1863,6 +2011,7 @@ async function executeOverseerRun(input: {
     manifest,
     snapshot,
     execute: Boolean(input.execute),
+    skillPacket: skillBinding.promptSection,
   });
   fs.writeFileSync(promptPath, prompt, "utf8");
   const now = new Date().toISOString();
@@ -1910,6 +2059,9 @@ async function executeOverseerRun(input: {
         manifestPath: manifest.path,
         promptPath,
         eventsPath: jsonlPath,
+        skills: summarizeSkillBinding(skillBinding),
+        skillBindingPath: skillBinding.bindingPath,
+        skillPacketPath: skillBinding.packetPath,
       },
     }),
   );
@@ -1932,7 +2084,6 @@ async function executeOverseerRun(input: {
     overseerFinalization = { ok: true, structuredResultWritten: true };
   } else {
     const adapter = getWorkerDriver(input.driver)!;
-    const protocol = loadProtocol(input.workspace);
     const spec: WorkerRunSpec = {
       prompt: buildOverseerLaunchPrompt(promptPath, input.scenario),
       targetPath: input.workspace,
@@ -1986,6 +2137,15 @@ async function executeOverseerRun(input: {
     resultPath: fs.existsSync(resultPath) ? resultPath : undefined,
     stderrPath: result.stderr ? stderrPath : undefined,
   });
+  const skillIsolationFindings = recordSkillIsolationWarning({
+    store: input.store,
+    actor: input.actor,
+    runId,
+    entityType: "harness",
+    entityId,
+    eventPrefix: "overseer",
+    findings: overseerEvents.skillIsolationFindings,
+  });
 
   let commandResults: OverseerCommandExecution[] = [];
   if (parsedDecision.ok) {
@@ -2005,6 +2165,8 @@ async function executeOverseerRun(input: {
       executeLimit: input.executeLimit ?? 3,
       driver: input.driver,
       costUsd: overseerFinalization.costUsd,
+      skillBinding,
+      skillIsolationFindings,
     });
     refreshCheckpoint({
       store: input.store,
@@ -2040,7 +2202,11 @@ async function executeOverseerRun(input: {
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
+          skills: summarizeSkillBinding(skillBinding),
+          skillBindingPath: skillBinding.bindingPath,
+          skillPacketPath: skillBinding.packetPath,
           overseerEvents,
+          skillIsolationFindings,
         },
       }),
     );
@@ -2108,7 +2274,22 @@ async function executeWorkerRun(input: {
   const promptPath = path.join(artifactPath, `worker-prompt-${runId}.md`);
   const schemaPath = path.join(input.workspace, "schemas", "worker-result.schema.json");
   writeWorkerResultSchema(schemaPath);
-  const prompt = buildWorkerPrompt({ slice, targetPath: target.path, laneName: lane?.name });
+  const skillBinding = prepareSkillBindings({
+    workspace: input.workspace,
+    targetPath: target.path,
+    artifactPath,
+    runId,
+    role: "worker",
+    protocol,
+  });
+  const repairContext = buildSliceRepairContext(input.store, slice);
+  const prompt = buildWorkerPrompt({
+    slice,
+    targetPath: target.path,
+    laneName: lane?.name,
+    skillPacket: skillBinding.promptSection,
+    repairContext,
+  });
   fs.writeFileSync(promptPath, prompt, "utf8");
   const now = new Date().toISOString();
   const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
@@ -2153,6 +2334,9 @@ async function executeWorkerRun(input: {
         previousRunId: input.previousRunId,
         promptPath,
         eventsPath: jsonlPath,
+        skills: summarizeSkillBinding(skillBinding),
+        skillBindingPath: skillBinding.bindingPath,
+        skillPacketPath: skillBinding.packetPath,
         verificationObligations: summarizeVerificationObligations(slice),
       },
     }),
@@ -2220,6 +2404,15 @@ async function executeWorkerRun(input: {
     resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
     stderrPath: result.stderr ? stderrPath : undefined,
   });
+  const skillIsolationFindings = recordSkillIsolationWarning({
+    store: input.store,
+    actor: input.actor,
+    runId,
+    entityType: "slice",
+    entityId: slice.id,
+    eventPrefix: "worker",
+    findings: workerEvents.skillIsolationFindings,
+  });
 
   if (fs.existsSync(lastMessagePath)) {
     input.store.insertEvidence({
@@ -2252,7 +2445,11 @@ async function executeWorkerRun(input: {
         eventsPath: jsonlPath,
         resultPath: lastMessagePath,
         stderrPath: result.stderr ? stderrPath : undefined,
+        skills: summarizeSkillBinding(skillBinding),
+        skillBindingPath: skillBinding.bindingPath,
+        skillPacketPath: skillBinding.packetPath,
         workerEvents,
+        skillIsolationFindings,
       },
     }),
   );
@@ -2323,12 +2520,22 @@ async function executeReviewRun(input: {
 
   const evidence = input.store.listEvidence(slice.id);
   const sourceMutationsBefore = inspectSourceMutations(slice);
+  const protocol = loadProtocol(target.path);
+  const skillBinding = prepareSkillBindings({
+    workspace: input.workspace,
+    targetPath: target.path,
+    artifactPath,
+    runId,
+    role: "reviewer",
+    protocol,
+  });
   const prompt = buildReviewPrompt({
     slice,
     targetPath: target.path,
     laneName: lane?.name,
     evidence,
     sourceMutations: sourceMutationsBefore,
+    skillPacket: skillBinding.promptSection,
   });
   fs.writeFileSync(promptPath, prompt, "utf8");
   const now = new Date().toISOString();
@@ -2372,6 +2579,9 @@ async function executeReviewRun(input: {
         attempt,
         promptPath,
         eventsPath: jsonlPath,
+        skills: summarizeSkillBinding(skillBinding),
+        skillBindingPath: skillBinding.bindingPath,
+        skillPacketPath: skillBinding.packetPath,
         verificationObligations: summarizeVerificationObligations(slice),
         sourceMutationsBefore,
       },
@@ -2400,7 +2610,6 @@ async function executeReviewRun(input: {
     reviewFinalization = { ok: true, structuredResultWritten: true };
   } else {
     const adapter = getWorkerDriver(input.driver)!;
-    const protocol = loadProtocol(target.path);
     const spec: WorkerRunSpec = {
       prompt,
       targetPath: target.path,
@@ -2452,6 +2661,15 @@ async function executeReviewRun(input: {
     resultPath: fs.existsSync(resultPath) ? resultPath : undefined,
     stderrPath: result.stderr ? stderrPath : undefined,
   });
+  const skillIsolationFindings = recordSkillIsolationWarning({
+    store: input.store,
+    actor: input.actor,
+    runId,
+    entityType: "slice",
+    entityId: slice.id,
+    eventPrefix: "reviewer",
+    findings: reviewerEvents.skillIsolationFindings,
+  });
 
   let reviewEvidenceId: string | undefined;
   if (parsedReview.ok) {
@@ -2498,7 +2716,11 @@ async function executeReviewRun(input: {
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
+          skills: summarizeSkillBinding(skillBinding),
+          skillBindingPath: skillBinding.bindingPath,
+          skillPacketPath: skillBinding.packetPath,
           reviewerEvents,
+          skillIsolationFindings,
           reviewStatus: parsedReview.result.status,
           reviewEvidenceId,
           sourceMutationsAfter,
@@ -2533,7 +2755,11 @@ async function executeReviewRun(input: {
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
+          skills: summarizeSkillBinding(skillBinding),
+          skillBindingPath: skillBinding.bindingPath,
+          skillPacketPath: skillBinding.packetPath,
           reviewerEvents,
+          skillIsolationFindings,
           reason,
           sourceMutationsAfter,
         },
@@ -2595,6 +2821,7 @@ function spawnWorkerStreaming(input: {
     const stderrChunks: string[] = [];
     const ingestor = createWorkerJsonlIngestor({
       store: input.store,
+      runId: input.runId,
       actor: input.actor,
       sliceId: input.sliceId,
       driver: input.driver,
@@ -3032,6 +3259,36 @@ function countBy(values: string[]): Record<string, number> {
   }, {});
 }
 
+function maxAttempt(runs: Array<{ attempt?: number }>): number {
+  return runs.reduce((highest, run) => Math.max(highest, run.attempt ?? 1), runs.length);
+}
+
+function summarizeRepairContextForPrompt(context: SliceRepairContext | undefined) {
+  if (!context) return undefined;
+  return {
+    latestReview: context.review
+      ? {
+          evidenceId: context.review.evidenceId,
+          status: context.review.status,
+          requiredFixes: context.review.requiredFixes.slice(0, 8),
+          nonPassingRefs: context.review.nonPassingRefs.slice(0, 12),
+          recommendation: context.review.recommendation,
+          createdAt: context.review.createdAt,
+        }
+      : undefined,
+    humanFeedback: context.humanFeedback.slice(-6).map((item) => ({
+      evidenceId: item.evidenceId,
+      ref: item.ref,
+      status: item.status,
+      actor: item.actor,
+      notes: item.notes,
+      packetId: item.packetId,
+      createdAt: item.createdAt,
+    })),
+    activeBlockers: context.activeEscalations.slice(-6),
+  };
+}
+
 function formatCounts(counts: Record<string, number>): string {
   return Object.entries(counts)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -3213,9 +3470,10 @@ function parsePort(value: string): number {
   return parsed;
 }
 
-function buildLiveAgentResetArgs(options: { workspace?: string; stopRelatedProcesses?: boolean }): string[] {
+function buildLiveAgentResetArgs(options: LiveAgentSmokeResetOptions): string[] {
   const args: string[] = [];
   pushOption(args, "--workspace", options.workspace);
+  pushOption(args, "--scenario", options.scenario);
   if (options.stopRelatedProcesses) args.push("--stop-related-processes");
   return args;
 }
@@ -3232,11 +3490,22 @@ function buildLiveAgentRunArgs(mode: "acceptance-loop" | "full-product", options
   pushOption(args, "--execute-limit", options.executeLimit);
   pushOption(args, "--max-slices", options.maxSlices);
   pushOption(args, "--max-agent-runs", options.maxAgentRuns);
+  pushOption(args, "--max-repair-attempts", options.maxRepairAttempts);
   pushOption(args, "--summary", options.summary);
   pushOption(args, "--artifacts", options.artifacts);
   pushOption(args, "--history-root", options.historyRoot);
   pushOption(args, "--run-id", options.runId);
   if (options.history === false) args.push("--history", "false");
+  return args;
+}
+
+function buildLiveAgentFakeArgs(options: LiveAgentSmokeFakeOptions): string[] {
+  const args: string[] = [];
+  if (options.reset) args.push("--reset");
+  pushOption(args, "--workspace", options.workspace);
+  pushOption(args, "--scenario", options.scenario);
+  pushOption(args, "--summary", options.summary);
+  pushOption(args, "--artifacts", options.artifacts);
   return args;
 }
 
@@ -3260,6 +3529,12 @@ function runRepoScript(scriptRelativePath: string, args: string[]): void {
     return;
   }
   process.exitCode = result.status ?? 1;
+}
+
+function liveAgentRunScriptFor(scenario: string | undefined): string {
+  return scenario === "live-agent-smoke-h2"
+    ? "scripts/run-support-triage-live-demo.mjs"
+    : "scripts/run-live-agent-demo.mjs";
 }
 
 function listSourceFiles(dirInput: string): string[] {
@@ -3415,6 +3690,7 @@ function buildReviewPrompt(input: {
   laneName?: string;
   evidence: ReturnType<SwarmStore["listEvidence"]>;
   sourceMutations: SourceMutationFinding[];
+  skillPacket?: string;
 }): string {
   const sourceRefs = input.slice.sourceRefs
     .map((source) => `- ${source.title ?? source.uri}: ${source.uri}${source.hash ? ` hash:${source.hash}` : ""}`)
@@ -3438,6 +3714,7 @@ ${input.targetPath}
 Lane:
 ${input.laneName ?? input.slice.laneId}
 
+${input.skillPacket ? `${input.skillPacket}\n` : ""}
 Slice:
 ${input.slice.id} - ${input.slice.title}
 
@@ -3585,7 +3862,13 @@ function applyReviewOutcome(input: {
 }): void {
   const sourceMutationDetected = input.result.sourceMutationDetected || input.sourceMutationsAfter.some((item) => item.mutated);
   const qualityBlockingReasons = reviewQualityBlockingReasons(input.result);
-  const effectiveStatus = sourceMutationDetected ? "human_required" : qualityBlockingReasons.length > 0 ? "blocked" : input.result.status;
+  const effectiveStatus = sourceMutationDetected
+    ? "human_required"
+    : input.result.status === "repair_required" || input.result.status === "human_required"
+      ? input.result.status
+      : qualityBlockingReasons.length > 0
+        ? "blocked"
+        : input.result.status;
 
   for (const escalation of input.result.escalations) {
     insertReviewEscalation(input.store, input.slice, input.actor, escalation.level, escalation.message, input.result.summary);
@@ -3612,6 +3895,7 @@ function applyReviewOutcome(input: {
   }
 
   if (effectiveStatus === "accepted") {
+    clearResolvedReviewEscalations(input.store, input.slice, input.actor, input.reviewEvidenceId);
     if (input.slice.status !== "accepted") input.store.updateSliceStatus(input.slice.id, "ready_for_review");
     input.store.upsertHeartbeat({
       id: `heartbeat:${input.actor}`,
@@ -3662,6 +3946,39 @@ function applyReviewOutcome(input: {
   );
 }
 
+function clearResolvedReviewEscalations(store: SwarmStore, slice: SliceRecord, actor: string, reviewEvidenceId: string): void {
+  const activeEscalations = store.listEscalations("active");
+  const clearable = activeEscalations.filter((escalation) => {
+    if (escalation.entityType !== "slice" || escalation.entityId !== slice.id) return false;
+    if (escalation.level !== "warning" && escalation.level !== "blocker") return false;
+    return isReviewRepairEscalation(escalation);
+  });
+  for (const escalation of clearable) {
+    const reason = "Latest independent review accepted the repaired slice.";
+    store.clearEscalation(escalation.id, { reason, clearedBy: actor });
+    store.addEvent(
+      createEvent({
+        actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason,
+          sliceId: slice.id,
+          reviewEvidenceId,
+          clearedAfterReviewAccepted: true,
+        },
+      }),
+    );
+  }
+}
+
+function isReviewRepairEscalation(escalation: EscalationRecord): boolean {
+  const haystack = `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""}`.toLowerCase();
+  if (/skill[_ -]isolation|user[- ]global skill|global .*skill/.test(haystack)) return false;
+  return /review|reviewer|sleuth|repair|quality gate/.test(haystack);
+}
+
 function insertReviewEscalation(
   store: SwarmStore,
   slice: SliceRecord,
@@ -3698,6 +4015,68 @@ function insertReviewEscalation(
       },
     }),
   );
+}
+
+function recordSkillIsolationWarning(input: {
+  store: SwarmStore;
+  actor: string;
+  runId: string;
+  entityType: EntityType;
+  entityId: string;
+  eventPrefix: string;
+  findings: SkillIsolationFinding[];
+}): SkillIsolationFinding[] {
+  const findings = dedupeSkillIsolationFindings(input.findings);
+  if (findings.length === 0) return [];
+  const message = "Agent referenced user-global Codex skills outside harness-managed skill packet.";
+  const activeExists = input.store
+    .listEscalations("active")
+    .some((item) => item.entityType === "agent_run" && item.entityId === input.runId && item.message === message);
+  let escalationId: string | undefined;
+  if (!activeExists) {
+    const now = new Date().toISOString();
+    escalationId = makeId("escalation");
+    input.store.insertEscalation({
+      id: escalationId,
+      level: "warning",
+      status: "active",
+      entityType: "agent_run",
+      entityId: input.runId,
+      message,
+      reason: findings.map((finding) => finding.path).join("; ").slice(0, 1000),
+      createdBy: input.actor,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: `${input.eventPrefix}.skill_isolation_warning`,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      payload: {
+        runId: input.runId,
+        escalationId,
+        findings,
+        activeEscalationAlreadyExisted: activeExists,
+        message,
+      },
+    }),
+  );
+  return findings;
+}
+
+function dedupeSkillIsolationFindings(findings: SkillIsolationFinding[]): SkillIsolationFinding[] {
+  const seen = new Set<string>();
+  const result: SkillIsolationFinding[] = [];
+  for (const finding of findings) {
+    const key = `${finding.kind}:${finding.path.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(finding);
+  }
+  return result;
 }
 
 function readLatestReviewGate(
@@ -3738,8 +4117,7 @@ function readLatestReviewGate(
       evidenceId: reviewEvidence.id,
     };
   }
-  const findingsByRef = new Map(parsed.data.frAcFindings.map((item) => [item.ref, item]));
-  const nonPassingRefs = slice.frAcRefs.filter((ref) => findingsByRef.get(ref)?.status !== "passed");
+  const nonPassingRefs = slice.frAcRefs.filter((ref) => reviewFindingForRef(parsed.data.frAcFindings, ref)?.status !== "passed");
   if (nonPassingRefs.length > 0) {
     return {
       passed: false,
@@ -3771,6 +4149,70 @@ function readLatestReviewGate(
     status: "accepted",
     evidenceId: reviewEvidence.id,
   };
+}
+
+function buildSliceRepairContext(store: SwarmStore, slice: SliceRecord): SliceRepairContext | undefined {
+  const review = latestRepairReviewContext(store, slice);
+  const humanFeedback = latestHumanRepairFeedback(store, slice);
+  const activeEscalations = store
+    .listEscalations("active")
+    .filter((item) => item.entityType === "slice" && item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level))
+    .slice(-6)
+    .map((item) => ({
+      id: item.id,
+      level: item.level,
+      message: item.message,
+      reason: item.reason,
+    }));
+
+  if (!review && humanFeedback.length === 0 && activeEscalations.length === 0) return undefined;
+  return { review, humanFeedback, activeEscalations };
+}
+
+function latestRepairReviewContext(store: SwarmStore, slice: SliceRecord): SliceRepairContext["review"] | undefined {
+  const reviewEvidence = store
+    .listEvidence(slice.id)
+    .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
+    .at(-1);
+  if (!reviewEvidence) return undefined;
+  const parsed = reviewResultSchema.safeParse(reviewEvidence.payload.reviewResult);
+  if (!parsed.success) return undefined;
+  if (parsed.data.status === "accepted" && reviewQualityBlockingReasons(parsed.data).length === 0) return undefined;
+  return {
+    evidenceId: reviewEvidence.id,
+    status: parsed.data.status,
+    summary: parsed.data.summary,
+    recommendation: parsed.data.recommendation,
+    requiredFixes: parsed.data.requiredFixes,
+    nonPassingRefs: parsed.data.frAcFindings.filter((finding) => finding.status !== "passed").map((finding) => finding.ref),
+    createdAt: reviewEvidence.createdAt,
+  };
+}
+
+function latestHumanRepairFeedback(store: SwarmStore, slice: SliceRecord): SliceRepairContext["humanFeedback"] {
+  return store
+    .listEvidence(slice.id)
+    .filter((item) => item.kind === "artifact" && item.payload.type === "human_verification_result")
+    .filter((item) => {
+      const status = stringValue(item.payload.status);
+      return status === "failed" || status === "needs_rework";
+    })
+    .slice(-8)
+    .map((item) => ({
+      evidenceId: item.id,
+      ref: item.ref,
+      status: stringValue(item.payload.status),
+      actor: stringValue(item.payload.actor),
+      notes: stringValue(item.payload.notes),
+      packetId: stringValue(item.payload.packetId),
+      createdAt: item.createdAt,
+    }));
+}
+
+function reviewFindingForRef(findings: ReviewResult["frAcFindings"], ref: string): ReviewResult["frAcFindings"][number] | undefined {
+  const exact = findings.find((item) => item.ref === ref);
+  if (exact) return exact;
+  return findings.find((item) => item.ref.startsWith(`${ref}.`));
 }
 
 function reviewQualityBlockingReasons(result: ReviewResult): string[] {
@@ -4378,10 +4820,16 @@ function scenarioEntityId(scenario: string): string {
 }
 
 function loadScenarioManifest(workspace: string, scenario: string): ScenarioManifestLoad {
-  const manifestPath = path.join(workspace, `${scenario}.json`);
+  const primaryPath = path.join(workspace, `${scenario}.json`);
+  const fallbackPath = path.join(workspace, "live-agent-smoke.json");
+  const manifestPath = fs.existsSync(primaryPath)
+    ? primaryPath
+    : fs.existsSync(fallbackPath)
+      ? fallbackPath
+      : primaryPath;
   if (!fs.existsSync(manifestPath)) {
     return {
-      path: manifestPath,
+      path: primaryPath,
       exists: false,
       data: {
         scenarioId: scenario,
@@ -4403,7 +4851,20 @@ function loadScenarioManifest(workspace: string, scenario: string): ScenarioMani
       },
     };
   }
-  return { path: manifestPath, exists: true, data: parsed as Record<string, unknown> };
+  const data = parsed as Record<string, unknown>;
+  const loadedScenario = typeof data.scenarioId === "string" ? data.scenarioId : undefined;
+  if (manifestPath === fallbackPath && loadedScenario && loadedScenario !== scenario) {
+    return {
+      path: primaryPath,
+      exists: false,
+      data: {
+        scenarioId: scenario,
+        missing: true,
+        note: `Fallback manifest ${fallbackPath} belongs to ${loadedScenario}, not ${scenario}.`,
+      },
+    };
+  }
+  return { path: manifestPath, exists: true, data };
 }
 
 function buildOverseerStatePacket(input: {
@@ -4430,15 +4891,18 @@ function buildOverseerStatePacket(input: {
           .map((source) => sourceDomain(source)),
       ),
     ];
-    const isDashboard =
-      target?.name.toLowerCase().includes("dashboard") || slice.frAcRefs.some((ref) => ref.startsWith("AC-UI"));
-    const workerActor = isDashboard ? "dashboard-worker" : "backend-worker";
-    const reviewerActor = isDashboard ? "dashboard-reviewer" : "backend-reviewer";
+    const isFrontend = isFrontendTargetOrSlice(target, slice, sourceDomains);
+    const workerActor = isFrontend ? "dashboard-worker" : "backend-worker";
+    const reviewerActor = isFrontend ? "dashboard-reviewer" : "backend-reviewer";
+    const repairContext = buildSliceRepairContext(input.store, slice);
+    const retryCount = maxAttempt(slice.agentRuns);
     let nextCommand: string | undefined;
     let nextCommandPurpose: string | undefined;
     if (["ready", "blocked", "repairing"].includes(slice.status)) {
       nextCommand = `${cli} run ${slice.id} --actor ${workerActor} --driver codex`;
-      nextCommandPurpose = "Dispatch the worker for the active slice selected by the harness.";
+      nextCommandPurpose = slice.status === "repairing" && repairContext
+        ? "Dispatch a targeted repair worker using the stored review/human repair context."
+        : "Dispatch the worker for the active slice selected by the harness.";
     } else if (["implemented", "ready_for_review"].includes(slice.status)) {
       nextCommand = `${cli} review ${slice.id} --actor ${reviewerActor} --driver codex`;
       nextCommandPurpose = "Dispatch independent review for worker evidence already recorded on the slice.";
@@ -4459,6 +4923,8 @@ function buildOverseerStatePacket(input: {
       hasReviewEvidence: evidenceKinds.includes("review_result"),
       hasCommandEvidence: evidenceKinds.includes("command"),
       reviewStatus: slice.reviewResult?.status,
+      retryCount,
+      repairContext: summarizeRepairContextForPrompt(repairContext),
       agentRuns: slice.agentRuns.map((run) => ({
         id: run.id,
         role: run.role,
@@ -4489,6 +4955,8 @@ function buildOverseerStatePacket(input: {
     hasReviewEvidence: slice.hasReviewEvidence,
     hasCommandEvidence: slice.hasCommandEvidence,
     reviewStatus: slice.reviewStatus,
+    retryCount: slice.retryCount,
+    repairContext: slice.repairContext,
     agentRunCount: slice.agentRuns.length,
     agentRuns: slice.agentRuns.slice(-3),
     nextCommand: slice.nextCommand,
@@ -4760,7 +5228,7 @@ function buildOverseerSourcePullQueues(snapshot: ReturnType<typeof buildObservab
       continue;
     }
 
-    const batchSize = isDashboardSource(item.source) ? Math.min(3, item.availableRefs.length) : 1;
+    const batchSize = suggestedSourcePullBatchSize(item.source, item.availableRefs);
     ready.push({
       sourceId: item.source.id,
       sourceTitle: item.source.title,
@@ -4775,6 +5243,25 @@ function buildOverseerSourcePullQueues(snapshot: ReturnType<typeof buildObservab
   }
 
   return { ready, blocked };
+}
+
+function suggestedSourcePullBatchSize(source: SourceRecord, availableRefs: string[]): number {
+  if (availableRefs.length === 0) return 1;
+  const firstFamily = frAcFamilyKey(availableRefs[0]);
+  if (firstFamily) {
+    const familySize = availableRefs.filter((ref) => frAcFamilyKey(ref) === firstFamily).length;
+    if (familySize > 1) return Math.min(12, familySize);
+  }
+  return isDashboardSource(source) ? Math.min(3, availableRefs.length) : 1;
+}
+
+function frAcFamilyKey(ref: string): string | undefined {
+  const normalized = ref.toUpperCase();
+  const acMatch = /^AC-(.+)-([0-9]+)\.[0-9]+$/.exec(normalized);
+  if (acMatch) return `${acMatch[1]}-${acMatch[2]}`;
+  const frMatch = /^FR-(.+)-([0-9]+)$/.exec(normalized);
+  if (frMatch) return `${frMatch[1]}-${frMatch[2]}`;
+  return undefined;
 }
 
 function prerequisitePullCommandsFor(
@@ -4796,10 +5283,40 @@ function prerequisitePullCommandsFor(
 
 function targetForSource(snapshot: ReturnType<typeof buildObservabilitySnapshot>, source: SourceRecord) {
   const sourcePath = path.resolve(source.uri).toLowerCase();
-  return snapshot.targets.find((target) => {
+  const pathMatchedTarget = snapshot.targets.find((target) => {
     const targetPath = path.resolve(target.path).toLowerCase();
     return sourcePath === targetPath || sourcePath.startsWith(`${targetPath}${path.sep}`);
   });
+  if (pathMatchedTarget) return pathMatchedTarget;
+
+  const descriptor = [
+    source.title,
+    sourceDomain(source),
+    ...sourceTags(source),
+    path.basename(source.uri),
+  ]
+    .join(" ")
+    .toLowerCase();
+  const ranked = snapshot.targets
+    .map((target) => ({ target, score: targetSourceAffinityScore(target, descriptor) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.target.name.localeCompare(right.target.name));
+  return ranked[0]?.target;
+}
+
+function targetSourceAffinityScore(
+  target: ReturnType<typeof buildObservabilitySnapshot>["targets"][number],
+  sourceDescriptor: string,
+): number {
+  const targetDescriptor = `${target.name} ${target.path}`.toLowerCase();
+  let score = 0;
+  if (/\b(api|backend|server)\b/.test(sourceDescriptor) && /\b(api|backend|server)\b/.test(targetDescriptor)) score += 5;
+  if (/\b(frontend|dashboard|ui|web|design|design-system|accessibility)\b/.test(sourceDescriptor) && /\b(frontend|dashboard|ui|web)\b/.test(targetDescriptor)) score += 5;
+  if (sourceDescriptor.includes("product") && /\b(frontend|dashboard|ui|web)\b/.test(targetDescriptor)) score += 2;
+  for (const token of target.name.toLowerCase().split(/[^a-z0-9]+/).filter((item) => item.length > 1)) {
+    if (sourceDescriptor.includes(token)) score += 1;
+  }
+  return score;
 }
 
 function sourceDependsOn(source: SourceRecord): string[] {
@@ -4844,7 +5361,26 @@ function isBroadFrSatisfiedByCompletedSnapshotAcs(
 }
 
 function isDashboardSource(source: SourceRecord): boolean {
-  return /(?:dashboard|frontend|\bui\b)/i.test(`${source.title} ${sourceDomain(source)} ${sourceTags(source).join(" ")}`);
+  return /(?:dashboard|frontend|\bui\b|web|design|design-system|accessibility)/i.test(`${source.title} ${sourceDomain(source)} ${sourceTags(source).join(" ")}`);
+}
+
+function isFrontendTargetOrSlice(
+  target: ReturnType<typeof buildObservabilitySnapshot>["targets"][number] | undefined,
+  slice: SliceRecord,
+  sourceDomains: string[],
+): boolean {
+  const haystack = [
+    target?.name,
+    target?.path,
+    slice.title,
+    slice.deliveryQuestion,
+    ...slice.frAcRefs,
+    ...sourceDomains,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /(?:dashboard|frontend|\bui\b|-ui-|web|design|design-system|accessibility)/i.test(haystack);
 }
 
 function buildOverseerPrompt(input: {
@@ -4854,6 +5390,7 @@ function buildOverseerPrompt(input: {
   manifest: ScenarioManifestLoad;
   snapshot: ReturnType<typeof buildObservabilitySnapshot>;
   execute: boolean;
+  skillPacket?: string;
 }): string {
   const statePacket = buildOverseerStatePacket({
     workspace: input.workspace,
@@ -4870,6 +5407,7 @@ ${input.scenario}
 Workspace:
 ${input.workspace}
 
+${input.skillPacket ? `${input.skillPacket}\n` : ""}
 Your current execution mode:
 ${input.execute ? "- Bounded command execution is enabled after your decision is recorded." : "- Planning only; the harness will record your decision but will not execute recommended commands."}
 - You may recommend worker and reviewer child-agent dispatch only through harness commands when execution is enabled.
@@ -4889,7 +5427,9 @@ Planning priorities:
 
 Decision discipline:
 - You already have the authoritative actionable state packet below. Do not read prompt files, list artifacts, query SQLite, grep state files, or invoke harness commands yourself.
-- If actionableState.focusQueue has an item, treat it as a required senior-developer zoom-in before dispatch/revive/restart/escalation. Prefer its inspect commands or recommended intervention before ordinary active-slice dispatch.
+- If actionableState.focusQueue has an item, treat it as a required senior-developer zoom-in before revive/restart/escalation. Use its inspect commands only when the active slice lacks concrete repair context.
+- If an active repairing slice includes repairContext.latestReview.requiredFixes or repairContext.humanFeedback, recommend its nextCommand once as a targeted repair dispatch before further inspect churn.
+- If retryCount is high and repairContext is present, do not keep recommending inspect-only turns; either dispatch the targeted repair command or block with a precise escalation.
 - If actionableState.activeSliceQueue has an item with nextCommand, recommend that exact command first unless a listed blocker makes it unsafe.
 - If there is no active slice and actionableState.nextSourcePullQueue has an item with nextCommand, recommend the first queue item before any blocked downstream source.
 - Never recommend a slices pull command for an item in actionableState.blockedSourceQueue; use its missingDependencies and prerequisiteCommands to continue prerequisite work first.
@@ -4976,17 +5516,29 @@ function normalizeEscalationMessage(value: unknown): string {
 
 function isNonBlockingWarningRestatement(message: string): boolean {
   return (
-    /existing warning escalations?/i.test(message) &&
-    /(does not block|not mark(?:ed)? .*blocking|authoritative snapshot)/i.test(message)
+    /(existing .*warnings?|warning remains|warnings remain|warning restatement)/i.test(message) &&
+    /(does not block|do not block|not mark(?:ed)? .*blocking|authoritative snapshot|remain visible|remains visible)/i.test(message)
   );
 }
 
 function isSameOperationalWarningFamily(left: string, right: string): boolean {
   const combined = `${left}\n${right}`;
+  if (/low[- ]signal|proof[- ]churn|meaningful dependencies/i.test(combined)) {
+    return (
+      /low[- ]signal|proof[- ]churn|meaningful dependencies/i.test(left) &&
+      /low[- ]signal|proof[- ]churn|meaningful dependencies/i.test(right)
+    );
+  }
   if (/git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(combined)) {
     return (
       /git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(left) &&
       /git permission warnings?|unable to access .*git\/ignore|untracked `.swarm\/?`|untracked \.swarm/i.test(right)
+    );
+  }
+  if (/skill[_ -]isolation[_ -]conflict|user[- ]global skill|global .*skill/i.test(combined)) {
+    return (
+      /skill[_ -]isolation[_ -]conflict|user[- ]global skill|global .*skill/i.test(left) &&
+      /skill[_ -]isolation[_ -]conflict|user[- ]global skill|global .*skill/i.test(right)
     );
   }
   return false;
@@ -5137,6 +5689,8 @@ function applyOverseerDecision(input: {
   executeLimit: number;
   driver: string;
   costUsd?: number;
+  skillBinding?: SkillBindingResult;
+  skillIsolationFindings?: SkillIsolationFinding[];
 }): OverseerCommandExecution[] {
   input.store.setMeta(`overseer:last:${input.scenario}`, input.resultPath);
   input.store.upsertHeartbeat({
@@ -5280,6 +5834,10 @@ function applyOverseerDecision(input: {
         nextAction: input.decision.nextAction,
         driver: input.driver,
         costUsd: input.costUsd,
+        skills: input.skillBinding ? summarizeSkillBinding(input.skillBinding) : undefined,
+        skillBindingPath: input.skillBinding?.bindingPath,
+        skillPacketPath: input.skillBinding?.packetPath,
+        skillIsolationFindings: input.skillIsolationFindings ?? [],
         commandResults,
       },
     }),
@@ -5717,10 +6275,38 @@ function jsonForPrompt(value: unknown): string {
   return `${json.slice(0, maxLength)}\n... truncated ${json.length - maxLength} chars ...`;
 }
 
+function summarizeSkillBinding(binding: SkillBindingResult) {
+  return {
+    role: binding.role,
+    runId: binding.runId,
+    bindingPath: binding.bindingPath,
+    packetPath: binding.packetPath,
+    boundRoot: binding.boundRoot,
+    required: binding.required.map(summarizeSkill),
+    optional: binding.optional.map(summarizeSkill),
+    count: binding.skills.length,
+  };
+}
+
+function summarizeSkill(skill: SkillBindingResult["skills"][number]) {
+  return {
+    id: skill.id,
+    requirement: skill.requirement,
+    source: skill.source,
+    sourcePath: skill.sourcePath,
+    boundPath: skill.boundPath,
+    hash: skill.hash,
+    title: skill.title,
+    description: skill.description,
+  };
+}
+
 function buildWorkerPrompt(input: {
   slice: SliceRecord;
   targetPath: string;
   laneName?: string;
+  skillPacket?: string;
+  repairContext?: SliceRepairContext;
 }): string {
   const sourceRefs = input.slice.sourceRefs
     .map((source) => `- ${source.title ?? source.uri}: ${source.uri}`)
@@ -5734,6 +6320,7 @@ ${input.targetPath}
 Lane:
 ${input.laneName ?? input.slice.laneId}
 
+${input.skillPacket ? `${input.skillPacket}\n` : ""}
 Slice:
 ${input.slice.id} - ${input.slice.title}
 
@@ -5766,6 +6353,8 @@ ${input.slice.expectedEvidence.map((item) => `- ${item}`).join("\n")}
 Verification requirements:
 ${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
 
+${formatRepairContextForPrompt(input.repairContext)}
+
 Instructions:
 - Implement only this slice scope.
 - Do not modify source spec files.
@@ -5775,8 +6364,54 @@ Instructions:
 - If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Provide frAcCoverage for every in-scope FR/AC ref.
 - Map frAcCoverage evidence to the read-only verification obligations above.
+- Return status "passed" when your implementation work and worker evidence are complete, even though the harness will still run independent review and deterministic verification after you.
+- Do not return "needs_human" merely because independent review, deterministic verification, or final acceptance is still pending; those are normal harness phases.
+- Return "needs_human" only when a true human decision, clarification, or human verification is required by the source/obligations before the affected scope can safely proceed.
 - Return the final answer in the required structured schema.
 `;
+}
+
+function formatRepairContextForPrompt(context: SliceRepairContext | undefined): string {
+  if (!context) return "";
+  const lines = [
+    "Targeted repair context:",
+    "- This section is prior review/human feedback for the current slice. It does not modify the immutable source refs or verification obligations.",
+    "- Use it to repair the implementation, then return fresh worker evidence mapped to the same FR/AC refs.",
+  ];
+  if (context.review) {
+    lines.push(
+      `- Latest review evidence: ${context.review.evidenceId}`,
+      `- Latest review status: ${context.review.status}`,
+      `- Review summary: ${context.review.summary}`,
+      `- Review recommendation: ${context.review.recommendation}`,
+    );
+    if (context.review.nonPassingRefs.length > 0) {
+      lines.push("- Non-passing review refs:");
+      for (const ref of context.review.nonPassingRefs) lines.push(`  - ${ref}`);
+    }
+    if (context.review.requiredFixes.length > 0) {
+      lines.push("- Required fixes from independent review:");
+      for (const fix of context.review.requiredFixes) lines.push(`  - ${fix}`);
+    }
+  }
+  if (context.humanFeedback.length > 0) {
+    lines.push("- Human verification feedback requiring repair:");
+    for (const item of context.humanFeedback) {
+      const ref = item.ref ? `${item.ref} ` : "";
+      const actor = item.actor ? ` by ${item.actor}` : "";
+      const packet = item.packetId ? ` packet ${item.packetId}` : "";
+      const notes = item.notes?.trim() ? ` Notes: ${item.notes.trim()}` : "";
+      lines.push(`  - ${ref}${item.status ?? "failed"}${actor}.${packet}${notes}`);
+    }
+  }
+  if (context.activeEscalations.length > 0) {
+    lines.push("- Active scoped blockers to resolve or supersede with evidence:");
+    for (const item of context.activeEscalations) {
+      const reason = item.reason?.trim() ? ` Reason: ${item.reason.trim()}` : "";
+      lines.push(`  - ${item.level}: ${item.message}${reason}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function buildWorkerRevivePrompt(input: {
@@ -5786,6 +6421,7 @@ function buildWorkerRevivePrompt(input: {
   previousRunId: string;
   previousStatus: string;
   priorResultState: string;
+  skillPacket?: string;
 }): string {
   return `You are being resumed by the Agent Swarm supervised recovery protocol.
 
@@ -5802,7 +6438,7 @@ Recovery objective:
 
 This is not permission to change source specs or expand scope.
 
-${buildWorkerPrompt({ slice: input.slice, targetPath: input.targetPath, laneName: input.laneName })}`;
+${buildWorkerPrompt({ slice: input.slice, targetPath: input.targetPath, laneName: input.laneName, skillPacket: input.skillPacket })}`;
 }
 
 function writeWorkerResultSchema(schemaPath: string): void {

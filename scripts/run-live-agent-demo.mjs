@@ -21,6 +21,11 @@ const defaultWorkspace = path.join(repoRoot, ".swarm-demo", "live-agent-smoke");
 const workspace = path.resolve(args.workspace ?? defaultWorkspace);
 const resetBeforeRun = args.reset === "true";
 const scenario = args.scenario ?? "live-agent-smoke";
+if (scenario !== "live-agent-smoke") {
+  throw new Error(
+    `Scenario ${scenario} has a reset scaffold and fake-agent E2E, but is not wired into the real live-agent runner yet. Run swarm smoke live-agent fake --reset --scenario ${scenario}; Phase 11D adds the real run.`,
+  );
+}
 const mode = args.mode ?? "acceptance-loop";
 if (!["acceptance-loop", "full-product"].includes(mode)) {
   throw new Error(`Invalid --mode ${mode}; expected acceptance-loop or full-product`);
@@ -590,6 +595,7 @@ const artifactPaths = {
 
 const finalCoverage = readCoverageSummary();
 const finalOutcomeVsCoverage = summarizeOutcomeVsCoverage(finalOutcome, finalCoverage);
+const finalEscalationSummary = summarizeActiveEscalationState(finalSnapshot.activeEscalations);
 
 const summary = {
   runId,
@@ -634,10 +640,14 @@ const summary = {
     agentRuns: finalSnapshot.agentRuns.length,
     evidence: finalSlice?.evidence.length ?? 0,
     activeEscalations: finalSnapshot.activeEscalations.length,
+    activeBlockingEscalations: finalEscalationSummary.blocking.count,
+    activeWarningEscalations: finalEscalationSummary.warnings.count,
+    activeInfoEscalations: finalEscalationSummary.info.count,
     graphNodes: graph.nodes.length,
     graphEdges: graph.edges.length,
     timelineItems: timeline.items.length,
   },
+  escalationSummary: finalEscalationSummary,
   turns,
   verifyRuns,
   repairClearances,
@@ -1187,6 +1197,57 @@ function buildArtifactIndex(summary) {
     },
     items,
   };
+}
+
+function summarizeActiveEscalationState(escalations = []) {
+  const byLevel = countBy(escalations.map((item) => item.level ?? "unknown"));
+  const blockingItems = escalations.filter((item) => ["blocker", "human_required", "critical"].includes(item.level));
+  const warningItems = escalations.filter((item) => item.level === "warning");
+  const infoItems = escalations.filter((item) => item.level === "info");
+  return {
+    total: escalations.length,
+    byLevel,
+    blocking: {
+      count: blockingItems.length,
+      levels: ["blocker", "human_required", "critical"],
+      items: blockingItems.map(summarizeEscalationForRunSummary),
+    },
+    warnings: {
+      count: warningItems.length,
+      items: warningItems.map(summarizeEscalationForRunSummary),
+    },
+    info: {
+      count: infoItems.length,
+      items: infoItems.map(summarizeEscalationForRunSummary),
+    },
+    interpretation:
+      blockingItems.length > 0
+        ? "blocking_concerns_active"
+        : warningItems.length > 0
+          ? "warnings_active_no_blocking_concerns"
+          : infoItems.length > 0
+            ? "info_only"
+            : "clear",
+  };
+}
+
+function summarizeEscalationForRunSummary(escalation) {
+  return {
+    id: escalation.id,
+    level: escalation.level,
+    entityType: escalation.entityType,
+    entityId: escalation.entityId,
+    message: escalation.message,
+    createdAt: escalation.createdAt,
+    createdBy: escalation.createdBy,
+  };
+}
+
+function countBy(values) {
+  return values.reduce((accumulator, value) => {
+    accumulator[value] = (accumulator[value] ?? 0) + 1;
+    return accumulator;
+  }, {});
 }
 
 function renderArtifactIndexMarkdown(index) {
@@ -2282,13 +2343,17 @@ function isHistoricalPlanningNoise(message) {
     /historical dashboard prerequisite warnings/i.test(message) ||
     /dashboard prerequisite warnings appear stale/i.test(message) ||
     /existing warning escalations?/i.test(message) ||
+    /existing warnings? reference prior/i.test(message) ||
     /authoritative snapshot .*not mark.*blocking/i.test(message) ||
     /does not block .*dispatch/i.test(message) ||
+    /does not block .*?(?:review|slice|current)/i.test(message) ||
     /claims dashboard prerequisites are missing/i.test(message) ||
     /claims missing dashboard prerequisites/i.test(message) ||
     /mark(?:s|ed)? (?:that )?blocker stale/i.test(message) ||
     /mark(?:s|ed)? it stale/i.test(message) ||
     /do not treat it as blocking/i.test(message) ||
+    /prior SLICE-[a-f0-9]+.*git access outside/i.test(message) ||
+    /git access outside .*repository/i.test(message) ||
     /git permission warnings?|untracked \.swarm|modified implementation\/test files/i.test(message)
   );
 }
@@ -2934,6 +2999,7 @@ function findProductSpecSource(sources) {
 
 function inspectProductReadiness({ runCommands }) {
   const snapshot = observe(120);
+  const productProbeConfig = getProductReadinessProbeConfig();
   const productSource = findProductSpecSource(snapshot.sources);
   const productSourceMutation = productSource ? inspectSourceMutations([productSource])[0] : undefined;
   const packagePath = path.join(dashboardTarget, "package.json");
@@ -2979,6 +3045,7 @@ function inspectProductReadiness({ runCommands }) {
     ? runStartProbe(manualUrl, productStartOutputPath, productProbePath, productProbeMarkdownPath, {
         cwd: commandWorkspace,
         probeIsolation,
+        probeConfig: productProbeConfig,
       })
     : {
         command: "npm start",
@@ -3111,6 +3178,7 @@ function inspectProductReadiness({ runCommands }) {
       assignedManualUrl: startResult.assignedManualUrl ?? manualUrl,
     },
     probeIsolation,
+    productProbeConfig,
     commandResults: {
       test: testResult,
       start: startResult,
@@ -3433,6 +3501,60 @@ function readJsonFile(filePath) {
   }
 }
 
+function readManifest() {
+  return readJsonFile(manifestPath) ?? {};
+}
+
+function getProductReadinessProbeConfig() {
+  const manifest = readManifest();
+  return normalizeProductProbeConfig(manifest.fullProductMode?.productReadinessProbe);
+}
+
+function normalizeProductProbeConfig(config = {}) {
+  config = config && typeof config === "object" ? config : {};
+  const uiExpectedText = normalizeStringList(config.ui?.expectedText);
+  const apiExpectedJsonFields = normalizeStringList(config.api?.expectedJsonFields);
+  return {
+    ui: {
+      label: normalizeNonEmptyString(config.ui?.label, "product-html"),
+      path: normalizeProbePath(config.ui?.path, "/"),
+      expectedText: uiExpectedText,
+    },
+    api: !config.api || config.api === false
+      ? undefined
+      : {
+          label: normalizeNonEmptyString(config.api?.label, "product-summary-api"),
+          path: normalizeProbePath(config.api?.path, "/api/summary"),
+          expectedJsonFields: apiExpectedJsonFields,
+        },
+    workflow: normalizeWorkflowProbeConfig(config.workflow),
+  };
+}
+
+function normalizeWorkflowProbeConfig(config) {
+  if (!config || config === false) return undefined;
+  return {
+    kind: normalizeNonEmptyString(config.kind, ""),
+    summaryPath: normalizeProbePath(config.summaryPath, "/api/summary"),
+    overduePath: normalizeProbePath(config.overduePath, "/api/invoices?status=overdue"),
+    updateStatusPathTemplate: normalizeProbePath(config.updateStatusPathTemplate, "/api/invoices/:id/status"),
+  };
+}
+
+function normalizeStringList(value) {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  return values.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function normalizeNonEmptyString(value, fallback) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function normalizeProbePath(value, fallback) {
+  const selected = normalizeNonEmptyString(value, fallback);
+  return selected.startsWith("/") ? selected : `/${selected}`;
+}
+
 function createProductProbeWorkspace() {
   const probeWorkspace = path.join(artifactsPath, "product-dashboard-probe-workspace");
   try {
@@ -3508,6 +3630,7 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
   let child;
   const cwd = options.cwd ?? dashboardTarget;
   const probeIsolation = options.probeIsolation;
+  const probeConfig = normalizeProductProbeConfig(options.probeConfig);
   const probeUrl = new URL(manualUrl);
   let effectiveManualUrl = manualUrl;
   let probeUrlSelection = {
@@ -3532,9 +3655,9 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
       },
     });
 
-    let uiProbe = waitForHttp(`${effectiveManualUrl}/`, {
-      label: "dashboard-html",
-      expectText: "Invoice Operations Dashboard",
+    let uiProbe = waitForHttp(`${effectiveManualUrl}${probeConfig.ui.path}`, {
+      label: probeConfig.ui.label,
+      expectText: probeConfig.ui.expectedText,
       timeoutMs: 7000,
     });
     if (!uiProbe.passed) {
@@ -3547,9 +3670,9 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
         const assignedUrlProbe = uiProbe;
         effectiveManualUrl = probeUrlSelection.manualUrl;
         uiProbe = {
-          ...waitForHttp(`${effectiveManualUrl}/`, {
-            label: "dashboard-html",
-            expectText: "Invoice Operations Dashboard",
+          ...waitForHttp(`${effectiveManualUrl}${probeConfig.ui.path}`, {
+            label: probeConfig.ui.label,
+            expectText: probeConfig.ui.expectedText,
             timeoutMs: 7000,
           }),
           assignedManualUrl: manualUrl,
@@ -3557,22 +3680,26 @@ function runStartProbe(manualUrl, outputPath, probeOutputPath, probeMarkdownPath
         };
       }
     }
-    const apiProbe = uiProbe.passed
-      ? waitForHttp(`${effectiveManualUrl}/api/summary`, {
-          label: "dashboard-summary-api",
-          expectJsonFields: ["invoiceCount", "openTotalCents"],
+    const uiResponded = uiProbe.ok === true;
+    const apiProbe = uiResponded && probeConfig.api
+      ? waitForHttp(`${effectiveManualUrl}${probeConfig.api.path}`, {
+          label: probeConfig.api.label,
+          expectJsonFields: probeConfig.api.expectedJsonFields,
           timeoutMs: 3000,
         })
-      : { passed: false, reason: "Skipped API probe because UI probe failed." };
-    const markPaidProbe = apiProbe.passed
-      ? runMarkPaidProbe(effectiveManualUrl)
-      : { passed: false, reason: "Skipped mark-paid workflow because summary API probe failed." };
+      : { passed: false, reason: uiResponded ? "No API probe was configured." : "Skipped API probe because dashboard HTML did not respond successfully." };
+    const markPaidProbe = apiProbe.passed && probeConfig.workflow?.kind === "invoice-mark-paid"
+      ? runMarkPaidProbe(effectiveManualUrl, probeConfig.workflow)
+      : apiProbe.passed
+        ? { label: "workflow", passed: true, skipped: true, reason: "No product workflow probe was configured." }
+        : { label: "workflow", passed: false, skipped: true, reason: "Skipped workflow probe because summary API probe failed." };
     const probeArtifact = {
       generatedAt: new Date().toISOString(),
       command: "npm start",
       cwd,
       productTarget: dashboardTarget,
       probeIsolation,
+      probeConfig,
       manualUrl: effectiveManualUrl,
       assignedManualUrl: manualUrl,
       probeUrlSource: probeUrlSelection.probeUrlSource,
@@ -3707,12 +3834,18 @@ function npmInvocation(scriptName) {
   return { command: "npm", args: [scriptName] };
 }
 
-function runMarkPaidProbe(manualUrl) {
+function runMarkPaidProbe(manualUrl, workflowConfig = {}) {
+  const summaryPath = normalizeProbePath(workflowConfig.summaryPath, "/api/summary");
+  const overduePath = normalizeProbePath(workflowConfig.overduePath, "/api/invoices?status=overdue");
+  const updateStatusPathTemplate = normalizeProbePath(workflowConfig.updateStatusPathTemplate, "/api/invoices/:id/status");
   const result = spawnSync(
     process.execPath,
     [
       "-e",
       `const manualUrl = ${JSON.stringify(manualUrl)};
+const summaryPath = ${JSON.stringify(summaryPath)};
+const overduePath = ${JSON.stringify(overduePath)};
+const updateStatusPathTemplate = ${JSON.stringify(updateStatusPathTemplate)};
 async function readJson(url, options = {}) {
   const response = await fetch(url, options);
   const body = await response.text();
@@ -3728,27 +3861,28 @@ async function readJson(url, options = {}) {
   return json;
 }
 try {
-  const beforeSummary = await readJson(manualUrl + "/api/summary");
-  const overduePayload = await readJson(manualUrl + "/api/invoices?status=overdue");
+  const beforeSummary = await readJson(manualUrl + summaryPath);
+  const overduePayload = await readJson(manualUrl + overduePath);
   const overdue = normalizeInvoiceList(overduePayload);
   const candidate = Array.isArray(overdue) && overdue.length > 0 ? overdue[0] : undefined;
   if (!candidate || !candidate.id) {
     throw new Error("No overdue invoice was available for the mark-paid workflow probe.");
   }
-  const patchedPayload = await readJson(manualUrl + "/api/invoices/" + encodeURIComponent(candidate.id) + "/status", {
+  const statusPath = updateStatusPathTemplate.replace(":id", encodeURIComponent(candidate.id));
+  const patchedPayload = await readJson(manualUrl + statusPath, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ status: "paid" })
   });
   const patched = normalizeInvoice(patchedPayload);
-  const afterSummary = await readJson(manualUrl + "/api/summary");
+  const afterSummary = await readJson(manualUrl + summaryPath);
   const paidCountIncreased = afterSummary.paidCount === beforeSummary.paidCount + 1;
   const overdueCountDecreased = afterSummary.overdueCount === beforeSummary.overdueCount - 1;
   const patchedPaid = patched.status === "paid";
   const passed = paidCountIncreased && overdueCountDecreased && patchedPaid;
   console.log(JSON.stringify({
     label: "mark-paid-workflow",
-    url: manualUrl + "/api/invoices/" + candidate.id + "/status",
+    url: manualUrl + statusPath,
     passed,
     status: 200,
     candidate: { id: candidate.id, previousStatus: candidate.status },
@@ -3763,7 +3897,7 @@ try {
 } catch (error) {
   console.log(JSON.stringify({
     label: "mark-paid-workflow",
-    url: manualUrl + "/api/invoices/:id/status",
+    url: manualUrl + updateStatusPathTemplate,
     passed: false,
     reason: error && error.message ? error.message : String(error)
   }));
@@ -3830,6 +3964,9 @@ function waitForHttp(url, { label, expectText, expectJsonFields = [], timeoutMs 
         `const url = ${JSON.stringify(url)};
 const expectText = ${JSON.stringify(expectText)};
 const expectedJsonFields = ${JSON.stringify(expectJsonFields)};
+const expectedTextValues = Array.isArray(expectText)
+  ? expectText.filter((value) => typeof value === "string" && value.length > 0)
+  : (expectText ? [expectText] : []);
 try {
   const response = await fetch(url);
   const body = await response.text();
@@ -3841,7 +3978,7 @@ try {
     jsonParseError = error && error.message ? error.message : String(error);
   }
   const missingJsonFields = expectedJsonFields.filter((field) => !json || !Object.prototype.hasOwnProperty.call(json, field));
-  const textMatched = !expectText || body.includes(expectText);
+  const textMatched = expectedTextValues.length === 0 || expectedTextValues.some((text) => body.includes(text));
   const passed = response.ok && textMatched && missingJsonFields.length === 0;
   const jsonFieldsPresent = Object.fromEntries(expectedJsonFields.map((field) => [field, Boolean(json && Object.prototype.hasOwnProperty.call(json, field))]));
   const probe = {
@@ -3851,7 +3988,8 @@ try {
     status: response.status,
     ok: response.ok,
     contentType: response.headers.get("content-type"),
-    expectedText: expectText || undefined,
+    expectedText: expectedTextValues.length > 0 ? expectText : undefined,
+    expectedTextValues: expectedTextValues.length > 0 ? expectedTextValues : undefined,
     textMatched,
     expectedJsonFields,
     jsonFieldsPresent,
@@ -3859,7 +3997,7 @@ try {
     jsonPreview: json && typeof json === "object" ? Object.fromEntries(Object.entries(json).slice(0, 10)) : undefined,
     jsonParseError: expectedJsonFields.length > 0 ? jsonParseError : undefined,
     bodySnippet: body.slice(0, 500),
-    reason: passed ? undefined : (!response.ok ? "HTTP " + response.status : (!textMatched ? "Missing expected text: " + expectText : "Missing expected JSON fields: " + missingJsonFields.join(", "))),
+    reason: passed ? undefined : (!response.ok ? "HTTP " + response.status : (!textMatched ? "Missing expected text: " + expectedTextValues.join(" | ") : "Missing expected JSON fields: " + missingJsonFields.join(", "))),
   };
   console.log(JSON.stringify(probe));
   if (!passed) {
@@ -3872,6 +4010,7 @@ try {
     url,
     passed: false,
     expectedText: expectText || undefined,
+    expectedTextValues: expectedTextValues.length > 0 ? expectedTextValues : undefined,
     expectedJsonFields,
     reason: error && error.message ? error.message : String(error)
   }));

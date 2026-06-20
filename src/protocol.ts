@@ -27,6 +27,11 @@ export interface ProtocolConfig {
       drivers: Record<string, Record<string, unknown>>;
       [key: string]: unknown;
     };
+    skills: {
+      catalogs: string[];
+      roles: Record<string, { required?: string[]; optional?: string[] }>;
+      [key: string]: unknown;
+    };
     [key: string]: unknown;
   };
 }
@@ -81,8 +86,25 @@ export function defaultProtocol(): ProtocolConfig {
       workers: {
         defaultDriver: "codex",
         drivers: {
-          codex: { sandbox: "workspace-write" },
+          codex: {
+            sandbox: "workspace-write",
+            ignoreUserConfig: true,
+            ignoreRules: true,
+            skillIsolation: "detect",
+            bypassApprovalsAndSandbox: true,
+          },
           claude: { permissionMode: "acceptEdits", settingSources: "", allowedTools: "Edit Write Read Glob Grep Bash" },
+        },
+      },
+      skills: {
+        catalogs: ["builtin", ".swarm/skills"],
+        roles: {
+          planner: { required: ["swarm-core", "planning-orchestration"] },
+          overseer: { required: ["swarm-core", "planning-orchestration", "super-overseer", "recovery-focus"] },
+          worker: { required: ["swarm-core", "implementation-worker", "verification-obligations"] },
+          reviewer: { required: ["swarm-core", "verification-obligations", "sleuth-review"] },
+          verifier: { required: ["swarm-core", "verification-obligations", "deterministic-verifier"] },
+          recovery: { required: ["swarm-core", "implementation-worker", "recovery-focus"] },
         },
       },
     },
@@ -139,6 +161,28 @@ function mergeProtocol(base: ProtocolConfig, override: Partial<ProtocolConfig>):
         defaultDriver: override.protocol?.workers?.defaultDriver ?? base.protocol.workers.defaultDriver,
         drivers: mergeDriverConfigs(base.protocol.workers.drivers, override.protocol?.workers?.drivers),
       },
+      skills: {
+        ...base.protocol.skills,
+        ...override.protocol?.skills,
+        catalogs: override.protocol?.skills?.catalogs ?? base.protocol.skills.catalogs,
+        roles: mergeSkillRoleConfigs(base.protocol.skills.roles, override.protocol?.skills?.roles),
+      },
     },
   };
+}
+
+function mergeSkillRoleConfigs(
+  base: Record<string, { required?: string[]; optional?: string[] }>,
+  override?: Record<string, { required?: string[]; optional?: string[] }>,
+): Record<string, { required?: string[]; optional?: string[] }> {
+  const merged: Record<string, { required?: string[]; optional?: string[] }> = { ...base };
+  for (const [role, config] of Object.entries(override ?? {})) {
+    merged[role] = {
+      ...(merged[role] ?? {}),
+      ...config,
+      required: config.required ?? merged[role]?.required,
+      optional: config.optional ?? merged[role]?.optional,
+    };
+  }
+  return merged;
 }

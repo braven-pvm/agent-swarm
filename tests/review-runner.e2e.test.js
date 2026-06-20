@@ -65,6 +65,35 @@ test("codex reviewer records structured review evidence and gates final verifica
   assert.match(report, /recommendation: Proceed to deterministic verification./);
 });
 
+test("deterministic verification accepts review findings wrapped with a result suffix", () => {
+  const { workspace, sliceId } = setupWorkspace("test-review-suffix-refs");
+  const fakeCodexScript = writeFakeReviewCodex();
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "suffix-review-worker"]);
+  const reviewOutput = runSwarm(
+    workspace,
+    ["review", sliceId, "--driver", "codex", "--actor", "suffix-reviewer"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      FAKE_REVIEW_STATUS: "accepted",
+      FAKE_REVIEW_REFS: JSON.stringify(refs),
+      FAKE_REVIEW_REF_SUFFIX: ".result",
+    },
+  );
+
+  assert.match(reviewOutput, /Review accepted/);
+
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "deterministic-verifier"]);
+  assert.match(verifyOutput, /Verification passed/);
+
+  const accepted = JSON.parse(runSwarm(workspace, ["observe", "--events", "50"]));
+  const sliceAfterVerify = accepted.slices.find((item) => item.id === sliceId);
+  assert.equal(sliceAfterVerify.status, "accepted");
+  const reviewResult = sliceAfterVerify.reviewResult;
+  assert.ok(reviewResult.frAcFindings.every((finding) => finding.ref.endsWith(".result")));
+});
+
 test("deterministic verification blocks when latest reviewer reports material failure", () => {
   const { workspace, sliceId } = setupWorkspace("test-review-blocked");
   const fakeCodexScript = writeFakeReviewCodex();
@@ -141,6 +170,60 @@ test("sleuth quality gate blocks acceptance even when reviewer status says accep
   assert.equal(commandEvidence.payload.reviewGate.status, "blocked");
 });
 
+test("repair-required review remains repairable and a later accepted review clears review blockers", () => {
+  const { workspace, sliceId } = setupWorkspace("test-review-repair-required");
+  const fakeCodexScript = writeFakeReviewCodex();
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "repair-review-worker"]);
+  const repairOutput = runSwarm(
+    workspace,
+    ["review", sliceId, "--driver", "codex", "--actor", "repair-reviewer"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      FAKE_REVIEW_STATUS: "repair_required",
+      FAKE_REVIEW_REFS: JSON.stringify(refs),
+    },
+  );
+
+  assert.match(repairOutput, /Review repair_required/);
+
+  const repairSnapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "80"]));
+  const repairingSlice = repairSnapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(repairingSlice.status, "repairing");
+  assert.equal(repairingSlice.reviewResult.status, "repair_required");
+  assert.ok(
+    repairSnapshot.activeEscalations.some(
+      (item) => item.entityId === sliceId && item.level === "blocker" && item.message.includes("Sleuth Review Gate"),
+    ),
+  );
+
+  const acceptedOutput = runSwarm(
+    workspace,
+    ["review", sliceId, "--driver", "codex", "--actor", "repair-reviewer"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      FAKE_REVIEW_STATUS: "accepted",
+      FAKE_REVIEW_REFS: JSON.stringify(refs),
+    },
+  );
+
+  assert.match(acceptedOutput, /Review accepted/);
+
+  const acceptedSnapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "100"]));
+  const reviewedSlice = acceptedSnapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(reviewedSlice.status, "ready_for_review");
+  assert.equal(reviewedSlice.reviewResult.status, "accepted");
+  assert.equal(
+    acceptedSnapshot.activeEscalations.filter((item) => item.entityId === sliceId && item.level === "blocker").length,
+    0,
+  );
+  assert.ok(
+    acceptedSnapshot.recentEvents.some((event) => event.type === "escalation.cleared" && event.payload?.clearedAfterReviewAccepted),
+  );
+});
+
 function setupWorkspace(name) {
   const workspace = path.join(repoRoot, ".swarm-demo", `${name}-${process.pid}-${Date.now()}`);
   const target = path.join(workspace, "invoice-api");
@@ -212,6 +295,7 @@ console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-review-thr
 console.log(JSON.stringify({ type: "review.analysis", status }));
 const qualityStatus = process.env.FAKE_QUALITY_STATUS || (accepted ? "passed" : "failed");
 const qualityRisk = process.env.FAKE_QUALITY_RISK || (accepted ? "none" : "high");
+const refSuffix = process.env.FAKE_REVIEW_REF_SUFFIX || "";
 const qualityDimensionStatus = qualityStatus === "failed" ? "failed" : "passed";
 const qualityGate = {
   status: qualityStatus,
@@ -239,7 +323,7 @@ if (outputPath) {
     status,
     summary: accepted ? "fake reviewer accepted slice" : "fake reviewer blocked acceptance",
     frAcFindings: refs.map((ref) => ({
-      ref,
+      ref: \`\${ref}\${refSuffix}\`,
       status: accepted ? "passed" : "failed",
       evidence: ["fake-review-evidence"],
       finding: accepted ? "review finding passed" : "reviewer blocked acceptance for material behavior gap"

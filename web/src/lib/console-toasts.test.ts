@@ -85,3 +85,45 @@ describe("console store — new-action toasts", () => {
     expect(s.toasts.length).toBe(0);
   });
 });
+
+describe("console store — notice toasts (notify)", () => {
+  it("pushes a one-shot notice toast at the front of the stack", () => {
+    const s = createConsoleStore();
+    s.setHumanActions(queue([]));                    // first load seeds silently
+    s.notify("Handed back to agent repair.", { title: "Recorded" });
+    expect(s.toasts.length).toBe(1);
+    const t = s.toasts[0];
+    expect(t.id).toMatch(/^notice-/);
+    expect(t.kind).toBe("notice");
+    if (t.kind === "notice") {
+      expect(t.title).toBe("Recorded");
+      expect(t.message).toBe("Handed back to agent repair.");
+      expect(t.tone).toBe("ok"); // default tone
+    }
+  });
+
+  it("coexists with action toasts (newest-first) and dismisses by its generated id", () => {
+    const s = createConsoleStore();
+    s.setHumanActions(queue([action("E1")]));                  // seed (no toast)
+    s.setHumanActions(queue([action("E1"), action("E2")]));    // E2 → action toast
+    s.notify("Verification saved.", { title: "Recorded" });    // notice on top
+    expect(s.toasts.length).toBe(2);
+    expect(s.toasts[0].id).toMatch(/^notice-/);
+    expect(s.toasts[0].kind).toBe("notice");
+    expect(s.toasts[1].id).toBe("E2");
+
+    const noticeId = s.toasts[0].id;
+    s.dismissToast(noticeId);
+    expect(s.toasts.map((t) => t.id)).toEqual(["E2"]);
+  });
+
+  it("gives every notice a distinct id so they stack independently", () => {
+    const s = createConsoleStore();
+    s.setHumanActions(queue([]));
+    s.notify("Handed back to agent repair.", { title: "Recorded" });
+    s.notify("Verification saved.", { title: "Recorded" });
+    const ids = s.toasts.map((t) => t.id);
+    expect(ids.length).toBe(2);
+    expect(new Set(ids).size).toBe(2); // unique
+  });
+});

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/svelte";
+import { render, screen } from "@testing-library/svelte";
 import { fetchHumanActions, runActionCommand, type HumanActionQueue } from "~/lib/human-actions";
 import HumanActionsRail from "~/components/HumanActionsRail.svelte";
+import HumanActionDetail from "~/components/HumanActionDetail.svelte";
 import { createConsoleStore } from "~/lib/console.svelte";
 
 function queue(actions: HumanActionQueue["actions"]): HumanActionQueue {
@@ -10,8 +11,12 @@ function queue(actions: HumanActionQueue["actions"]): HumanActionQueue {
     totals: {
       total: actions.length,
       decisionRequired: actions.filter((a) => a.kind === "decision_required").length,
-      humanVerification: actions.filter((a) => a.kind === "human_verification" || a.kind === "human_verification_rework").length,
-      blockers: actions.filter((a) => a.kind === "clear_blocker" || a.kind === "blocked_requirement").length,
+      humanVerification: actions.filter((a) =>
+        a.kind === "human_verification" || (a.kind === "human_verification_rework" && a.status !== "repair_requested"),
+      ).length,
+      blockers: actions.filter((a) =>
+        a.kind === "clear_blocker" || a.kind === "blocked_requirement" || a.status === "repair_requested",
+      ).length,
     },
     actions,
   };
@@ -144,5 +149,33 @@ describe("HumanActionsRail", () => {
     const { container } = render(HumanActionsRail, { props: { store, onSelect } });
     (container.querySelector(".ha-card") as HTMLButtonElement).click();
     expect(onSelect).toHaveBeenCalledWith("danger-1");
+  });
+});
+
+describe("HumanActionDetail", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("explains legacy repair-requested verification rework actions without offering another human submit", () => {
+    const store = createConsoleStore();
+    store.hydrate(baseSnap as any);
+    const action: HumanActionQueue["actions"][number] = {
+      id: "human-verification-rework:SLICE-1:AC-1",
+      kind: "human_verification_rework",
+      severity: "danger",
+      title: "Agent repair required from human verification: AC-1",
+      summary: "Human recorded needs rework.",
+      status: "repair_requested",
+      entityType: "slice",
+      entityId: "SLICE-1",
+      sliceId: "SLICE-1",
+      ref: "AC-1",
+      links: [],
+      allowedActions: [],
+    };
+    store.setHumanActions(queue([action]));
+
+    render(HumanActionDetail, { props: { store, action, onResolved: () => {} } });
+    expect(screen.getByText(/legacy action should normally move out of the human queue/)).toBeTruthy();
+    expect(screen.queryByText("Record rework")).toBeNull();
   });
 });

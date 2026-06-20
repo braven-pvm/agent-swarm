@@ -61,17 +61,20 @@ const codexDriver: WorkerDriverAdapter = {
   buildInvocation(spec) {
     const { command, prefixArgs } = resolveDriverCommand("codex", "codex");
     const args = [...prefixArgs, "exec"];
+    const ignoreUserConfig = spec.driverConfig.ignoreUserConfig !== false;
+    const ignoreRules = spec.driverConfig.ignoreRules !== false;
+    const bypassApprovalsAndSandbox = spec.driverConfig.bypassApprovalsAndSandbox === true && !spec.readOnly;
     if (spec.resumeSessionId) {
       // sandbox is fixed for a resumed codex session; spec.readOnly does not apply here
       args.push(
         "resume",
         "--json",
         "--skip-git-repo-check",
-        "--output-schema",
-        spec.schemaPath,
-        "--output-last-message",
-        spec.resultPath,
       );
+      if (bypassApprovalsAndSandbox) args.push("--dangerously-bypass-approvals-and-sandbox");
+      if (ignoreUserConfig) args.push("--ignore-user-config");
+      if (ignoreRules) args.push("--ignore-rules");
+      args.push("--output-schema", spec.schemaPath, "--output-last-message", spec.resultPath);
       if (spec.model) args.push("--model", spec.model);
       args.push(spec.resumeSessionId);
       return { command, args, stdin: spec.prompt };
@@ -81,18 +84,15 @@ const codexDriver: WorkerDriverAdapter = {
       : typeof spec.driverConfig.sandbox === "string"
         ? spec.driverConfig.sandbox
         : "workspace-write";
-    args.push(
-      "--json",
-      "--skip-git-repo-check",
-      "--sandbox",
-      sandbox,
-      "-C",
-      spec.targetPath,
-      "--output-schema",
-      spec.schemaPath,
-      "--output-last-message",
-      spec.resultPath,
-    );
+    args.push("--json", "--skip-git-repo-check");
+    if (bypassApprovalsAndSandbox) {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("--sandbox", sandbox);
+    }
+    if (ignoreUserConfig) args.push("--ignore-user-config");
+    if (ignoreRules) args.push("--ignore-rules");
+    args.push("-C", spec.targetPath, "--output-schema", spec.schemaPath, "--output-last-message", spec.resultPath);
     if (spec.model) args.push("--model", spec.model);
     return { command, args, stdin: spec.prompt };
   },

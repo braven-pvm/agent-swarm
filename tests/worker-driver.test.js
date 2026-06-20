@@ -53,6 +53,8 @@ test("codex adapter builds the current fresh-run invocation", () => {
     "--skip-git-repo-check",
     "--sandbox",
     "workspace-write",
+    "--ignore-user-config",
+    "--ignore-rules",
     "-C",
     spec.targetPath,
     "--output-schema",
@@ -75,6 +77,8 @@ test("codex adapter builds the resume invocation", () => {
     "resume",
     "--json",
     "--skip-git-repo-check",
+    "--ignore-user-config",
+    "--ignore-rules",
     "--output-schema",
     spec.schemaPath,
     "--output-last-message",
@@ -82,6 +86,47 @@ test("codex adapter builds the resume invocation", () => {
     "session-abc",
   ]);
   assert.equal(invocation.stdin, "Implement the slice");
+});
+
+test("codex adapter can opt into user config only when protocol explicitly asks", () => {
+  const dir = tempDir();
+  const spec = { ...baseSpec(dir), driverConfig: { ignoreUserConfig: false } };
+  const args = getWorkerDriver("codex").buildInvocation(spec).args;
+
+  assert.equal(args.includes("--ignore-user-config"), false);
+});
+
+test("codex adapter ignores execpolicy rules unless protocol explicitly opts in", () => {
+  const dir = tempDir();
+  const defaultArgs = getWorkerDriver("codex").buildInvocation(baseSpec(dir)).args;
+  assert.equal(defaultArgs.includes("--ignore-rules"), true);
+
+  const optInArgs = getWorkerDriver("codex").buildInvocation({ ...baseSpec(dir), driverConfig: { ignoreRules: false } }).args;
+  assert.equal(optInArgs.includes("--ignore-rules"), false);
+});
+
+test("codex adapter can run trusted local workers with approval and sandbox bypass", () => {
+  const dir = tempDir();
+  const args = getWorkerDriver("codex").buildInvocation({
+    ...baseSpec(dir),
+    driverConfig: { bypassApprovalsAndSandbox: true },
+  }).args;
+
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), true);
+  assert.equal(args.includes("--sandbox"), false);
+});
+
+test("codex resume invocation carries trusted local bypass when configured", () => {
+  const dir = tempDir();
+  const args = getWorkerDriver("codex").buildInvocation({
+    ...baseSpec(dir),
+    resumeSessionId: "session-abc",
+    driverConfig: { bypassApprovalsAndSandbox: true },
+  }).args;
+
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), true);
+  assert.equal(args[0], "exec");
+  assert.equal(args[1], "resume");
 });
 
 test("codex finalize reports ok from exit code and result file presence", () => {
@@ -274,8 +319,13 @@ test("codex readOnly spec forces the read-only sandbox", () => {
   const writable = getWorkerDriver("codex").buildInvocation(baseSpec(dir));
   assert.equal(writable.args[writable.args.indexOf("--sandbox") + 1], "workspace-write");
 
-  const readOnly = getWorkerDriver("codex").buildInvocation({ ...baseSpec(dir), readOnly: true });
+  const readOnly = getWorkerDriver("codex").buildInvocation({
+    ...baseSpec(dir),
+    readOnly: true,
+    driverConfig: { bypassApprovalsAndSandbox: true },
+  });
   assert.equal(readOnly.args[readOnly.args.indexOf("--sandbox") + 1], "read-only");
+  assert.equal(readOnly.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
 });
 
 test("codex readOnly overrides a writable driver config sandbox", () => {

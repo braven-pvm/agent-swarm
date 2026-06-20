@@ -8,6 +8,7 @@ import {
   trimOutput,
   summarizePromptPayload,
 } from "./paths.js";
+import { detectGlobalSkillReferences } from "./skill-isolation.js";
 import { SwarmStore } from "./storage.js";
 import type {
   AgentRunRecord,
@@ -51,6 +52,7 @@ export function buildRunFocusPacket(
   const heartbeatAgeMs = heartbeat ? Date.now() - Date.parse(heartbeat.timestamp) : undefined;
   const promptPath = findPromptArtifactPath(store, workspace, run);
   const eventsPath = findRunEventsArtifactPath(store, workspace, run);
+  const skillBinding = findSkillBindingForRun(store, run.id);
   const eventStream = summarizeAgentJsonlFile(eventsPath, options.eventLimit ?? 20);
   const resultArtifact = summarizeArtifact(run.resultPath);
   const stderrArtifact = summarizeArtifact(run.stderrPath, { tail: true });
@@ -124,10 +126,13 @@ export function buildRunFocusPacket(
       : undefined,
     artifacts: {
       prompt: promptArtifact,
+      skillBinding: summarizeArtifact(skillBinding?.skillBindingPath),
+      skillPacket: summarizeArtifact(skillBinding?.skillPacketPath),
       events: summarizeArtifact(eventsPath),
       result: resultArtifact,
       stderr: stderrArtifact,
     },
+    skills: skillBinding?.skills,
     eventStream,
     latestSignals: {
       lastCommand: eventStream.lastCommand,
@@ -275,6 +280,30 @@ function findRunEventsArtifactPath(store: SwarmStore, workspace: string, run: Ag
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
+function findSkillBindingForRun(
+  store: SwarmStore,
+  runId: string,
+): { skills?: unknown; skillBindingPath?: string; skillPacketPath?: string } | undefined {
+  return store
+    .listEvents()
+    .slice()
+    .reverse()
+    .map((event) => {
+      if (event.payload.runId !== runId) return undefined;
+      const skillBindingPath = typeof event.payload.skillBindingPath === "string" ? event.payload.skillBindingPath : undefined;
+      const skillPacketPath = typeof event.payload.skillPacketPath === "string" ? event.payload.skillPacketPath : undefined;
+      if (!event.payload.skills && !skillBindingPath && !skillPacketPath) return undefined;
+      return {
+        skills: event.payload.skills,
+        skillBindingPath,
+        skillPacketPath,
+      };
+    })
+    .find((candidate): candidate is { skills: unknown; skillBindingPath: string | undefined; skillPacketPath: string | undefined } =>
+      Boolean(candidate),
+    );
+}
+
 function summarizeArtifact(filePath: string | undefined, options: { tail?: boolean } = {}) {
   if (!filePath) return { path: undefined, exists: false };
   if (!fs.existsSync(filePath)) return { path: filePath, exists: false };
@@ -301,23 +330,33 @@ function summarizeArtifact(filePath: string | undefined, options: { tail?: boole
 
 function summarizeAgentJsonlFile(filePath: string | undefined, eventLimit: number) {
   if (!filePath || !fs.existsSync(filePath)) {
-    return { path: filePath, exists: false, lineCount: 0, parseErrorCount: 0, tail: [] as AgentJsonlSummary[] };
+    return { path: filePath, exists: false, lineCount: 0, parseErrorCount: 0, tail: [] as AgentJsonlSummary[], globalSkillReferences: [] };
   }
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter((line) => line.trim());
   const summaries = lines.map((line, index) => summarizeAgentJsonlLine(line, index + 1));
   const commands = summaries.filter((item) => item.command);
   const messages = summaries.filter((item) => item.message);
   const fileChanges = summaries.filter((item) => item.fileChanges && item.fileChanges.length > 0);
+  const globalSkillReferences = lines.flatMap((line, index) => detectGlobalSkillReferencesInJsonlLine(line, index + 1));
   return {
     path: filePath,
     exists: true,
     lineCount: lines.length,
     parseErrorCount: summaries.filter((item) => item.parseError).length,
+    globalSkillReferences,
     tail: summaries.slice(-eventLimit),
     lastCommand: commands.at(-1),
     lastAgentMessage: messages.at(-1),
     lastFileChanges: fileChanges.at(-1)?.fileChanges ?? [],
   };
+}
+
+function detectGlobalSkillReferencesInJsonlLine(line: string, lineNumber: number) {
+  try {
+    return detectGlobalSkillReferences(JSON.parse(line) as unknown, { lineNumber });
+  } catch {
+    return detectGlobalSkillReferences(line, { lineNumber });
+  }
 }
 
 function summarizeAgentJsonlLine(line: string, lineNumber: number): AgentJsonlSummary {
@@ -446,6 +485,7 @@ export function classifyRunFocus(input: {
   const classes = new Set<string>();
   if (!input.eventStream.exists || input.eventStream.lineCount === 0) classes.add("no_event_stream");
   if (input.eventStream.parseErrorCount > 0) classes.add("agent_event_parse_errors");
+  if (input.eventStream.globalSkillReferences.length > 0) classes.add("global_skill_leak");
   if (input.run.status === "running" && input.heartbeatAgeMs !== undefined && input.heartbeatAgeMs > 120000 && input.eventStream.lineCount <= 2) {
     classes.add("quiet_before_first_action");
   }
@@ -475,6 +515,7 @@ function recommendRunInterventions(input: { run: AgentRunRecord; failureClasses:
   if (classes.has("quiet_before_first_action")) recommendations.push("Inspect the prompt and event stream; the agent has been quiet before any visible command or structured status.");
   if (classes.has("quiet_running_agent")) recommendations.push("Send a structured status-poke before killing or restarting the child session.");
   if (classes.has("command_failed")) recommendations.push("Coach the agent with the last command output and ask for one simpler retry strategy.");
+  if (classes.has("global_skill_leak")) recommendations.push("Inspect the referenced global skill path and re-run or coach the agent to use only harness-managed skill packets.");
   if (classes.has("missing_structured_result") && input.hasSession) recommendations.push("Try same-session revive with this focus packet and require a final structured result or exact blocker.");
   if (classes.has("missing_structured_result") && !input.hasSession) recommendations.push("Restart with a generated resume packet because no resumable session id is available.");
   if (classes.has("no_event_stream")) recommendations.push("Inspect driver launch and stdout JSONL capture before blaming implementation work.");

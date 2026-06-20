@@ -38,6 +38,27 @@ async function postJson(port, p, body) {
   return { status: res.status, body: await res.text(), type: res.headers.get("content-type") };
 }
 
+async function waitForText(url, pattern, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 750);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      const text = await response.text();
+      if (response.ok && pattern.test(text)) return { response, text };
+      lastError = new Error(`Unexpected response ${response.status}: ${text.slice(0, 120)}`);
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${url}`);
+}
+
 // ---------------------------------------------------------------------------
 // Workspace seeding — builds a workspace with a target, a source, a lane,
 // and a slice so the API endpoints have real data to return.
@@ -64,9 +85,30 @@ async function seedWorkspace() {
     config: { verificationCommand: "npm test" },
     now: new Date().toISOString(),
   });
+  const targetPath = path.join(workspace, "invoice-api");
+  fs.mkdirSync(path.join(targetPath, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(targetPath, "package.json"),
+    `${JSON.stringify({ type: "module", scripts: { start: "node src/server.js" } }, null, 2)}\n`,
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(targetPath, "src", "server.js"),
+    `import http from "node:http";
+const host = process.env.HOST || "127.0.0.1";
+const port = Number(process.env.PORT || 0);
+http.createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("invoice dev server");
+}).listen(port, host, () => {
+  console.log("invoice dev server listening");
+});
+`,
+    "utf8",
+  );
 
   // Create the spec file so readSourceText() can read it when /api/source is hit
-  const specsDir = path.join(workspace, "invoice-api", "specs");
+  const specsDir = path.join(targetPath, "specs");
   fs.mkdirSync(specsDir, { recursive: true });
   const specUri = path.join(specsDir, "invoice-api.md");
   fs.writeFileSync(specUri, "# Invoice API Spec\n\nAC-INV-001.1 Do the invoice thing.\n", "utf8");
@@ -440,6 +482,27 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
       humanVerificationAction.allowedActions.some((action) => action.kind === "record_human_verification"),
       "human verification action should expose the POST action template",
     );
+    assert.equal(humanVerificationAction.reviewTarget.targetName, "invoice-api");
+    assert.equal(humanVerificationAction.reviewTarget.startCommand, "npm run start");
+    assert.equal(humanVerificationAction.reviewTarget.commandName, "start");
+    assert.equal(humanVerificationAction.reviewTarget.commandSource, "package.json.scripts.start");
+    assert.equal(humanVerificationAction.reviewTarget.startAvailable, true);
+    assert.equal(humanVerificationAction.reviewTarget.requirementRef, humanRef);
+    assert.match(humanVerificationAction.reviewTarget.requirementText, /Do the invoice thing/);
+    assert.deepEqual(humanVerificationAction.reviewTarget.expectedOutcomes, [
+      "Human confirms the invoice behavior is acceptable.",
+    ]);
+    assert.match(humanVerificationAction.reviewTarget.packetHref, /^\/api\/artifacts\//);
+    assert.equal(humanVerificationAction.reviewTarget.focusHref, `/api/focus/slice/${encodeURIComponent(sliceId)}`);
+    assert.deepEqual(humanVerificationAction.reviewTarget.startAction, {
+      method: "POST",
+      path: "/api/control/dev-server/start",
+      bodyTemplate: { targetName: "invoice-api", commandName: "start" },
+    });
+    assert.ok(
+      humanVerificationAction.reviewTarget.instructions.some((instruction) => /open the URL only after the server reports running/i.test(instruction)),
+      "human verification action should tell the UI/human how to open the review target",
+    );
 
     const runObservabilityRes = await get(port, "/api/run-observability");
     assert.equal(runObservabilityRes.status, 200, "/api/run-observability should be 200");
@@ -474,6 +537,52 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
       "cleared escalation should leave the returned human-action queue",
     );
 
+    const storageForHumanEscalation = await import("../dist/storage.js");
+    const humanEscalationStore = new storageForHumanEscalation.SwarmStore(workspace);
+    const scopedHumanEscalationId = "ESC-web-e2e-human-verification";
+    try {
+      const now = new Date().toISOString();
+      humanEscalationStore.insertEscalation({
+        id: scopedHumanEscalationId,
+        level: "human_required",
+        status: "active",
+        entityType: "slice",
+        entityId: sliceId,
+        message: `Human verification is awaiting a decision for ${humanRef}.`,
+        createdBy: "test-verifier",
+        createdAt: now,
+        updatedAt: now,
+      });
+    } finally {
+      humanEscalationStore.close();
+    }
+
+    const humanReworkRes = await postJson(port, "/api/human-verify", {
+      sliceId,
+      ref: humanRef,
+      status: "needs_rework",
+      actor: "human-ui",
+      notes: "Returned for product repair from the web UI.",
+    });
+    assert.equal(humanReworkRes.status, 200, "POST /api/human-verify needs_rework should be 200");
+    const humanRework = JSON.parse(humanReworkRes.body);
+    assert.equal(humanRework.ok, true, "human verification rework response should be ok");
+    assert.equal(humanRework.result.accepted, false, "needs_rework should not accept the one-ref slice");
+    assert.equal(humanRework.result.finalSliceStatus, "repairing", "needs_rework should move the slice to repair");
+    assert.ok(
+      humanRework.result.clearedEscalationIds.includes(scopedHumanEscalationId),
+      "recording a human result should clear scoped human_required verification escalations",
+    );
+    assert.ok(
+      humanRework.humanActions.actions.every((action) => action.ref !== humanRef),
+      "needs_rework should leave the human action queue immediately; repair is tracked internally by evidence and slice state",
+    );
+    assert.ok(
+      humanRework.humanActions.actions.every((action) => action.id !== `escalation:${scopedHumanEscalationId}`),
+      "cleared human_required verification escalation should leave the returned human-action queue",
+    );
+    assert.equal(humanRework.humanActions.totals.humanVerification, 0, "needs_rework should not keep a human verification prompt open");
+
     const humanVerifyRes = await postJson(port, "/api/human-verify", {
       sliceId,
       ref: humanRef,
@@ -495,6 +604,60 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
     const verifiedRef = coverageAfterHumanVerify.refs.find((row) => row.ref === humanRef);
     assert.equal(verifiedRef.ledgerStatus, "accepted", "human-verified ref should be accepted in coverage");
     assert.equal(verifiedRef.verification, "human_verified", "coverage should preserve the human verification status");
+
+    const scanRes = await postJson(port, "/api/control/recovery/scan", { staleAfter: 1 });
+    assert.equal(scanRes.status, 200, "POST /api/control/recovery/scan should be 200");
+    const scan = JSON.parse(scanRes.body);
+    assert.equal(scan.ok, true, "recovery scan should complete");
+    assert.match(scan.result.stdout, /Stale agent runs:/, "recovery scan should return command stdout");
+
+    const commandsRes = await get(port, "/api/control/commands");
+    assert.equal(commandsRes.status, 200, "GET /api/control/commands should be 200");
+    const commands = JSON.parse(commandsRes.body);
+    assert.ok(commands.commands.some((command) => command.kind === "recovery-scan"), "control commands should include scan");
+
+    const devServerRes = await postJson(port, "/api/control/dev-server/start", { targetName: "invoice-api" });
+    assert.equal(devServerRes.status, 200, `POST /api/control/dev-server/start should be 200: ${devServerRes.body}`);
+    const devServer = JSON.parse(devServerRes.body);
+    assert.equal(devServer.ok, true, "dev server start should return ok");
+    assert.equal(devServer.server.openable, true, "dev server should be openable after readiness passes");
+    assert.equal(devServer.server.readiness.status, "passed", "dev server readiness should pass");
+    assert.equal(devServer.server.displayCommand, "npm run start", "dev server should expose the configured command");
+    assert.match(devServer.server.url, /^http:\/\/127\.0\.0\.1:\d+\//, "dev server should return a local URL");
+    try {
+      const devServerPage = await waitForText(devServer.server.url, /invoice dev server/);
+      assert.equal(devServerPage.response.status, 200, "started dev server should respond");
+
+      const devServersRes = await get(port, "/api/control/dev-servers");
+      assert.equal(devServersRes.status, 200, "GET /api/control/dev-servers should be 200");
+      const devServers = JSON.parse(devServersRes.body);
+      assert.ok(devServers.servers.some((server) => server.id === devServer.server.id), "dev server list should include started server");
+    } finally {
+      const stopDevServerRes = await postJson(port, `/api/control/dev-server/${encodeURIComponent(devServer.server.id)}/stop`, {});
+      assert.equal(stopDevServerRes.status, 200, "POST /api/control/dev-server/:id/stop should be 200");
+      const stoppedDevServer = JSON.parse(stopDevServerRes.body);
+      assert.equal(stoppedDevServer.ok, true, "stop dev server should return ok");
+      assert.equal(stoppedDevServer.server.status, "stopped", "dev server should be stopped");
+    }
+
+    const noStartPath = path.join(workspace, "invoice-static");
+    fs.mkdirSync(noStartPath, { recursive: true });
+    const storageModule = await import("../dist/storage.js");
+    const noStartStore = new storageModule.SwarmStore(workspace);
+    noStartStore.addOrUpdateTarget({
+      id: "TARGET-no-start",
+      path: noStartPath,
+      name: "invoice-static",
+      config: {},
+      now: new Date().toISOString(),
+    });
+    noStartStore.close();
+    const unavailableDevServerRes = await postJson(port, "/api/control/dev-server/start", { targetName: "invoice-static" });
+    assert.equal(unavailableDevServerRes.status, 400, "target without review command should fail before allocating a URL");
+    const unavailableDevServer = JSON.parse(unavailableDevServerRes.body);
+    assert.equal(unavailableDevServer.ok, false, "unavailable dev server response should not be ok");
+    assert.equal(unavailableDevServer.reviewEnvironment.commandAvailable, false, "unavailable response should expose command availability");
+    assert.match(unavailableDevServer.error, /does not define a runnable review command/i);
 
     const sourceRes = await get(port, `/api/source/${encodeURIComponent(sourceId)}`);
     assert.equal(sourceRes.status, 200, `/api/source/${sourceId} should be 200`);
@@ -580,6 +743,98 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
     // --- POST rejected ---
     const post = await fetch(`http://127.0.0.1:${port}/api/snapshot`, { method: "POST" });
     assert.equal(post.status, 405, "POST to /api/snapshot should return 405");
+  } finally {
+    server.close();
+  }
+});
+
+test("run observability follows manifest-linked scenario summary and readiness artifacts", async () => {
+  const { workspace, historyRoot } = await seedWorkspace();
+  const artifactsRoot = path.join(workspace, "support-triage-live-artifacts");
+  fs.mkdirSync(artifactsRoot, { recursive: true });
+
+  const summaryPath = path.join(workspace, "support-triage-live-summary.json");
+  const readinessPath = path.join(artifactsRoot, "product-readiness.json");
+  const manualUrl = "http://127.0.0.1:49999";
+  const readiness = {
+    mode: "full-product",
+    productName: "Customer Support Triage Board",
+    passed: true,
+    acceptedProductSlices: [
+      { id: "SLICE-prod", refs: ["FR-PROD-001"] },
+      { id: "SLICE-prod-ac", refs: ["AC-PROD-001.1"] },
+    ],
+    commands: { manualUrl },
+    checks: [
+      { id: "product-start-probed", label: "Support product local URL is probed", passed: true },
+    ],
+    blockers: [],
+    commandResults: {
+      start: {
+        probes: {
+          ui: { passed: true },
+          api: { passed: true },
+          workflow: { passed: true, noteRecorded: true, deltaOk: true },
+        },
+      },
+    },
+  };
+  const summary = {
+    runId: "H2-web-observability",
+    scenario: "live-agent-smoke-h2",
+    workspace,
+    phase: "phase-h2-web-observability",
+    finalOutcome: "blocked",
+    finalReason: "Max turns reached without complete product acceptance: 12.",
+    counts: { turns: 12, acceptedSlices: 3, activeEscalations: 4 },
+    productReadiness: { passed: true, blockers: [], manualUrl },
+    artifacts: {
+      summary: summaryPath,
+      productReadiness: readinessPath,
+    },
+  };
+  fs.writeFileSync(readinessPath, `${JSON.stringify(readiness, null, 2)}\n`, "utf8");
+  fs.writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    path.join(workspace, "live-agent-smoke.json"),
+    `${JSON.stringify({
+      scenarioId: "live-agent-smoke-h2",
+      liveRun: {
+        summaryPath,
+        artifactsPath: artifactsRoot,
+        finalOutcome: "blocked",
+        finalReason: summary.finalReason,
+        productReadiness: { passed: true, blockers: [], manualUrl },
+      },
+    }, null, 2)}\n`,
+    "utf8",
+  );
+
+  const webDistPath = fixtureWebDist();
+  const server = createWebViewerServer({ workspace, defaultEventCount: 20, historyRoot, webDistPath });
+  const port = await listen(server);
+  try {
+    const res = await get(port, "/api/run-observability");
+    assert.equal(res.status, 200, "/api/run-observability should be 200");
+    const body = JSON.parse(res.body);
+    assert.equal(body.scenario, "live-agent-smoke-h2", "scenario should come from the manifest-linked summary");
+    assert.equal(body.outcome.finalOutcome, "blocked", "outcome should come from the manifest-linked summary");
+    assert.equal(body.outcome.classification.code, "blocked", "missing classification should fall back to final outcome");
+    assert.equal(body.outcome.classification.severity, "warning", "blocked final outcome should classify as warning");
+    assert.equal(body.productReadiness.available, true, "readiness artifact should be available");
+    assert.equal(body.productReadiness.passed, true, "readiness should come from detailed readiness artifact");
+    assert.equal(body.productReadiness.productName, "Customer Support Triage Board");
+    assert.equal(body.productReadiness.manualUrl, manualUrl);
+    assert.deepEqual(
+      body.productReadiness.acceptedRefs,
+      ["FR-PROD-001", "AC-PROD-001.1"],
+      "support readiness should expose acceptedProductSlices refs",
+    );
+    assert.deepEqual(
+      body.productReadiness.probes,
+      { ui: true, api: true, markPaid: true, workflow: true },
+      "generic workflow probe should be visible and also satisfy legacy markPaid readiness",
+    );
   } finally {
     server.close();
   }

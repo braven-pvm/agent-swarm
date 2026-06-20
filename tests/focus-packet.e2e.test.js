@@ -115,6 +115,61 @@ test("inspect run classifies failed command and missing structured result", () =
   assert.ok(slicePacket.diagnosis.recommendedInterventions.some((item) => item.includes("high-retry")));
 });
 
+test("inspect run classifies user-global skill leakage", () => {
+  const { workspace, sliceId } = setupWorkspace("swarm-focus-skill-leak");
+  const store = new SwarmStore(workspace);
+  try {
+    const runId = "RUN-focus-skill-leak";
+    const actor = "focus-worker";
+    const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const eventsPath = path.join(artifactDir, "worker-events-RUN-focus-skill-leak.jsonl");
+    const now = new Date().toISOString();
+    fs.writeFileSync(
+      eventsPath,
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          status: "completed",
+          command: "Get-Content C:\\Users\\Marius\\.codex\\skills\\project-overseer\\SKILL.md",
+          exit_code: 0,
+        },
+      }) + "\n",
+      "utf8",
+    );
+    store.insertAgentRun({
+      id: runId,
+      sliceId,
+      role: "worker",
+      entityType: "slice",
+      entityId: sliceId,
+      actor,
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      eventsPath,
+      startedAt: now,
+      updatedAt: now,
+    });
+    store.upsertHeartbeat({
+      actor,
+      state: "reading",
+      detail: "Reading global skill path",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: now,
+    });
+  } finally {
+    store.close();
+  }
+
+  const packet = JSON.parse(runSwarm(workspace, ["inspect", "run", "RUN-focus-skill-leak", "--json"]));
+  assert.ok(packet.diagnosis.failureClasses.includes("global_skill_leak"));
+  assert.equal(packet.eventStream.globalSkillReferences.length, 1);
+  assert.ok(packet.diagnosis.recommendedInterventions.some((item) => item.includes("harness-managed skill packets")));
+});
+
 test("inspect run finds live event stream from idle-timeout event payload", () => {
   const { workspace, sliceId } = setupWorkspace("swarm-focus-running-timeout");
   const store = new SwarmStore(workspace);

@@ -888,6 +888,9 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .ha-radio { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); color: var(--ink); cursor: pointer; }
 .ha-radio input { accent-color: var(--accent); cursor: pointer; }
 .ha-error { color: var(--red); padding: 0; font-size: var(--fs-meta); margin: 0; }
+.ha-notice { border: 1px solid var(--line-3); border-left-width: 3px; border-radius: 6px; padding: var(--s2); font-size: var(--fs-meta); line-height: 1.4; margin: var(--s3) 0 0; color: var(--ink); background: var(--surface-2); }
+.ha-notice-ok { border-left-color: var(--green); color: var(--green); }
+.ha-notice-warn { border-left-color: var(--amber); color: var(--ink); }
 /* Primary = solid blue fill + white text, one per form. --accent (#5b9dff) is tuned as text-on-dark,
    so the fill uses a darker blue that carries white at AA: #2563eb = 5.17:1 (hover #1d4ed8 = 6.70:1).
    Disabled is a real, visible no-op state (validation/in-flight), not a hidden control. */

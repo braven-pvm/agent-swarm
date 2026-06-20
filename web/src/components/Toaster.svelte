@@ -77,26 +77,44 @@
 </script>
 
 {#if visible.length > 0}
-  <div class="toaster" role="region" aria-label="New actions">
+  <div class="toaster" role="region" aria-label="Notifications">
     {#each visible as t (t.id)}
-      {@const a = t.action}
-      <div class="toast toast-{a.severity}" role="alert">
-        <button class="toast-open" onclick={() => open(t.id)}>
-          <span class="toast-glyph" aria-hidden="true">{sevGlyph(a)}</span>
+      {#if t.kind === "action"}
+        {@const a = t.action}
+        <div class="toast toast-{a.severity}" role="alert">
+          <button class="toast-open" onclick={() => open(t.id)}>
+            <span class="toast-glyph" aria-hidden="true">{sevGlyph(a)}</span>
+            <span class="toast-body">
+              <span class="toast-kind">{kindLabel(a)}</span>
+              <span class="toast-title">{a.title}</span>
+              {#if a.summary}<span class="toast-summary">{a.summary}</span>{/if}
+              <span class="toast-resolve">Resolve →</span>
+            </span>
+          </button>
+          <button
+            class="toast-dismiss"
+            title="Dismiss"
+            aria-label="Dismiss notification"
+            onclick={() => dismiss(t.id)}
+          >✕</button>
+        </div>
+      {:else}
+        <!-- One-shot confirmation (e.g. a verify that left the queue). Non-interactive: no open
+             affordance, polite live region. Reuses the .toast-info tone; glyph carries the meaning. -->
+        <div class="toast toast-info" role="status">
+          <span class="toast-glyph" aria-hidden="true">{t.tone === "ok" ? "✓" : "ℹ"}</span>
           <span class="toast-body">
-            <span class="toast-kind">{kindLabel(a)}</span>
-            <span class="toast-title">{a.title}</span>
-            {#if a.summary}<span class="toast-summary">{a.summary}</span>{/if}
-            <span class="toast-resolve">Resolve →</span>
+            <span class="toast-kind">{t.title}</span>
+            <span class="toast-title">{t.message}</span>
           </span>
-        </button>
-        <button
-          class="toast-dismiss"
-          title="Dismiss"
-          aria-label="Dismiss notification"
-          onclick={() => dismiss(t.id)}
-        >✕</button>
-      </div>
+          <button
+            class="toast-dismiss"
+            title="Dismiss"
+            aria-label="Dismiss notification"
+            onclick={() => dismiss(t.id)}
+          >✕</button>
+        </div>
+      {/if}
     {/each}
   </div>
 {/if}

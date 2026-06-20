@@ -1,8 +1,69 @@
 # Current Project Memory
 
-Last updated: 2026-06-17
+Last updated: 2026-06-20
 
 This file is the durable handoff memory for the current state of `agent-swarm`. It should let a fresh agent resume without relying on the chat transcript.
+
+## Latest Handoff Update
+
+2026-06-20 human-verification rework/control update:
+
+- Command Bridge trusted-local control endpoints now exist for UI buttons: `POST /api/control/continue`, `POST /api/control/recovery/scan`, `POST /api/control/recovery/revive`, `POST /api/control/recovery/restart`, `POST /api/control/dev-server/start`, `GET /api/control/commands`, and `GET /api/control/dev-servers`.
+- Human verification cannot be blind. `/api/human-actions` now includes `reviewTarget` for human-verification actions, with target name/path, resolved review command availability, `startAction` template, unavailable reason, packet/focus/source links, immutable requirement text/context, responsible party, expected outcomes, and review instructions. UI should show the packet plus runnable URL path, or clearly block/signpost when no review server can be started.
+- `POST /api/control/dev-server/start` now resolves a stack-agnostic review command before spawning. It checks `.swarm/target.yaml` `reviewEnvironment.command`, target `commands.review/dev/start/preview`, then package scripts. It returns `400` without allocating a URL if no review command exists. When it does spawn, the returned server record includes `displayCommand`, `openable`, and `readiness`; the UI must only open the URL when `openable === true` and `readiness.status === "passed"`.
+- Failed or `needs_rework` human verification is now autonomous repair input, not a terminal human wait and not a repeat human-action item. Once the human records any result, the ref leaves `/api/human-actions`; the evidence and slice state feed targeted repair so the affected slice can be repaired, reviewed, verified, and then re-presented for human sign-off.
+- On 2026-06-20 the H2 Command Bridge process on `127.0.0.1:4319` had stopped, causing UI controls to report `Failed to fetch`; restarting `swarm serve --workspace .swarm-demo/live-agent-smoke-h2-rerun --host 127.0.0.1 --port 4319` restored control calls. A bounded real continuation `H2-CONT-HUMAN-REWORK-SMOKE-20260620T0832Z` then dispatched `dashboard-worker` for failed human-verification slice `SLICE-349e94c3` and moved it from `blocked` to `implemented`.
+- Reset-first from the UI used to kill the Command Bridge itself because reset cleanup found the bridge artifact/port inside the workspace. Control-spawned commands now set `SWARM_RESET_EXCLUDE_PIDS` and `SWARM_RESET_EXCLUDE_PORTS`, and reset cleanup honors them so product/dev servers can be stopped without killing the bridge.
+- The live H2 workspace `.swarm-demo/live-agent-smoke-h2-rerun` was resumed through `POST /api/control/continue` with run id `H2-CONT-20260619T125802Z`; this did real work, not a fake test. It pulled `SLICE-b0661a76`, launched `dashboard-worker`, completed `FR-SUP-UI-001` / `AC-SUP-UI-001.1..001.4`, and then launched `dashboard-reviewer`.
+- Recovery scan through `POST /api/control/recovery/scan` works. With the normal `300s` threshold it reported no stale runs during the healthy worker/reviewer flow; with an intentionally tiny threshold it can surface quiet-but-active runs, so the UI should gate revive/restart on real stale/failed state rather than every quiet period.
+- `support-ui` in the current H2 rerun now has a runnable review shell: `npm start` runs `src/server.js`, serves the generated UI modules, and proxies `/api/*` to sibling `support-api`. The first live instance started through `POST /api/control/dev-server/start` is `http://127.0.0.1:56981/`, with readiness passed. Human-verification cards should expose this through `reviewTarget.startAvailable === true`; stale browser/UI state may need a refresh.
+- Session persistence for recovery was hardened: live JSONL ingestion now writes discovered `thread_id`/`session_id` to `agent_runs.session_id` as soon as it appears, and `swarm recovery revive` can recover a missing DB session id from the run's JSONL artifact before attempting same-session resume.
+- Focused verification passed: `npm run build`, `node --test tests\support-triage-live-runner.e2e.test.js`, and `git diff --check`.
+- The dashboard server has been restarted at `http://127.0.0.1:4319/` from workspace `.swarm-demo/live-agent-smoke-h2-rerun` after the continue command completed, so the live API exposes the new `reviewTarget` and dev-server readiness contract.
+
+The invoice live smoke is now the control scenario for future hardening. Latest accepted control run:
+
+- run id: `LAR-20260618T141404-live-agent-smoke-none-13300`
+- started: `2026-06-18T14:14:04.665Z`
+- generated: `2026-06-18T15:41:19.343Z`
+- elapsed: about `1h 27m`
+- final outcome: `accepted`
+- final reason: full-product readiness passed and indexed FR/AC coverage is complete
+- coverage: `83/83`
+- slices: `11`
+- agent runs: `48`
+- deterministic verification runs: `11`
+- product readiness: passed
+- active escalations: `0`
+- history: `.swarm-demo/live-agent-run-history/LAR-20260618T141404-live-agent-smoke-none-13300`
+
+Important lessons from this run and the immediately preceding hardening:
+
+- Codex child workers/reviewers need explicit trusted-local bypass in this harness. `workspace-write` was not enough under disabled approvals, so the driver now supports `bypassApprovalsAndSandbox` and the default trusted local Codex config enables it for non-read-only child runs.
+- The visible overseer remains read-only even while worker/reviewer children can run with full trusted local access.
+- Process logs and other long-lived server artifacts should not live under resettable workspaces, because Windows file locks can break reset-first semantics.
+- UI uptime is not run duration. The UI should show server uptime, current run elapsed, and latest completed run duration separately.
+- Invoice smoke should stay the control case; do not keep reshaping core engine behavior around invoice-specific product facts.
+
+Next product-scenario track:
+
+- Harness 2 uses Customer Support Triage Board.
+- Immutable source specs now live under `docs/requirements/live-smoke-support-triage-*.md`.
+- Scenario skills now live under `fixtures/scenarios/support-triage/.swarm/skills`.
+- Harness 2 UI work now has focused `support-ui-implementation`, `support-ui-design-system`, `support-ui-review`, and `support-accessibility-review` skills.
+- Phase 11B reset scaffold is implemented: `swarm smoke live-agent reset --scenario live-agent-smoke-h2` creates the support-triage workspace, targets, sources, copied skills, and reset-only manifest.
+- Phase 11C fake-agent E2E is implemented: `swarm smoke live-agent fake --reset --scenario live-agent-smoke-h2` exercises backend/UI/design slices, reviewer-requested repair, repair escalation clearing, human-verification packets and sign-off, support UI product readiness, and missing-required-skill blocking before dispatch.
+- Phase 11D live-run CLI boundary is implemented: `swarm smoke live-agent full --reset --scenario live-agent-smoke-h2` routes through the built CLI into the support-triage live runner, consumes scenario-declared readiness workflow metadata, invokes overseer/worker/reviewer `--driver codex` paths, and writes support-triage summary, coverage, graph, human-action, and product-readiness artifacts.
+- The first tightly bounded real Phase 11D H2 run completed on 2026-06-18. It produced a runnable Customer Support Triage Board and passed product readiness, but the run correctly ended `blocked` because only `2/124` indexed refs were done inside the 12-turn bound. Accepted product refs were `FR-PROD-001`, `AC-PROD-001.1`, and `AC-PROD-001.2`; the detailed readiness artifact proved HTML, `/api/summary`, and assignment/status/note workflow probes.
+- H2 observability hardening now makes `/api/run-observability` and `/api/snapshot.runObservability` follow `live-agent-smoke.json -> liveRun.summaryPath` and scenario-specific readiness artifacts such as `support-triage-live-artifacts/product-readiness.json`. The dashboard now reports H2 outcome `blocked`, readiness `passed`, workflow probe `true`, and support accepted refs instead of falling back to invoice-era filenames.
+- Warning-restatement suppression was tightened for low-signal/proof-churn warning families, but the completed H2 workspace still contains old active warning restatements from the pre-fix run. A fresh run is needed to confirm the suppression in live state.
+- Harness 2 must prove design tokens, human verification, backend-before-UI gating, project skills, richer workflow, and reviewer sleuthing without hard-coding support-triage behavior into the engine.
+- H2 coverage-continuation hardening is implemented in `scripts/run-support-triage-live-demo.mjs`: when product readiness passes but indexed coverage is partial, the H2 runner records `finalCoverageGate`, creates a normal visible `coverage-completion-slice-created` slice grouped by immutable source/domain plus FR/AC family, and continues the worker/reviewer/verifier loop instead of stopping with only a generic max-turn reason. The selector prioritizes backend/API refs before product/UI/design refs and maps targets from the scenario manifest rather than support-triage hardcoding.
+- H2 completion obligations are planner-created and immutable. Refs that explicitly require human verification (`HUMAN` refs or source text mentioning human verification) are marked `human_verification_required`; automated refs remain verifier-owned. This preserves the distinction between implementable work and human sign-off.
+- Focused regression `tests/support-triage-live-runner.e2e.test.js` now proves the post-readiness continuation path creates a visible backend coverage slice for remaining `SUP-API-001` refs with immutable obligations and observable `coverage_completion.slice_created` events.
+- Child Codex global-skill leakage is now detected: JSONL references to user-global `.codex/skills/...` paths produce `<role>.skill_isolation_detected`, a run-scoped warning escalation via `<role>.skill_isolation_warning`, `skillIsolationFindings` on completion/failure payloads, and `global_skill_leak` in `swarm inspect run` focus packets. This does not yet fully prevent global skill loading; auth-safe clean `CODEX_HOME` isolation remains a future driver-hardening item.
+- Next H2 task: run a fresh real H2 pass with the dashboard open and confirm the real overseer/agents advance from readiness into coverage-completion slices rather than stopping at `2/124`.
+- Test note: focused tests passed after the H2 observability fix (`web-server.e2e`, `support-triage-live-runner.e2e`, `invoice-demo.e2e`). A full `npm test` attempt on 2026-06-18 exceeded the shell timeout and was stopped while `tests/live-agent-runner.e2e.test.js` was in a long full-product title-variant run; treat that as a test-runner duration/hang follow-up, not a passing full-suite result.
 
 ## Human Intent
 
@@ -83,15 +144,23 @@ Implemented and covered by tests:
 - latest-only role/entity checkpoints
 - role-specific resume packets
 - observe/watch/timeline/graph/report surfaces
-- CLI-hosted read-only web viewer
+- CLI-hosted web viewer and local trusted control server
 - `swarm onboard` one-command in-repo setup: init + target + gitignore split (runtime state ignored, config files committable) + sample spec registered; idempotent; does not run a worker (`src/onboard.ts`)
 - `swarm check <provider>` resolve + spawn `--version` readiness probe via cross-spawn (same launch path as workers); `--live` adds an auth ping (`src/provider-check.ts`)
+- `swarm smoke live-agent fake --reset --scenario live-agent-smoke-h2` deterministic H2 fake-agent E2E through the built CLI, including repair/human-verification/product-readiness lifecycle coverage and a missing-required-skill negative test (`scripts/run-support-triage-fake-demo.mjs`, `tests/support-triage-fake.e2e.test.js`)
+- `swarm smoke live-agent full --reset --scenario live-agent-smoke-h2` H2 real-run boundary through the built CLI, including scenario-metadata-driven runner selection, support-triage readiness workflow probes, coverage/human-action/readiness artifacts, and a fake-Codex regression over the real overseer/worker/reviewer driver path (`scripts/run-support-triage-live-demo.mjs`, `tests/support-triage-live-runner.e2e.test.js`)
 
 Latest known verification:
 
 ```text
 Clean real full-product run LAR-20260616T171831-live-agent-smoke-none-48036 -> accepted, coverage 83/83, product readiness passed
 Generated invoice dashboard npm test -> 20/20 passing
+2026-06-18 H2 fake-agent E2E:
+  npm run build -> passed
+  node --test tests\support-triage-fake.e2e.test.js -> 2/2 passing
+2026-06-18 H2 live-run CLI boundary:
+  npm run build -> passed
+  node --test tests\support-triage-live-runner.e2e.test.js -> passed
 2026-06-17 Sleuth Review Gate slice:
   npm run build -> passed
   focused reviewer/driver/coverage tests -> passed
@@ -170,7 +239,7 @@ The local web viewer was upgraded from a simple panel layout into a tabbed obser
   - `GET /api/history/run/:runId`
   - `GET /api/history/compare`
 
-The viewer remains read-only.
+Source/history views remain read-only. The local trusted server also exposes bounded human-action write APIs for clearing escalations and recording human verification results.
 
 ## Web Observability E2E Harness Completed
 
@@ -849,7 +918,21 @@ Tracked improvement backlog from the last run:
 
 ## Next Slice To Execute
 
-Name: Phase 10C-2 Requirement Ledger And Human Verification Semantics
+Name: Phase 11D First Bounded Harness 2 Real-Agent Run
+
+Phase 11A/11B/11C are implemented: Customer Support Triage Board source specs and scenario skills are committed, reset creates the H2 workspace while preserving invoice as the control scenario, and fake H2 execution proves lifecycle, skills, repair, human verification, and product-readiness surfaces. Phase 11D now wires the built CLI full-run boundary for H2.
+
+Next implementation objective:
+
+- run a tightly bounded real Codex H2 smoke through `swarm smoke live-agent full --reset --scenario live-agent-smoke-h2`
+- observe the run through the dashboard and preserve terminal state/artifacts after completion
+- inspect summary, coverage, graph, human-action, product-readiness, and focus artifacts
+- harden only generic harness gaps that appear in the run, not support-triage product facts
+- decide whether the H2 runner needs invoice-runner parity features such as history archiving, coverage-completion packs, or richer outcome classification based on observed evidence
+
+Historical foundation below explains why the next scenario must preserve full FR/AC verification, human-verification semantics, and product-readiness coverage.
+
+Previous phase: Phase 10C-2 Requirement Ledger And Human Verification Semantics
 
 Phase 10C-1 implemented the first enforceable layer: `VerificationObligation` type/storage, planner-derived obligations from source text, `slice.created`/`planner.decision` obligation summaries, dispatch preflight, read-only worker/reviewer prompt sections, criterion-level verifier evidence, and additive `/api/coverage` obligation fields.
 
@@ -873,6 +956,10 @@ Phase 10C-2F adds the local human-action API for UI handoff: `GET /api/human-act
 
 Phase 10C-2G CLI rebaseline/product-probe hardening: a fresh real run was launched through `node dist\cli.js smoke live-agent full` after reset-first and `swarm serve` on `127.0.0.1:4319`. Run `LAR-20260617T190112-live-agent-smoke-none-20932` accepted 5 slices and reached `19/83` coverage, then blocked final product readiness correctly. The generated app passed tests and printed `http://127.0.0.1:4321`, while the harness had assigned/probed a random `PORT` URL (`http://127.0.0.1:59808` in this run). `scripts/run-live-agent-demo.mjs` now records `assignedManualUrl`, parses local URLs printed by `npm start`, retries probes against the printed URL, records `probeUrlSource`/`observedStartUrls`, and reports the effective `commands.manualUrl`. Focused regression `full-product readiness probes the URL printed by npm start when PORT is ignored` passed.
 
+Phase 10C-2H worker-status handoff hardening: the next built-CLI run `LAR-20260617T195034-live-agent-smoke-none-46088` was launched after reset-first with the UI server on `127.0.0.1:4319`. It proved meaningful real-agent flow: backend completed first, dashboard unlocked after accepted backend refs, product runtime/API/UI slices accepted, product readiness passed, final target snapshots were archived, source specs stayed unchanged, and the generated invoice dashboard passed `npm test` with `20/20` tests plus HTML/API/mark-paid probes. The final outcome was still `blocked` at `61/83` because the last QA proof-pack worker returned final status `needs_human` to mean "independent reviewer step still required." That was protocol misuse: the harness did run the independent reviewer, the reviewer accepted all 9 refs, and deterministic `npm run test` passed, but the verifier correctly refused to accept a final worker status of `needs_human`. `src/cli.ts` worker prompts now explicitly say to return `passed` when worker implementation/evidence is complete even though normal review/verifier phases remain pending, and to reserve `needs_human` for true human decision, clarification, or human verification. Regression coverage was added to `tests/invoice-demo.e2e.test.js`; `node --test tests\invoice-demo.e2e.test.js --test-name-pattern "planner creates read-only verification obligations"` ran the full file and passed `11/11`; `npm run build` also passed.
+
+Phase 10C-2I accepted real full-product CLI run: after reset-first and fresh `swarm serve` on `127.0.0.1:4319`, run `LAR-20260618T062936-live-agent-smoke-none-40784` completed with `finalOutcome: accepted`, `83/83` indexed FR/AC refs done, `11` accepted slices, `53` agent runs, and product readiness passed. The final product probe verified browser HTML, `/api/summary`, and mark-paid workflow against an isolated copied target. The previous title-mismatch failure was fixed by letting the harness accept controlled dashboard title variants and by continuing API probes when HTML responds successfully. The run also showed real recovery behavior: a worker hit Windows `spawn EINVAL` during an agent-authored npm-start probe and recovered with alternate evidence; one reviewer incorrectly blocked because local Codex skill/config inheritance made it think `project-overseer` had to be loaded before review, then the overseer recovered by rerunning the slice/review. Hardening now isolates Codex child agents with `--ignore-user-config` by default, adds `protocol.workers.drivers.codex.ignoreUserConfig`, and broadens historical-warning cleanup for stale prior-slice git-access warnings. Residual lesson: archived summary counts can still be noisy if warning cleanup misses a wording variant, so warning/history vs active blocker visibility remains a UI/engine polish item.
+
 Clean 100%-coverage real run confirmed:
 
 - Run id: `LAR-20260616T171831-live-agent-smoke-none-48036`
@@ -888,10 +975,61 @@ Clean 100%-coverage real run confirmed:
 
 The next recommended implementation steps for Phase 10C-2 are:
 
-- rerun a clean real full-product smoke through the CLI with printed-URL fallback in place
-- confirm product readiness no longer blocks on assigned-vs-printed URL mismatch
-- validate the derived-ledger Coverage UI and compact status-sink ledger summary against that fresh run
+- validate the derived-ledger Coverage UI and compact status-sink ledger summary against the accepted `LAR-20260618T062936-live-agent-smoke-none-40784` run
+- keep Codex child-agent config isolation covered by tests and document any explicit protocol opt-in to user config inheritance
+- keep product-readiness probe expectations scenario-declared rather than hidden in the runner
+- design Harness 2 as a second scenario that consumes generic contracts instead of modifying core behavior around one product
 - wire `buildStatusSinkLedgerSummary()` into the first concrete file/Linear status sink when that sink is implemented
+
+Phase 10C-2J hardening after the accepted 2026-06-18 run:
+
+- `scripts/reset-live-agent-smoke.mjs` now declares `fullProductMode.productReadinessProbe` in the scenario manifest.
+- `scripts/run-live-agent-demo.mjs` consumes the manifest probe contract for UI text, API JSON-field probes, and the invoice mark-paid workflow paths.
+- The invoice smoke remains product-specific as a scenario, but the readiness runner no longer hides invoice title/API assumptions inside the generic probe path.
+- Run summaries now include `counts.activeBlockingEscalations`, `counts.activeWarningEscalations`, `counts.activeInfoEscalations`, and `escalationSummary` so UI/history can separate active blockers/human-required concerns from warning history.
+- Harness 2 planning started in `docs/architecture/live-agent-smoke-harness-2.md`; Customer Support Triage Board is the approved baseline domain.
+
+Phase 10D harness-managed skills:
+
+- Skills are now a harness concept, not driver-level/global Codex leakage.
+- Built-in skills live under `skills/builtin/<skill-id>/SKILL.md`.
+- Default `protocol.skills` catalogs are `builtin` and `.swarm/skills`.
+- Default role mappings attach `swarm-core`, `implementation-worker`, `verification-obligations`, `sleuth-review`, `super-overseer`, `recovery-focus`, and related skills by role.
+- Dispatch resolves skills before worker/reviewer/overseer/recovery launch, copies selected files into the target workspace at `.swarm/run-skills/<run-id>/`, writes `skill-bindings-<run-id>.json` and `skill-packet-<run-id>.md`, inserts the skill packet into prompts, and records skill ids/hashes/paths in run events.
+- `/api/snapshot` agent runs and `swarm inspect run` focus packets now expose skill binding artifacts.
+- Missing required skills block dispatch before agent launch.
+- Codex child agents still use `--ignore-user-config` by default; project-specific skills should be committed under `.swarm/skills` or scenario catalogs.
+- Harness 2 should add project/scenario skills for support-triage domain rules, design tokens, and UI/accessibility guidance instead of expanding prompts.
+- UI handoff is documented in `docs/architecture/skill-observability-ui-contract.md`. Current UI can consume skills through `/api/snapshot` agent runs, `/api/focus/run/:runId`, and skill-bearing event payloads. Next skill-observability hardening is to add artifact-relative URLs for skill binding/packet artifacts and a focused missing-required-skill dispatch test.
+- Current invoice smoke should prove built-in skill bindings are visible on every overseer/worker/reviewer/recovery run. Harness 2 should stress project/scenario skills with support-triage domain rules, design tokens, and accessibility review.
+
+Phase 11D H2 real-run queue-order lesson:
+
+- A fresh H2 real run on 2026-06-19 exposed that the generated actionable queue served `Support Product` before `Support Backend`.
+- The child overseer obeyed the prompt literally: "recommend the first nextSourcePullQueue item", so the issue was not model judgement; it was incorrect source-priority truth in the scenario reset scaffold.
+- Fake-codex H2 tests had been masking this because the fake overseer hard-coded a backend-first command.
+- `scripts/reset-live-agent-smoke.mjs` now registers H2 sources in implementation order: Support Backend priority 1, Support Design System priority 2, Support Dashboard priority 3, Support Product priority 4.
+- `src/cli.ts` now suggests coherent FR-family batch sizes for source pulls: when the first available ref is a parent FR, the suggested batch includes that FR and its currently available child ACs, capped at 12.
+- `tests/support-triage-live-runner.e2e.test.js` now parses the generated real overseer prompt and asserts `actionableState.nextSourcePullQueue[0]` is `Support Backend` targeting `support-api`, with `Support Product` last and a `SUP-API-001` FR+AC family batch.
+- This keeps the core engine spec-agnostic: source priority remains scenario/input metadata, while the generic queue honors it.
+- Focused verification passed: `npm run build` and `node --test tests\support-triage-live-runner.e2e.test.js`.
+
+Phase 11D H2 backend-enabler confirmation run:
+
+- Run id: `H2-20260619T070106Z-50228`.
+- Command path: built CLI, `swarm smoke live-agent full --scenario live-agent-smoke-h2`, workspace `.swarm-demo/live-agent-smoke-h2-rerun`, dashboard on `http://127.0.0.1:4319/`.
+- Final outcome: `blocked`, correctly, because the bounded 16-turn confirmation run stopped before full product acceptance.
+- Coverage: `22/124` indexed refs done, `18%`, with `0` active escalations.
+- Accepted slices: 4 backend capability packs:
+  - `FR-SUP-API-001` plus `AC-SUP-API-001.1..001.7` ticket listing API
+  - `FR-SUP-API-002` plus `AC-SUP-API-002.1..002.3` summary API
+  - `FR-SUP-API-003` plus `AC-SUP-API-003.1..003.3` ticket detail API
+  - `FR-SUP-API-004` plus `AC-SUP-API-004.1..004.5` assignment API
+- Verification: each accepted slice passed worker evidence, independent Sleuth review, and deterministic verification; support-api tests reached `15/15`.
+- Product readiness failed with `product-start-script` / `product-start-probed`, which is expected for this bounded backend-enabler run because frontend/product work was not reached.
+- `finalCoverageGate` is `null` for this run because product readiness did not pass; the coverage gate only runs after readiness passes.
+- Important lesson: child Codex agents still read the global `project-overseer` skill despite `--ignore-user-config` and run-bound harness skills. The harness now detects `.codex/skills/...` references and surfaces them as run-scoped warnings plus `global_skill_leak` focus diagnostics; full prevention remains future auth-safe driver isolation work.
+- UI/product interpretation lesson: the dashboard should make it clear when a bounded backend-enabler run is blocked by the run bound/product readiness, rather than implying a product regression.
 
 Phase 10C-1C verification is confirmed by the clean real full-product rebaseline. Phase 10C-1D is implemented in code/docs/tests and confirmed by the next real full-product smoke. Phase 10C-2A implements derived requirement-ledger semantics and parent FR rollups. Phase 10C-2B implements human verification packet artifacts and awaiting-human coverage links. Phase 10C-2C implements human result recording/sign-off. Phase 10C-2D implements the derived-ledger persistence decision and UI consumption of the ledger/rollup/packet/result fields. Phase 10C-2E implements the compact outbound ledger summary contract for future status sinks while keeping `/api/coverage` canonical.
 
@@ -962,3 +1100,23 @@ Do not rely on the previous chat. Use the docs and harness state:
 3. Run `npm test` if feasible.
 4. Inspect latest docs changed under `docs/architecture/` and `docs/examples/`.
 5. Continue with the next slice above unless the user redirects.
+
+## 2026-06-20 H2 Repair-Loop Hardening
+
+Latest H2 lesson: a real run got stuck for over an hour on `SLICE-349e94c3` after human QA failed `FR-SUP-UI-007`/`AC-SUP-UI-007.*`. The reviewer found a concrete bug: support UI detail controls used broad `[data-ticket-id]` selection, so dropdown/textbox interaction could trigger ticket selection refresh and clear/close the input. The harness detected the defect, but then allowed repeated inspect/recommend cycles and high retry pressure instead of forcing a precise repair handoff.
+
+Implemented hardening:
+
+- Worker prompts now include a `Targeted repair context` section built from latest non-accepted review evidence, `requiredFixes`, failed/missing refs, active scoped blockers, and failed/needs-rework human verification notes.
+- Overseer `actionableState.activeSliceQueue` now exposes `retryCount` and compact `repairContext`; prompt discipline says focus/inspect is diagnostic only when concrete repair context is missing.
+- The H2 live runner now dispatches one direct `targeted-repair-dispatch` worker when a repairing/blocked slice has concrete review or human feedback and no worker has run after the latest repair signal.
+- The H2 live runner now enforces `--max-repair-attempts` (default `8`): over-budget repair loops stop with `repair.retry_budget_exhausted`, the slice is blocked, and an active `Repair retry budget exhausted.` escalation is raised.
+- `GET /api/control/commands` now includes an `activity` payload for background commands: stdout/stderr byte counts, latest output time, latest artifact, latest agent run, and latest heartbeat. The record updates while a child run is alive, so the UI no longer sees a frozen parent command for a busy runner.
+- `/api/human-actions` is now an action queue only. After a human records `human_verified`, `failed`, or `needs_rework`, that ref leaves the human queue immediately; failed/rework results remain durable evidence and targeted repair context for the overseer/worker path.
+
+Verification:
+
+- `npm run typecheck`
+- `npm run build --silent && node --test tests\support-triage-live-runner.e2e.test.js` passed `7/7`
+- `node --test tests\web-server.e2e.test.js` passed `2/2`
+- `npm -w web run test -- --run` passed `266/266`

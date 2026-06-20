@@ -29,6 +29,8 @@
     "demo:live-agent:overseer:execute:fixture": "npm run build && cd .swarm-demo/live-agent-smoke && node ../../dist/cli.js orchestrate --actor live-overseer --driver fixture --scenario live-agent-smoke --execute",
     "demo:live-agent:run": "npm run build && node dist/cli.js smoke live-agent run",
     "demo:live-agent:full": "npm run build && node dist/cli.js smoke live-agent full",
+    "demo:live-agent:h2:fake": "npm run build && node dist/cli.js smoke live-agent fake --reset --scenario live-agent-smoke-h2",
+    "demo:live-agent:h2:full": "npm run build && node dist/cli.js smoke live-agent full --reset --scenario live-agent-smoke-h2",
     "smoke:live-agent:full": "npm run build && node dist/cli.js smoke live-agent full --reset",
     "demo:live-agent:compare": "npm run build && node scripts/compare-live-agent-runs.mjs --format markdown",
     "demo:live-agent:scripted": "npm run build && node scripts/run-live-agent-scripted-demo.mjs --driver codex",

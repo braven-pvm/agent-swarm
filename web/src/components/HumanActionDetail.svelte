@@ -84,6 +84,12 @@
     : s === "blocked" || s === "human_required" ? "verdict-blocked"
     : s === "repair_required" ? "verdict-repair_required"
     : "verdict-other";
+  const isReworkAction = $derived(action.kind === "human_verification_rework");
+  const noDirectActionCopy = $derived(
+    isReworkAction
+      ? "Repair has been requested from agents. This legacy action should normally move out of the human queue; continue the run so the overseer can dispatch repair/review work."
+      : "No direct action is available here. Inspect the linked context or continue the run to let the harness advance this state.",
+  );
 
   function findingClass(status: string): string {
     if (status === "passed") return "passed";
@@ -108,15 +114,22 @@
   let verifyStatus = $state<"human_verified" | "failed" | "needs_rework">("human_verified");
   let submitting = $state(false);
   let error = $state<string | undefined>(undefined);
+  let notice = $state<string | undefined>(undefined);
   let lastId = $state<string | undefined>(undefined);
+  const verifySubmitLabel = $derived(
+    verifyStatus === "needs_rework" ? "Record rework"
+    : verifyStatus === "failed" ? "Record failure"
+    : "Record verification",
+  );
   $effect(() => {
     if (action.id === lastId) return;
     lastId = action.id;
     reason = "";
     notes = "";
-    verifyStatus = "human_verified";
+    verifyStatus = action.kind === "human_verification_rework" ? "needs_rework" : "human_verified";
     submitting = false;
     error = undefined;
+    notice = undefined;
   });
 
   // The required reason/notes field IS the only friction. Disable submit while empty or in flight.
@@ -127,13 +140,39 @@
     if (submitting) return; // no double-submit
     submitting = true;
     error = undefined;
+    notice = undefined;
     const res = await runActionCommand(cmd, overrides);
     if (res.ok) {
       // Replace the queue with the server's refreshed view, refresh snapshot/coverage, and drop the
       // selection if THIS action is no longer in the queue (it was resolved away).
       store.setHumanActions(res.humanActions);
       onResolved();
+      // Per the human-verify contract, human_verified / failed / needs_rework REMOVE this ref from
+      // the queue. So the normal path is "the item left" → close the drawer; with no inline surface
+      // left, confirm via a toast. failed/needs_rework explicitly hands the defect back to autonomous
+      // repair; a verified pass that left just acknowledges the sign-off.
       const stillThere = res.humanActions.actions.some((a) => a.id === action.id);
+      if (cmd.kind === "record_human_verification") {
+        const status = typeof overrides.status === "string" ? overrides.status : "";
+        if (!stillThere) {
+          store.notify(
+            status === "failed" || status === "needs_rework"
+              ? "Handed back to agent repair."
+              : "Verification saved.",
+            { title: "Recorded", tone: "ok" },
+          );
+        } else {
+          // Rare/legacy: the item stayed — another required result is still unresolved, or an old
+          // server kept the failed ref as human_verification_rework. Explain inline since the drawer
+          // is still open.
+          notice =
+            status === "human_verified"
+              ? "Verification recorded. This item is still open because another required result remains unresolved."
+              : status === "needs_rework"
+                ? "Rework recorded. The item should leave the human queue while agents repair it."
+                : "Failure recorded. The item should leave the human queue while agents repair or block the affected scope.";
+        }
+      }
       if (!stillThere) store.selectAction(null);
       submitting = false;
     } else {
@@ -229,7 +268,7 @@
   {/if}
 
   {#if action.allowedActions.length === 0}
-    <p class="empty ha-noresolve">No direct action — inspect the linked context to resolve this.</p>
+    <p class="empty ha-noresolve">{noDirectActionCopy}</p>
   {/if}
 
   {#each action.allowedActions as cmd (cmd.kind + cmd.path)}
@@ -256,20 +295,25 @@
       <!-- Visual-verification affordance: start the review dev server + open its URL before sign-off.
            Self-contained (own in-flight + error state); a failed start does NOT block the form below. -->
       {#if verifyTargetName}<DevServerVerify targetName={verifyTargetName} />{/if}
+      {#if isReworkAction}
+        <p class="ha-notice ha-notice-warn" role="note">
+          This item already has a failed human verification. Recording another result updates the defect note; current servers should move it out of the human queue and hand it back to agent repair.
+        </p>
+      {/if}
       <form class="ha-form" onsubmit={(e) => { e.preventDefault(); submit(cmd, { status: verifyStatus, notes }); }}>
         <div class="run-subhead">Record verification</div>
         <fieldset class="ha-field ha-radios">
           <legend class="ha-label">Result</legend>
           <label class="ha-radio">
-            <input type="radio" name="ha-status" value="human_verified" bind:group={verifyStatus} disabled={submitting} />
+            <input type="radio" name="ha-status" value="human_verified" bind:group={verifyStatus} disabled={submitting} onchange={() => { notice = undefined; }} />
             Verified
           </label>
           <label class="ha-radio">
-            <input type="radio" name="ha-status" value="failed" bind:group={verifyStatus} disabled={submitting} />
+            <input type="radio" name="ha-status" value="failed" bind:group={verifyStatus} disabled={submitting} onchange={() => { notice = undefined; }} />
             Failed
           </label>
           <label class="ha-radio">
-            <input type="radio" name="ha-status" value="needs_rework" bind:group={verifyStatus} disabled={submitting} />
+            <input type="radio" name="ha-status" value="needs_rework" bind:group={verifyStatus} disabled={submitting} onchange={() => { notice = undefined; }} />
             Needs rework
           </label>
         </fieldset>
@@ -282,11 +326,13 @@
             placeholder="What did you check?"
             bind:value={notes}
             disabled={submitting}
+            oninput={() => { notice = undefined; }}
           ></textarea>
         </div>
         {#if error}<p class="error ha-error" role="alert">{error}</p>{/if}
+        {#if notice}<p class="ha-notice ha-notice-ok" role="status">{notice}</p>{/if}
         <button class="ha-primary" type="submit" disabled={verifyDisabled}>
-          {submitting ? "Recording…" : "Record verification"}
+          {submitting ? "Recording…" : verifySubmitLabel}
         </button>
       </form>
     {/if}

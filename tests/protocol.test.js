@@ -44,9 +44,22 @@ test("default protocol exposes worker driver configuration", () => {
 
   assert.equal(protocol.protocol.workers.defaultDriver, "codex");
   assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
+  assert.equal(protocol.protocol.workers.drivers.codex.ignoreUserConfig, true);
+  assert.equal(protocol.protocol.workers.drivers.codex.ignoreRules, true);
+  assert.equal(protocol.protocol.workers.drivers.codex.skillIsolation, "detect");
+  assert.equal(protocol.protocol.workers.drivers.codex.bypassApprovalsAndSandbox, true);
   assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
   assert.equal(protocol.protocol.workers.drivers.claude.settingSources, "");
   assert.equal(protocol.protocol.workers.drivers.claude.allowedTools, "Edit Write Read Glob Grep Bash");
+});
+
+test("default protocol exposes harness-managed skill role mappings", () => {
+  const protocol = defaultProtocol();
+
+  assert.deepEqual(protocol.protocol.skills.catalogs, ["builtin", ".swarm/skills"]);
+  assert.ok(protocol.protocol.skills.roles.worker.required.includes("implementation-worker"));
+  assert.ok(protocol.protocol.skills.roles.reviewer.required.includes("sleuth-review"));
+  assert.ok(protocol.protocol.skills.roles.overseer.required.includes("super-overseer"));
 });
 
 test("merges workers override without dropping driver defaults", () => {
@@ -72,4 +85,8 @@ test("merges workers override without dropping driver defaults", () => {
   assert.equal(protocol.protocol.workers.drivers.claude.maxBudgetUsd, 5);
   assert.equal(protocol.protocol.workers.drivers.claude.permissionMode, "acceptEdits");
   assert.equal(protocol.protocol.workers.drivers.codex.sandbox, "workspace-write");
+  assert.equal(protocol.protocol.workers.drivers.codex.ignoreUserConfig, true);
+  assert.equal(protocol.protocol.workers.drivers.codex.ignoreRules, true);
+  assert.equal(protocol.protocol.workers.drivers.codex.skillIsolation, "detect");
+  assert.equal(protocol.protocol.workers.drivers.codex.bypassApprovalsAndSandbox, true);
 });

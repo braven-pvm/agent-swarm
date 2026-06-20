@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const liveDemo = path.join(repoRoot, "scripts", "run-live-agent-demo.mjs");
 const compareLiveRuns = path.join(repoRoot, "scripts", "compare-live-agent-runs.mjs");
+const resetLiveSmoke = path.join(repoRoot, "scripts", "reset-live-agent-smoke.mjs");
 const cli = path.join(repoRoot, "dist", "cli.js");
 
 test("live agent runner gives internal swarm CLI calls enough output buffer for large observe snapshots", () => {
@@ -948,6 +949,8 @@ test("full-product readiness probes the URL printed by npm start when PORT is ig
       "240",
       "--execute-limit",
       "3",
+      "--history",
+      "false",
     ],
     {
       cwd: repoRoot,
@@ -960,6 +963,7 @@ test("full-product readiness probes the URL printed by npm start when PORT is ig
         SWARM_FAKE_DASHBOARD_FIXED_START_PORT: String(printedPort),
       },
       encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -969,6 +973,8 @@ test("full-product readiness probes the URL printed by npm start when PORT is ig
 
   assert.equal(summary.finalOutcome, "accepted");
   assert.equal(summary.productReadiness.passed, true);
+  assert.equal(summary.counts.activeBlockingEscalations, 0);
+  assert.equal(summary.escalationSummary.blocking.count, 0);
   assert.equal(startResult.passed, true);
   assert.equal(startResult.probeUrlSource, "npm_start_output");
   assert.equal(startResult.manualUrl, expectedPrintedUrl);
@@ -984,6 +990,74 @@ test("full-product readiness probes the URL printed by npm start when PORT is ig
   assert.equal(probeArtifact.assignedManualUrl, startResult.assignedManualUrl);
   assert.equal(probeArtifact.probes.ui.assignedManualUrl, startResult.assignedManualUrl);
   assert.equal(probeArtifact.probes.ui.assignedUrlProbe.passed, false);
+});
+
+test("full-product readiness uses scenario-declared UI text and continues API workflow probes", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-full-product-title-variant-${process.pid}-${Date.now()}`);
+  const fakeCodexScript = writeFakeLiveCodex();
+
+  execFileSync(process.execPath, [resetLiveSmoke, "--workspace", workspace], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const manifestPath = path.join(workspace, "live-agent-smoke.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.fullProductMode.productReadinessProbe.ui.expectedText = ["Invoice dashboard"];
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      liveDemo,
+      "--workspace",
+      workspace,
+      "--driver",
+      "codex",
+      "--mode",
+      "full-product",
+      "--max-turns",
+      "80",
+      "--max-runtime-seconds",
+      "240",
+      "--execute-limit",
+      "3",
+      "--history",
+      "false",
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        SWARM_CODEX_COMMAND: process.execPath,
+        SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+        SWARM_FAKE_DASHBOARD_SHORT_TITLE: "true",
+        TEST_SWARM_CLI: cli,
+      },
+      encoding: "utf8",
+      maxBuffer: 50 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const summary = JSON.parse(output);
+  const startResult = summary.productReadiness.commandResults.start;
+
+  assert.equal(summary.finalOutcome, "accepted");
+  assert.equal(summary.productReadiness.passed, true);
+  assert.equal(startResult.passed, true);
+  assert.equal(startResult.probes.ui.passed, true);
+  assert.equal(startResult.probes.ui.textMatched, true);
+  assert.deepEqual(startResult.probes.ui.expectedTextValues, ["Invoice dashboard"]);
+  assert.deepEqual(summary.productReadiness.productProbeConfig.ui.expectedText, ["Invoice dashboard"]);
+  assert.match(startResult.probes.ui.bodySnippet, /Invoice dashboard/);
+  assert.equal(startResult.probes.api.passed, true);
+  assert.equal(startResult.probes.markPaid.passed, true);
+
+  const probeArtifact = JSON.parse(fs.readFileSync(summary.artifacts.productProbe, "utf8"));
+  assert.equal(probeArtifact.passed, true);
+  assert.equal(probeArtifact.probes.ui.textMatched, true);
+  assert.equal(probeArtifact.probes.api.passed, true);
+  assert.equal(probeArtifact.probes.markPaid.passed, true);
 });
 
 test("full-product mode turns runtime readiness blockers into visible follow-up work", () => {
@@ -1254,6 +1328,7 @@ const fault = process.env.SWARM_LIVE_FAULT || "none";
 const delayDashboardStart = process.env.SWARM_FAKE_DELAY_DASHBOARD_START === "true";
 const ignoreDashboardStartPort = process.env.SWARM_FAKE_DASHBOARD_IGNORES_PORT === "true";
 const fixedDashboardStartPort = process.env.SWARM_FAKE_DASHBOARD_FIXED_START_PORT || "4321";
+const shortDashboardTitle = process.env.SWARM_FAKE_DASHBOARD_SHORT_TITLE === "true";
 const workerCountPath = ${JSON.stringify(workerCountPath)};
 const reviewCountPath = ${JSON.stringify(reviewCountPath)};
 const rawPrompt = readStdin() || (args.at(-1) ?? "");
@@ -1432,6 +1507,7 @@ if (schemaPath.includes("overseer-decision")) {
       omitStart,
       ignoreStartPort: ignoreDashboardStartPort,
       fixedStartPort: fixedDashboardStartPort,
+      shortTitle: shortDashboardTitle,
     });
     if (outputPath) {
       fs.writeFileSync(outputPath, JSON.stringify({
@@ -1844,6 +1920,7 @@ function writeDashboardImplementation(options = {}) {
   const ignoreStartPort = Boolean(options.ignoreStartPort);
   const fixedStartPort = options.fixedStartPort ?? "4321";
   const portExpression = ignoreStartPort ? JSON.stringify(fixedStartPort) : "process.env.PORT || 4321";
+  const htmlTitle = options.shortTitle ? "Invoice dashboard" : "Invoice Operations Dashboard";
   const packageJson = {
     name: "invoice-dashboard-fixture",
     version: "0.1.0",
@@ -1981,7 +2058,7 @@ server.listen(port, host, () => {
 
 function renderDashboard(model) {
   const rows = model.invoices.map((invoice) => "<tr><td>" + invoice.id + "</td><td>" + invoice.customerDisplayName + "</td><td>" + invoice.status + "</td><td>" + invoice.dueOn + "</td><td>" + formatCurrency(invoice.totalCents) + "</td></tr>").join("");
-  return "<!doctype html><html><head><title>Invoice Operations Dashboard</title></head><body><h1>Invoice Operations Dashboard</h1><section id='summary'><div>Total invoices: " + model.summaryCards.invoiceCount + "</div><div>Open total: " + formatCurrency(model.summaryCards.openTotalCents) + "</div><div>Overdue total: " + formatCurrency(model.summaryCards.overdueTotalCents) + "</div></section><table><tbody>" + rows + "</tbody></table></body></html>";
+  return "<!doctype html><html><head><title>\${htmlTitle}</title></head><body><h1>\${htmlTitle}</h1><section id='summary'><div>Total invoices: " + model.summaryCards.invoiceCount + "</div><div>Open total: " + formatCurrency(model.summaryCards.openTotalCents) + "</div><div>Overdue total: " + formatCurrency(model.summaryCards.overdueTotalCents) + "</div></section><table><tbody>" + rows + "</tbody></table></body></html>";
 }
 
 function sendJson(response, payload, status = 200) {

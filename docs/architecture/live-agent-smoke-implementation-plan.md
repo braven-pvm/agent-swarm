@@ -2,7 +2,7 @@
 
 Date: 2026-06-12
 
-Status: Phase 10B Super Overseer focus-packet foundation and Phase 10C-1 verification-obligation foundation are implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, stale-run recovery fault, context-handoff fault, low-signal/proof-churn fault, supervised-revive fault, live-run artifact index, outcome classifier, run history, run comparison, web viewer history/artifact detail, full-product readiness blocking, backend-to-dashboard continuation, dashboard worker/reviewer execution, final dashboard start probing, structured product probe artifacts, resettable full-product smoke command, reviewer/deterministic-verifier handoff guidance, compact actionable overseer state packets, calibrated full-product limits, explicit dashboard dependency-gate readiness evidence, source pull queues, dependency preflight, artifact-backed overseer prompts, visible runtime-readiness feedback slices, reset-first lifecycle, final target snapshots, reviewer tooling, product workflow probes, isolated product-readiness probe workspaces, quiet-agent visibility, child idle timeout supervision, same-session revive, reset related-process cleanup, safe-directory path normalization, warning-restatement suppression, wrapped API response handling, operational coverage fields, run/slice focus packets, planner-created verification obligations, obligation dispatch preflight, read-only obligation prompts, criterion-level verifier evidence, coverage obligation fields, full-product coverage-completion slices, product-spec coverage packs, the structured Sleuth Review Gate, derived requirement-ledger parent FR rollups, human verification packets, human result recording, Coverage UI ledger consumption, the compact status-sink ledger summary contract, the `swarm smoke live-agent reset|run|full` built-CLI boundary, and the local human-action API are in place. The clean real full-product rebaseline `LAR-20260616T171831-live-agent-smoke-none-48036` reached `83/83` indexed refs, passed product readiness, and accepted. The next checkpoint is a fresh real smoke through the built CLI boundary to validate derived-ledger UI/status-sink/human-action visibility before considering persisted ledger snapshots.
+Status: Phase 10B Super Overseer focus-packet foundation, Phase 10C-1 verification-obligation foundation, and Harness 2 Phase 11D live-run CLI boundary are implemented. Run-mode/reset, independent reviewer runner, scripted worker+reviewer rehearsal, visible overseer runner, bounded overseer command execution, bounded worker/reviewer child dispatch, the autonomous acceptance loop, source-mutation fault, reviewer-repair fault, stale-run recovery fault, context-handoff fault, low-signal/proof-churn fault, supervised-revive fault, live-run artifact index, outcome classifier, run history, run comparison, web viewer history/artifact detail, full-product readiness blocking, backend-to-dashboard continuation, dashboard worker/reviewer execution, final dashboard start probing, structured product probe artifacts, resettable full-product smoke command, reviewer/deterministic-verifier handoff guidance, compact actionable overseer state packets, calibrated full-product limits, explicit dashboard dependency-gate readiness evidence, source pull queues, dependency preflight, artifact-backed overseer prompts, visible runtime-readiness feedback slices, reset-first lifecycle, final target snapshots, reviewer tooling, product workflow probes, isolated product-readiness probe workspaces, quiet-agent visibility, child idle timeout supervision, same-session revive, reset related-process cleanup, safe-directory path normalization, warning-restatement suppression, wrapped API response handling, operational coverage fields, run/slice focus packets, planner-created verification obligations, obligation dispatch preflight, read-only obligation prompts, criterion-level verifier evidence, coverage obligation fields, full-product coverage-completion slices, product-spec coverage packs, the structured Sleuth Review Gate, derived requirement-ledger parent FR rollups, human verification packets, human result recording, Coverage UI ledger consumption, the compact status-sink ledger summary contract, the `swarm smoke live-agent reset|run|full` built-CLI boundary, the local human-action API, harness-managed skills, H2 reset scaffolding, H2 deterministic fake lifecycle coverage, and the first H2 live-run runner path are in place. The latest invoice control run `LAR-20260618T141404-live-agent-smoke-none-13300` reached `83/83` indexed refs, passed product readiness, and accepted. The next checkpoint is the first tightly bounded Customer Support Triage Board run with real Codex agents through the H2 built CLI boundary.
 
 ## Why This Matters
 
@@ -1962,7 +1962,7 @@ Next implementation slice:
 
 #### Phase 10C: Verification Obligations Foundation
 
-Status: Phase 10C-1 implemented; Phase 10C-1A full-product coverage gate implemented; Phase 10C-1B full-product coverage-completion loop implemented; Phase 10C-1C product-spec coverage-pack hardening implemented and confirmed by clean real run `LAR-20260616T171831-live-agent-smoke-none-48036` with `83/83` indexed refs done; Phase 10C-1D Sleuth Review Gate hardening implemented; later 10C slices remain planned.
+Status: Phase 10C-1 implemented; Phase 10C-1A full-product coverage gate implemented; Phase 10C-1B full-product coverage-completion loop implemented; Phase 10C-1C product-spec coverage-pack hardening implemented and confirmed by clean real run `LAR-20260616T171831-live-agent-smoke-none-48036` with `83/83` indexed refs done; Phase 10C-1D Sleuth Review Gate hardening implemented; Phase 10C-2G/2H CLI rebaseline hardening exposed and fixed product-probe URL and worker-status handoff issues; Phase 10C-2I accepted real run `LAR-20260618T062936-live-agent-smoke-none-40784` confirmed `83/83` coverage through the built CLI with live UI observability; Phase 10C-2J moves product-readiness probe expectations into scenario-declared manifest contracts and adds active blocker/warning escalation summary fields; Phase 10D introduces harness-managed skills as explicit per-run bindings. Harness 2 design is now open in `docs/architecture/live-agent-smoke-harness-2.md`.
 
 Goal:
 
@@ -1989,10 +1989,156 @@ Each pack is a normal visible slice with pack key/label in runner turns and `cov
 
 Phase 10C-1D makes the independent reviewer a real sleuth instead of a pass-through evidence reader. Reviewer output now includes a structured `qualityGate` with dimensions for runtime path, stub/hardcode risk, test meaningfulness, error handling, integration fit, maintainability, and real-world readiness. The reviewer prompt requires this gate, slice reports/UI expose it, and deterministic verification blocks acceptance when the gate fails, has blocking concerns, or reports high-risk/failed dimensions.
 
+Phase 10C-2H captures the 2026-06-17 built-CLI rebaseline `LAR-20260617T195034-live-agent-smoke-none-46088`. The run proved reset-first, live observability on `127.0.0.1:4319`, backend-to-dashboard sequencing, product readiness, isolated product probing, and a generated invoice dashboard with `npm test` passing `20/20`. It also exposed a worker-status handoff ambiguity: the QA proof-pack worker returned `needs_human` to mean "independent review is still required," even though the harness then ran an independent reviewer that accepted all 9 refs and deterministic `npm run test` passed. The verifier correctly refused to accept a final worker status of `needs_human`, so the run blocked at `61/83`. Worker prompts now state that workers must return `passed` when implementation evidence is complete even though normal review/verifier phases remain pending, and must reserve `needs_human` for true human decision, clarification, or human verification requirements.
+
+Phase 10C-2I confirms the corrected path with real agents. Run `LAR-20260618T062936-live-agent-smoke-none-40784` started from reset, was observed through `127.0.0.1:4319`, accepted `11` slices, ran `53` agent turns, passed product readiness, and finished with `83/83` indexed FR/AC refs done. The run validated the controlled dashboard-title probe variant, HTML/API/mark-paid product probes, backend-before-dashboard gating, coverage-completion packs, and final smoke acceptance evidence. It also exposed two hardenings now applied: Codex child agents should run with `--ignore-user-config` by default so local skills/config do not interfere with harness-owned reviewer behavior, and historical-warning cleanup must catch prior-slice git-access warning wording so archived summaries do not inflate active warning counts after acceptance.
+
+Phase 10C-2J keeps the harness from overfitting to the invoice smoke. Product-readiness probe expectations are now scenario-declared in the reset manifest (`fullProductMode.productReadinessProbe`) and consumed by the live runner. The invoice scenario can still require `Invoice Operations Dashboard` or `Invoice dashboard`, `/api/summary`, and the mark-paid workflow, but those expectations are no longer hidden inside the probe logic. Run summaries now also split escalation state into `counts.activeBlockingEscalations`, `counts.activeWarningEscalations`, `counts.activeInfoEscalations`, and `escalationSummary` so UI/history can distinguish active blockers or human actions from warning history. Harness 2 planning starts in [Live Agent Smoke Harness 2](live-agent-smoke-harness-2.md), with Customer Support Triage Board as the approved small real product domain.
+
+Phase 10D implements harness-managed skills. `agent-swarm` now ships built-in skills under `skills/builtin`, `protocol.skills` declares catalogs and role mappings, dispatch resolves required/optional skills before child launch, selected skill files are copied into `.swarm/run-skills/<run-id>`, prompt skill packets are written as artifacts, and worker/reviewer/overseer/recovery events record skill ids, hashes, binding paths, and packet paths. Codex child agents remain isolated from user-global config by default; skills now come from explicit harness catalogs instead of accidental driver-level inheritance. See [Harness-Managed Skills](harness-managed-skills.md).
+
+Phase 10D follow-up replans the current invoice live smoke around skills without overfitting the engine to that product:
+
+- Phase 10D-1 UI contract: document and expose the skill observability shape for the UI team. Implemented in [Skill Observability UI Contract](skill-observability-ui-contract.md).
+- Phase 10D-2 invoice harness proof: the next real full-product invoice run should prove every launched overseer, worker, reviewer, and recovery agent has an appropriate skill binding visible in `/api/snapshot`, run events, prompt artifacts, and `swarm inspect run`.
+- Phase 10D-3 skill failure proof: add a focused fixture test where a scenario protocol requires a missing project skill and dispatch blocks before agent launch with a clear operator-visible reason.
+- Phase 10D-4 optional/project skill proof: add a small committed project skill to a disposable target, map it through protocol as optional or required for one role, and prove the bound run uses the project skill rather than user-global Codex configuration.
+- Phase 10D-5 UI polish contract: add artifact-relative URLs for skill binding and skill packet artifacts so the UI can open them without filesystem-path assumptions.
+
+Invoice smoke should mostly use the built-in skills. Product-specific skill pressure belongs in Harness 2, where support-triage domain rules, design tokens, and accessibility expectations can be scenario/project skills instead of new core prompt text.
+
+Phase 10D-6 confirms the invoice control path after skill/bypass hardening. Real run `LAR-20260618T141404-live-agent-smoke-none-13300` finished accepted with `83/83` indexed refs done, product readiness passed, `11` accepted slices, `48` agent runs, `11` deterministic verifier runs, and `0` active escalations. This run is the control baseline before Harness 2 work.
+
+#### Phase 11: Harness 2 Customer Support Triage Board
+
+Status: Phase 11A source package implemented; Phase 11B reset scaffold implemented; Phase 11C fake-agent E2E implemented; Phase 11D H2 live-run CLI boundary implemented, first bounded real Codex H2 run completed, and H2 full-coverage continuation hardening implemented. The next checkpoint is a fresh real Codex H2 confirmation run.
+
+Goal:
+
+```text
+Prove the harness can run a different real product scenario with scenario skills, design tokens, human verification, backend-before-UI gating, richer workflow, and complete FR/AC coverage without hard-coding product logic into the core engine.
+```
+
+Baseline docs and specs:
+
+- [Live Agent Smoke Harness 2](live-agent-smoke-harness-2.md)
+- [Support Triage Product Spec](../requirements/live-smoke-support-triage-product-spec.md)
+- [Support Triage API Requirements](../requirements/live-smoke-support-triage-api-requirements.md)
+- [Support Triage UI Requirements](../requirements/live-smoke-support-triage-ui-requirements.md)
+- [Support Triage Design System](../requirements/live-smoke-support-triage-design-system.md)
+- scenario skills under `fixtures/scenarios/support-triage/.swarm/skills`
+
+Harness 2 UI skill pack:
+
+- `support-ui-implementation`: frontend worker guidance for screen shape, state flow, real API wiring, workflow refresh, responsive behavior, and meaningful UI tests
+- `support-ui-design-system`: token, layout, component, density, and state guidance
+- `support-ui-review`: reviewer blocking conditions for fake UI, static tests, broken workflows, layout failure, color-only state, and non-token styling
+- `support-accessibility-review`: accessibility and human-verification packet guidance
+
+Phase 11A acceptance criteria:
+
+- support-triage source specs are committed
+- scenario skill files are committed under the fixture scenario catalog
+- UI implementation/design/review/accessibility skills are explicit and mapped in the scenario contract
+- docs identify Customer Support Triage Board as the Harness 2 baseline
+- no core engine code depends on support-triage product names or refs yet
+
+Phase 11B next:
+
+- add a second scenario manifest/reset path without replacing invoice smoke
+- register the four support-triage immutable source specs
+- copy scenario skills into the disposable target `.swarm/skills`
+- preserve target/lane skill hints so UI workers and UI reviewers get the focused frontend skill pack
+- declare product-readiness probes from scenario metadata
+- add focused tests proving scenario metadata, source registration, and skill catalog binding
+
+Phase 11B implemented:
+
+- `swarm smoke live-agent reset --scenario live-agent-smoke-h2` resets `.swarm-demo/live-agent-smoke-h2` by default
+- reset creates `support-api` and `support-ui` targets
+- reset registers the four support-triage immutable source specs
+- reset copies scenario skills into both targets under `.swarm/skills`
+- reset writes target-specific worker/reviewer skill hints into each target protocol
+- reset writes a scenario manifest with `runnerStatus: "reset_scaffold_only"` and scenario-declared product-readiness probe shape
+- focused reset tests cover invoice control reset plus support-triage reset
+
+Phase 11C implemented:
+
+- `swarm smoke live-agent fake --reset --scenario live-agent-smoke-h2` runs deterministic support-triage implementation flow through the built CLI
+- fake H2 consumes scenario manifest metadata instead of invoice-specific source/target assumptions
+- fake H2 proves support-triage coverage, skill binding, human-verification packet flow, reviewer rejection/repair, product readiness, and missing-required-skill blocking without real-agent cost
+
+Phase 11D implemented:
+
+- `swarm smoke live-agent full --reset --scenario live-agent-smoke-h2` routes to `scripts/run-support-triage-live-demo.mjs`
+- the H2 runner invokes overseer, worker, reviewer, deterministic verify, coverage, human-action, and product-readiness paths through the built `dist/cli.js`
+- the H2 runner consumes scenario-declared readiness workflow metadata instead of hidden invoice assumptions
+- the H2 runner writes `support-triage-live-summary.json`, final snapshot, graph, coverage, human-action, product-readiness JSON/Markdown, and probe artifacts where applicable
+- focused regression `tests/support-triage-live-runner.e2e.test.js` uses a fake Codex command while exercising the real `--driver codex` H2 runner path
+
+Phase 11D first real-run result:
+
+- run completed on 2026-06-18 in `.swarm-demo/live-agent-smoke-h2-rerun`
+- final outcome was `blocked` because the 12-turn bound was reached before full product acceptance
+- product readiness passed and produced a runnable Customer Support Triage Board
+- accepted product refs were `FR-PROD-001`, `AC-PROD-001.1`, and `AC-PROD-001.2`
+- coverage was still partial at `2/124` indexed refs done
+- readiness artifact proved HTML, `/api/summary`, and configured support ticket assignment/status/note workflow probes
+- `/api/run-observability` now follows scenario manifest summary/readiness artifacts and exposes the H2 workflow probe; focused web/server and support-triage tests pass
+
+Phase 11D continuation hardening implemented:
+
+- after product readiness passes, the H2 runner records `finalCoverageGate`
+- if coverage is partial and no active slice is already visible, the runner creates a normal `coverage-completion-slice-created` slice and continues the run loop
+- completion groups are source/domain plus FR/AC family packs, not one large proof pack
+- target routing is derived from scenario manifest roles, source metadata, and the declared product target
+- completion slices carry immutable verification obligations for every included ref
+- explicit human-verification refs are marked `human_verification_required`, while automated refs remain deterministic-verifier owned
+- focused regression proves a runnable H2 product produces a visible backend completion slice for remaining `SUP-API-001` refs after readiness passes
+
+Phase 11D backend-first queue hardening implemented:
+
+- a 2026-06-19 H2 real run was stopped early after the overseer pulled `Support Product` first
+- the root cause was scenario priority metadata, not model drift: the prompt instructed the overseer to choose the first actionable queue item
+- H2 source priorities now express intended implementation order: Support Backend, Support Design System, Support Dashboard, then Support Product
+- source-pull queue suggestions now use coherent FR-family batch sizes, so the first H2 backend slice is the `SUP-API-001` FR plus child ACs rather than a parent-only slice
+- focused regression parses the generated overseer prompt and asserts the first pull queue item is backend work for `support-api` with the `SUP-API-001` family batch
+
+Phase 11D backend-enabler confirmation run completed:
+
+- run `H2-20260619T070106Z-50228` completed through the built CLI with the dashboard live on `127.0.0.1:4319`
+- final outcome was `blocked` because the bounded 16-turn run stopped before full product acceptance
+- the corrected planner served and accepted four backend capability packs, reaching `22/124` coverage with no active escalations
+- support-api worker/reviewer/verifier flow produced ticket listing, summary, detail, and assignment APIs with `npm test` reaching `15/15`
+- product readiness failed because the frontend/final product was not reached; this is expected for this confirmation run and should be differentiated in UI/history
+- child Codex still loaded the global `project-overseer` skill despite run-bound harness skills and `--ignore-user-config`; this is now detected and surfaced as run-scoped skill-isolation warnings, but full prevention remains a future auth-safe driver isolation item
+
+Phase 11D next:
+
+- run a fresh H2 real-agent pass after continuation and queue-order hardening and confirm the dashboard separates run outcome, global coverage, product readiness, active concerns, and warning history
+- run a fresh H2 real-agent pass after continuation, queue-order, and skill-isolation observability hardening; confirm any global `.codex/skills/...` access appears as a `global_skill_leak` focus diagnosis rather than silent drift
+- keep the scenario contract as the source of product facts; do not hard-code support-triage endpoint paths or workflow details into generic engine code
+- treat `blocked` as correct whenever bounds stop the run before all indexed refs are verified, human-verified, or explicitly blocked with evidence
+- investigate the full-suite duration/hang observed on 2026-06-18, where `npm test` exceeded the shell timeout while `tests/live-agent-runner.e2e.test.js` was in a long full-product title-variant run
+
+Phase 11D repair-loop hardening implemented after the 2026-06-20 H2 human-verification failure:
+
+- failed/needs-rework human QA and non-accepted reviewer `requiredFixes` are now threaded into the next worker prompt as targeted repair context
+- active slice queue entries expose `retryCount` and compact `repairContext`
+- H2 runner bypasses inspect churn and dispatches a direct `targeted-repair-dispatch` worker when concrete repair context exists and no worker has run after the latest repair signal
+- H2 runner enforces `--max-repair-attempts` with a visible `repair.retry_budget_exhausted` event and slice blocker
+- local control commands expose live `activity` so the UI can show latest child artifact/run/heartbeat while a background continuation is still running
+- focused regression covers targeted human-rework dispatch and high-retry budget exhaustion
+
 Doctrine:
 
 - the planner or authorized overseer derives verification obligations when a slice is created
 - workers receive obligations read-only
+- workers must not use `needs_human` for the normal independent-review or deterministic-verifier handoff
+- Codex child agents run with ignored personal user config/rules by default; current CLI behavior can still surface user-global skills, so the harness detects `.codex/skills/...` access and warns per agent run
+- product-readiness probes are scenario-declared contracts, not hidden product-specific runner assumptions
+- skills are harness-managed, role-mapped, hash-recorded inputs; driver-level user-global skill use is non-reproducible and must be visible if it occurs
+- live smoke runs should prove skill bindings are present and observable, but product-specific skill content should stay in scenario/project catalogs
 - reviewers/verifiers evaluate against obligations
 - humans receive a verification packet when human verification is required
 - `human_input_required` blocks affected refs/slices/dependencies for external clarification
@@ -2034,4 +2180,4 @@ Suggested implementation order:
 8. Add parent FR rollup rules. [10C-2A implemented as a derived ledger]
 9. Run focused tests, then a real full-product smoke rebaseline.
 
-Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 6F proves a stalled child worker can be killed visibly, revived by session id, and still pass normal review/verification gates before acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Phase 8A prevents backend-only acceptance from masquerading as product completion. Phase 8B proves the full-product path can continue into a dashboard lane and accept only after dashboard verification plus local start/API probes. Phase 8C-1 gives full-product acceptance structured product evidence and a resettable real-agent command. Phase 8C-2 proved real agents can run but exposed reviewer-loop blocking around command policy. Phase 8C-3 proved the reviewer fix worked and backend reached deterministic acceptance, then exposed overseer prompt/state drift. Phase 8C-4 adds compact actionable overseer state and direct prompt delivery. Phase 8C-5 proved compact state fixed active-slice dispatch, but exposed real-run budget/dependency visibility gaps. Phase 8C-6 calibrates the budget and makes missing dashboard dependency refs explicit. Phase 8C-7 proved the lower-level planner blocks premature dashboard work but exposed missing orchestration-priority guidance. Phase 8C-8 adds source pull queues and dependency preflight. Phase 8C-9 proved accepted backend dependencies unlock dashboard work and exposed Windows prompt-length failure. Phase 8C-10 moves overseer launch to artifact-backed prompts and gets the dashboard slice accepted. Phase 8C-11 turns final product-readiness blockers into visible runtime-capability work. Phase 8C-12 proved the real runtime-capability work can complete and exposed stale escalation and child-process lifecycle issues. Phase 8C-13 proved the full real run can accept after reviewer rework and product runtime repair, then hardened stale-warning cleanup for real overseer wording. Phase 8C-14 confirmed the hardening in a fresh real full-product run: accepted product readiness, no failed assertions, and no stale active escalations. Phase 8C-15 preserves the terminal workspace after completion and archives final target snapshots so later reset-first runs do not erase the only runnable product copy. Phase 8C-16 lets reviewers use normal tooling, adds workflow-level product proof, removes the live npm shell-warning path, clears stale reviewer diagnostics after product acceptance, and improves agent signal visibility. Phase 8C-17 adds supervised quiet-child recovery and cleaner heartbeat semantics. Phase 8C-18 proved the real harness can produce a runnable product again and hardened reset cleanup, safe-directory guidance, warning amplification, and product probe isolation before the next confirmation run. Phase 8C-19 proved the final gate can block cleanly on product readiness while all implementation slices are accepted, then hardened the mark-paid workflow probe for wrapped API response shapes. Phase 10A turns coverage into actionable requirements state. Phase 10B starts the Super Overseer zoom-in layer with durable prompts and run/slice focus packets. Phase 10C makes verification obligations and requirement-ledger rollups the next engine-room foundation. Phase 10C-1D adds the structured Sleuth Review Gate so independent reviewers block fake-ready, hollow-proof, stub-backed, or runtime-unfit implementation even when per-ref evidence is present. Phase 10C-2A adds a derived requirement ledger to `/api/coverage`, preserves direct status separately from ledger status, and makes parent FR rollups explicit so container FRs can complete through accepted child ACs while incomplete child ACs keep their parent visibly incomplete. Phase 10C-2B makes human-verification obligations operational: verifier output marks clear-but-human refs as `awaiting_human_verification`, writes JSON/Markdown human verification packets, records packet artifact evidence, and exposes packet links through coverage human paths. Phase 10C-2C adds `swarm human-verify` so a human result can record `human_verified`, `failed`, or `needs_rework`, update FR/AC evidence, complete or keep leases active, update slice/dependency status, and surface the final human packet state in coverage. Phase 10C-2D keeps the ledger derived for now and makes the Coverage UI consume ledger status, direct status, rollup reason, obligation mode, human packet/result state, and ledger filters directly. Phase 10C-2G captures the 2026-06-17 real CLI run where all implementation slices accepted but final product readiness failed because the app ignored the harness-assigned `PORT`; the product probe now records assigned vs effective URLs and retries against the local URL printed by `npm start`.
+Phase 6A proves source-spec immutability stops the loop before hidden work. Phase 6B proves review repair can block, recover, clear resolved blockers, and proceed to deterministic verification. Phase 6C proves stale worker recovery can mark, restart, review, and verify without silently accepting blocked scope. Phase 6D proves fresh role context can be regenerated from durable state mid-run and still continue to acceptance. Phase 6E proves proof-churn concerns stay visible as warnings while review and verification still gate acceptance. Phase 6F proves a stalled child worker can be killed visibly, revived by session id, and still pass normal review/verification gates before acceptance. Phase 7A makes each run easier to inspect after the fact with a generated artifact index and explicit outcome classification. Phase 7B-1 makes repeated runs comparable across resets. Phase 7B-2 exposes those archived runs, comparisons, and artifact indexes in the read-only web viewer. Phase 8A prevents backend-only acceptance from masquerading as product completion. Phase 8B proves the full-product path can continue into a dashboard lane and accept only after dashboard verification plus local start/API probes. Phase 8C-1 gives full-product acceptance structured product evidence and a resettable real-agent command. Phase 8C-2 proved real agents can run but exposed reviewer-loop blocking around command policy. Phase 8C-3 proved the reviewer fix worked and backend reached deterministic acceptance, then exposed overseer prompt/state drift. Phase 8C-4 adds compact actionable overseer state and direct prompt delivery. Phase 8C-5 proved compact state fixed active-slice dispatch, but exposed real-run budget/dependency visibility gaps. Phase 8C-6 calibrates the budget and makes missing dashboard dependency refs explicit. Phase 8C-7 proved the lower-level planner blocks premature dashboard work but exposed missing orchestration-priority guidance. Phase 8C-8 adds source pull queues and dependency preflight. Phase 8C-9 proved accepted backend dependencies unlock dashboard work and exposed Windows prompt-length failure. Phase 8C-10 moves overseer launch to artifact-backed prompts and gets the dashboard slice accepted. Phase 8C-11 turns final product-readiness blockers into visible runtime-capability work. Phase 8C-12 proved the real runtime-capability work can complete and exposed stale escalation and child-process lifecycle issues. Phase 8C-13 proved the full real run can accept after reviewer rework and product runtime repair, then hardened stale-warning cleanup for real overseer wording. Phase 8C-14 confirmed the hardening in a fresh real full-product run: accepted product readiness, no failed assertions, and no stale active escalations. Phase 8C-15 preserves the terminal workspace after completion and archives final target snapshots so later reset-first runs do not erase the only runnable product copy. Phase 8C-16 lets reviewers use normal tooling, adds workflow-level product proof, removes the live npm shell-warning path, clears stale reviewer diagnostics after product acceptance, and improves agent signal visibility. Phase 8C-17 adds supervised quiet-child recovery and cleaner heartbeat semantics. Phase 8C-18 proved the real harness can produce a runnable product again and hardened reset cleanup, safe-directory guidance, warning amplification, and product probe isolation before the next confirmation run. Phase 8C-19 proved the final gate can block cleanly on product readiness while all implementation slices are accepted, then hardened the mark-paid workflow probe for wrapped API response shapes. Phase 10A turns coverage into actionable requirements state. Phase 10B starts the Super Overseer zoom-in layer with durable prompts and run/slice focus packets. Phase 10C makes verification obligations and requirement-ledger rollups the next engine-room foundation. Phase 10C-1D adds the structured Sleuth Review Gate so independent reviewers block fake-ready, hollow-proof, stub-backed, or runtime-unfit implementation even when per-ref evidence is present. Phase 10C-2A adds a derived requirement ledger to `/api/coverage`, preserves direct status separately from ledger status, and makes parent FR rollups explicit so container FRs can complete through accepted child ACs while incomplete child ACs keep their parent visibly incomplete. Phase 10C-2B makes human-verification obligations operational: verifier output marks clear-but-human refs as `awaiting_human_verification`, writes JSON/Markdown human verification packets, records packet artifact evidence, and exposes packet links through coverage human paths. Phase 10C-2C adds `swarm human-verify` so a human result can record `human_verified`, `failed`, or `needs_rework`, update FR/AC evidence, complete or keep leases active, update slice/dependency status, and surface the final human packet state in coverage. Phase 10C-2D keeps the ledger derived for now and makes the Coverage UI consume ledger status, direct status, rollup reason, obligation mode, human packet/result state, and ledger filters directly. Phase 10C-2G captures the 2026-06-17 real CLI run where all implementation slices accepted but final product readiness failed because the app ignored the harness-assigned `PORT`; the product probe now records assigned vs effective URLs and retries against the local URL printed by `npm start`. Phase 10C-2I confirms the corrected full CLI path with a live accepted run, adds controlled dashboard-title probe matching, isolates Codex child agents from personal user config by default, and broadens historical warning cleanup for prior-slice git-access diagnostics.

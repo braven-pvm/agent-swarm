@@ -295,8 +295,24 @@ test("planner creates read-only verification obligations that flow through promp
   const reviewStarted = events.find((event) => event.type === "review.started" && event.payload.reviewerActor === "obligation-reviewer");
   assert.ok(workerStarted?.payload.promptPath);
   assert.ok(reviewStarted?.payload.promptPath);
-  assert.match(fs.readFileSync(String(workerStarted.payload.promptPath), "utf8"), /Verification obligations \(read-only\)/);
-  assert.match(fs.readFileSync(String(reviewStarted.payload.promptPath), "utf8"), /Judge evidence against the read-only verification obligations/);
+  assert.ok(workerStarted.payload.skillBindingPath);
+  assert.ok(workerStarted.payload.skillPacketPath);
+  assert.ok(reviewStarted.payload.skillBindingPath);
+  assert.ok(Array.isArray(workerStarted.payload.skills.required));
+  assert.ok(workerStarted.payload.skills.required.some((skill) => skill.id === "implementation-worker"));
+  assert.ok(reviewStarted.payload.skills.required.some((skill) => skill.id === "sleuth-review"));
+  assert.ok(fs.existsSync(String(workerStarted.payload.skillBindingPath)));
+  assert.ok(fs.existsSync(String(workerStarted.payload.skillPacketPath)));
+  const workerPrompt = fs.readFileSync(String(workerStarted.payload.promptPath), "utf8");
+  assert.match(workerPrompt, /Harness-managed skills/);
+  assert.match(workerPrompt, /implementation-worker/);
+  assert.match(workerPrompt, /Verification obligations \(read-only\)/);
+  assert.match(workerPrompt, /Return status "passed" when your implementation work and worker evidence are complete/);
+  assert.match(workerPrompt, /Do not return "needs_human" merely because independent review/);
+  const reviewPrompt = fs.readFileSync(String(reviewStarted.payload.promptPath), "utf8");
+  assert.match(reviewPrompt, /Harness-managed skills/);
+  assert.match(reviewPrompt, /sleuth-review/);
+  assert.match(reviewPrompt, /Judge evidence against the read-only verification obligations/);
   assert.ok(commandEvidence);
   const frAcResults = commandEvidence.payload.frAcResults;
   assert.ok(Array.isArray(frAcResults));
@@ -764,6 +780,14 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
   const restarted = JSON.parse(runSwarm(workspace, ["observe", "--events", "30"]));
   assert.ok(restarted.agentRuns.some((item) => item.id !== "RUN-stale001" && item.status === "completed"));
   assert.ok(restarted.recentEvents.some((event) => event.type === "recovery.restart_completed"));
+  assert.ok(
+    !restarted.activeEscalations.some((item) => item.entityId === sliceId && item.message.includes("RUN-stale001")),
+    "successful recovery restart should clear the stale blocker for the previous run",
+  );
+  assert.ok(
+    restarted.recentEvents.some((event) => event.type === "escalation.cleared" && event.payload?.clearedAfterRecovery),
+    "successful recovery restart should record a recovery clearance event",
+  );
 });
 
 function runSwarm(workspace, args) {

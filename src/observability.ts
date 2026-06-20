@@ -14,7 +14,7 @@ import {
   sourceTags,
 } from "./source-index.js";
 import { SwarmStore } from "./storage.js";
-import type { FrAcVerificationResult, RunMode, SliceRecord } from "./types.js";
+import type { FrAcVerificationResult, HarnessEvent, RunMode, SliceRecord } from "./types.js";
 
 export const RUN_MODE_META_KEY = "run_mode";
 export const DEFAULT_RUN_MODE: RunMode = "unspecified";
@@ -508,7 +508,7 @@ export interface RunObservabilitySummary {
     };
     checks?: { total: number; passed: number; failed: number };
     blockers: Array<{ id?: string; label?: string; message?: string; severity?: string }>;
-    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean };
+    probes?: { ui?: boolean; api?: boolean; markPaid?: boolean; workflow?: boolean };
     artifacts?: Record<string, string>;
   };
   slices: {
@@ -638,7 +638,7 @@ export function buildCoverage(store: SwarmStore): CoverageSummary {
     const { evidence, frAcResults, reviewResult } = sliceEvidence(owning.id);
     const frAcResult = frAcResults.find((item) => item.ref === ref);
     const obligation = owning.verificationObligations.find((item) => item.ref === ref);
-    const reviewFinding = reviewResult?.frAcFindings.find((item) => item.ref === ref);
+    const reviewFinding = reviewResult ? reviewFindingForRef(reviewResult.frAcFindings, ref) : undefined;
     const lane = lanes.find((item) => item.id === owning.laneId);
     const target = targets.find((item) => item.id === owning.targetId);
     const relatedAgentRuns = agentRuns.filter((item) => item.sliceId === owning.id);
@@ -1093,7 +1093,7 @@ export function buildRunObservability(store: SwarmStore, workspace: string): Run
   const heartbeats = store.listHeartbeats();
   const activeEscalations = store.listEscalations("active");
   const summary = readLiveRunSummary(workspace);
-  const productReadiness = objectValue(summary?.productReadiness) ?? readProductReadiness(workspace);
+  const productReadiness = readProductReadiness(workspace, summary) ?? objectValue(summary?.productReadiness);
   const scenario = stringValue(summary?.scenario) ??
     [...heartbeats, ...activeEscalations]
       .map((item) => item.entityId)
@@ -1224,11 +1224,81 @@ function buildCoverageInterpretation(
 }
 
 function readLiveRunSummary(workspace: string): Record<string, unknown> | undefined {
-  return safeReadWorkspaceJson(path.resolve(workspace), path.join(path.resolve(workspace), "live-agent-run-summary.json"));
+  const root = path.resolve(workspace);
+  return firstReadableWorkspaceJson(root, liveRunSummaryCandidates(root));
 }
 
-function readProductReadiness(workspace: string): Record<string, unknown> | undefined {
-  return safeReadWorkspaceJson(path.resolve(workspace), path.join(path.resolve(workspace), "live-agent-run-artifacts", "product-readiness.json"));
+function readProductReadiness(
+  workspace: string,
+  summary?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const root = path.resolve(workspace);
+  return firstReadableWorkspaceJson(root, productReadinessCandidates(root, summary));
+}
+
+function readLiveRunManifest(root: string): Record<string, unknown> | undefined {
+  return safeReadWorkspaceJson(root, path.join(root, "live-agent-smoke.json"));
+}
+
+function liveRunSummaryCandidates(root: string): string[] {
+  const manifest = readLiveRunManifest(root);
+  const liveRun = objectValue(manifest?.liveRun);
+  const manifestSummaryPath = stringValue(liveRun?.summaryPath);
+  return uniquePaths([
+    manifestSummaryPath,
+    path.join(root, "live-agent-run-summary.json"),
+    ...newestWorkspaceFiles(root, (name) => name.endsWith("-live-summary.json")),
+  ]);
+}
+
+function productReadinessCandidates(root: string, summary?: Record<string, unknown>): string[] {
+  const manifest = readLiveRunManifest(root);
+  const liveRun = objectValue(manifest?.liveRun);
+  const artifacts = objectValue(summary?.artifacts);
+  const manifestArtifactsPath = stringValue(liveRun?.artifactsPath);
+  return uniquePaths([
+    stringValue(artifacts?.productReadiness),
+    manifestArtifactsPath ? path.join(manifestArtifactsPath, "product-readiness.json") : undefined,
+    path.join(root, "live-agent-run-artifacts", "product-readiness.json"),
+    ...newestWorkspaceFiles(root, (name, entry) => entry.isDirectory() && name.endsWith("-live-artifacts"))
+      .map((dirPath) => path.join(dirPath, "product-readiness.json")),
+  ]);
+}
+
+function firstReadableWorkspaceJson(root: string, candidates: Array<string | undefined>): Record<string, unknown> | undefined {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const parsed = safeReadWorkspaceJson(root, candidate);
+    if (parsed) return parsed;
+  }
+  return undefined;
+}
+
+function newestWorkspaceFiles(
+  root: string,
+  predicate: (name: string, entry: fs.Dirent) => boolean,
+): string[] {
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((entry) => predicate(entry.name, entry))
+      .map((entry) => path.join(root, entry.name))
+      .sort((left, right) => fileMtime(right) - fileMtime(left));
+  } catch {
+    return [];
+  }
+}
+
+function fileMtime(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function uniquePaths(paths: Array<string | undefined>): string[] {
+  return unique(paths.filter((item): item is string => typeof item === "string").map((item) => path.resolve(item)));
 }
 
 function safeReadWorkspaceJson(workspace: string, filePath: string): Record<string, unknown> | undefined {
@@ -1259,17 +1329,18 @@ function summarizeRunOutcome(summary: Record<string, unknown> | undefined): RunO
   }
   const classification = objectValue(summary.outcomeClassification);
   const fault = objectValue(summary.fault);
+  const finalOutcome = stringValue(summary.finalOutcome);
   return {
     available: true,
     source: "live-summary",
     runId: stringValue(summary.runId),
-    finalOutcome: stringValue(summary.finalOutcome),
+    finalOutcome,
     finalReason: stringValue(summary.finalReason),
-    accepted: stringValue(summary.finalOutcome) === "accepted",
+    accepted: finalOutcome === "accepted",
     classification: {
-      code: stringValue(classification?.code),
-      severity: stringValue(classification?.severity),
-      explanation: stringValue(classification?.explanation),
+      code: stringValue(classification?.code) ?? finalOutcome ?? "unknown",
+      severity: stringValue(classification?.severity) ?? outcomeSeverity(finalOutcome),
+      explanation: stringValue(classification?.explanation) ?? stringValue(summary.finalReason),
     },
     generatedAt: stringValue(summary.generatedAt),
     phase: stringValue(summary.phase),
@@ -1300,20 +1371,29 @@ function summarizeReadiness(
   const uiProbe = objectValue(probes?.ui);
   const apiProbe = objectValue(probes?.api);
   const markPaidProbe = objectValue(probes?.markPaid);
+  const workflowProbe = objectValue(probes?.workflow);
   const productSlices = objectValue(readiness.productReadinessSlices);
   const productSliceIds = arrayValue(productSlices?.ids)
     .map(objectValue)
     .filter((item): item is Record<string, unknown> => Boolean(item));
+  const acceptedProductSlices = arrayValue(readiness.acceptedProductSlices)
+    .map(objectValue)
+    .filter((item): item is Record<string, unknown> => Boolean(item));
   const acceptedRefs = unique(
-    productSliceIds
-      .filter((item) => stringValue(item.status) === "accepted")
-      .flatMap((item) => stringArray(item.refs)),
+    [
+      ...productSliceIds
+        .filter((item) => stringValue(item.status) === "accepted")
+        .flatMap((item) => stringArray(item.refs)),
+      ...acceptedProductSlices.flatMap((item) => stringArray(item.refs)),
+    ],
   );
   return {
     available: true,
     passed: readiness.passed === true,
     productName: stringValue(readiness.productName),
-    manualUrl: stringValue(objectValue(readiness.commands)?.manualUrl),
+    manualUrl: stringValue(objectValue(readiness.commands)?.manualUrl) ??
+      stringValue(readiness.manualUrl) ??
+      stringValue(objectValue(summary?.productReadiness)?.manualUrl),
     acceptedRefs,
     dependencyGate: dependencyGate
       ? {
@@ -1337,10 +1417,18 @@ function summarizeReadiness(
     probes: {
       ui: uiProbe?.passed === true,
       api: apiProbe?.passed === true,
-      markPaid: markPaidProbe?.passed === true,
+      markPaid: markPaidProbe?.passed === true || workflowProbe?.passed === true,
+      workflow: workflowProbe?.passed === true,
     },
     artifacts: stringRecord(objectValue(summary?.artifacts)),
   };
+}
+
+function outcomeSeverity(finalOutcome: string | undefined): string {
+  if (finalOutcome === "accepted") return "success";
+  if (finalOutcome === "failed" || finalOutcome === "human_required") return "danger";
+  if (finalOutcome === "blocked") return "warning";
+  return "neutral";
 }
 
 function compareOutcomeToCoverage(
@@ -1614,12 +1702,40 @@ function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function skillBindingsByRunId(events: HarnessEvent[]): Map<string, Record<string, unknown>> {
+  const map = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    const runId = typeof event.payload.runId === "string" ? event.payload.runId : undefined;
+    if (!runId) continue;
+    const skills = event.payload.skills;
+    const skillBindingPath = event.payload.skillBindingPath;
+    const skillPacketPath = event.payload.skillPacketPath;
+    const skillIsolationFindings = event.payload.skillIsolationFindings;
+    if (!skills && !skillBindingPath && !skillPacketPath && !skillIsolationFindings) continue;
+    map.set(runId, {
+      skills,
+      skillBindingPath,
+      skillPacketPath,
+      skillIsolationFindings,
+    });
+  }
+  return map;
+}
+
+function enrichAgentRunWithSkills(run: ReturnType<SwarmStore["listAgentRuns"]>[number], skillBindings: Map<string, Record<string, unknown>>) {
+  const binding = skillBindings.get(run.id);
+  return binding ? { ...run, ...binding } : run;
+}
+
 export function buildObservabilitySnapshot(store: SwarmStore, workspace: string, eventCount: number) {
   const slices = store.listSlices();
   const leases = store.listLeases();
   const evidence = store.listEvidence();
   const heartbeats = store.listHeartbeats();
   const activeEscalations = store.listEscalations("active");
+  const events = store.listEvents();
+  const skillBindings = skillBindingsByRunId(events);
+  const agentRuns = store.listAgentRuns();
   const scenario = [...heartbeats, ...activeEscalations]
     .map((x) => x.entityId)
     .find((id) => typeof id === "string" && id.startsWith("scenario:"))
@@ -1642,13 +1758,13 @@ export function buildObservabilitySnapshot(store: SwarmStore, workspace: string,
       evidence: evidence.filter((item) => item.sliceId === slice.id),
       frAcResults: latestFrAcResults(evidence.filter((item) => item.sliceId === slice.id)),
       reviewResult: latestReviewResult(evidence.filter((item) => item.sliceId === slice.id)),
-      agentRuns: store.listAgentRuns().filter((run) => run.sliceId === slice.id),
+      agentRuns: agentRuns.filter((run) => run.sliceId === slice.id).map((run) => enrichAgentRunWithSkills(run, skillBindings)),
     })),
     dependencies: store.listDependencies().map((dependency) => ({
       ...dependency,
       status: currentDependencyStatus(store, dependency),
     })),
-    agentRuns: store.listAgentRuns(),
+    agentRuns: agentRuns.map((run) => enrichAgentRunWithSkills(run, skillBindings)),
     heartbeats,
     activeEscalations,
     checkpoints: store.listCheckpoints(),
@@ -1794,6 +1910,12 @@ export function parseRunMode(value: string): RunMode {
 export function currentRunMode(store: SwarmStore): RunMode {
   const value = store.getMeta(RUN_MODE_META_KEY);
   return value ? parseRunMode(value) : DEFAULT_RUN_MODE;
+}
+
+function reviewFindingForRef(findings: ReviewResult["frAcFindings"], ref: string): ReviewResult["frAcFindings"][number] | undefined {
+  const exact = findings.find((item) => item.ref === ref);
+  if (exact) return exact;
+  return findings.find((item) => item.ref.startsWith(`${ref}.`));
 }
 
 export function latestReviewResult(evidence: Array<ReturnType<SwarmStore["listEvidence"]>[number]>): ReviewResult | undefined {
