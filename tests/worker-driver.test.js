@@ -34,6 +34,20 @@ function baseSpec(dir) {
   };
 }
 
+function workerResult(overrides = {}) {
+  return {
+    status: "passed",
+    summary: "done",
+    changedFiles: ["src/app.js"],
+    commandsRun: ["npm test"],
+    testsRun: ["npm test"],
+    frAcCoverage: [{ ref: "AC-1", status: "covered", evidence: "test output" }],
+    risks: [],
+    nextRecommendation: "continue",
+    ...overrides,
+  };
+}
+
 test("registry exposes codex and claude drivers", () => {
   assert.deepEqual(workerDriverIds().sort(), ["claude", "codex"]);
   assert.equal(getWorkerDriver("codex")?.capabilities.resume, true);
@@ -129,21 +143,33 @@ test("codex resume invocation carries trusted local bypass when configured", () 
   assert.equal(args[1], "resume");
 });
 
-test("codex finalize reports ok from exit code and result file presence", () => {
+test("codex finalize requires a valid structured artifact and recovers bad exits", () => {
   const dir = tempDir();
   const spec = baseSpec(dir);
   const codex = getWorkerDriver("codex");
 
   const missing = codex.finalize({ exitCode: 0, stdout: "", spec });
-  assert.equal(missing.ok, true);
+  assert.equal(missing.ok, false);
   assert.equal(missing.structuredResultWritten, false);
+  assert.match(missing.failureReason, /missing/);
+
+  fs.writeFileSync(spec.resultPath, JSON.stringify(workerResult()), "utf8");
+  const present = codex.finalize({ exitCode: 0, stdout: "", spec });
+  assert.equal(present.ok, true);
+  assert.equal(present.structuredResultWritten, true);
+  assert.equal(present.resultArtifactRecovered, false);
+
+  const recovered = codex.finalize({ exitCode: 7, stdout: "", spec });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.structuredResultWritten, true);
+  assert.equal(recovered.resultArtifactRecovered, true);
+  assert.match(recovered.recoveryReason, /exited with status 7/);
 
   fs.writeFileSync(spec.resultPath, "{}", "utf8");
-  const present = codex.finalize({ exitCode: 0, stdout: "", spec });
-  assert.equal(present.structuredResultWritten, true);
-
-  const failed = codex.finalize({ exitCode: 1, stdout: "", spec });
-  assert.equal(failed.ok, false);
+  const invalid = codex.finalize({ exitCode: 0, stdout: "", spec });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.structuredResultWritten, false);
+  assert.match(invalid.failureReason, /validation/);
 });
 
 test("driver command honors SWARM_<DRIVER>_COMMAND and SWARM_<DRIVER>_ARGS", () => {
@@ -204,19 +230,10 @@ test("claude adapter applies driver config and resume session", () => {
 test("claude finalize writes validated structured output to the result file", () => {
   const dir = tempDir();
   const spec = baseSpec(dir);
-  const workerResult = {
-    status: "passed",
-    summary: "done",
-    changedFiles: ["src/app.js"],
-    commandsRun: ["npm test"],
-    testsRun: ["npm test"],
-    frAcCoverage: [{ ref: "AC-1", status: "covered", evidence: "test output" }],
-    risks: [],
-    nextRecommendation: "continue",
-  };
+  const resultPayload = workerResult();
   const stdout = [
     JSON.stringify({ type: "system", subtype: "init", session_id: "s-1" }),
-    JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "s-1", total_cost_usd: 0.05, structured_output: workerResult }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "s-1", total_cost_usd: 0.05, structured_output: resultPayload }),
   ].join("\n");
 
   const finalization = getWorkerDriver("claude").finalize({ exitCode: 0, stdout, spec });
@@ -224,7 +241,28 @@ test("claude finalize writes validated structured output to the result file", ()
   assert.equal(finalization.ok, true);
   assert.equal(finalization.structuredResultWritten, true);
   assert.equal(finalization.costUsd, 0.05);
-  assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), workerResult);
+  assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), resultPayload);
+});
+
+test("claude finalize recovers a bad process exit when structured output is valid", () => {
+  const dir = tempDir();
+  const spec = baseSpec(dir);
+  const resultPayload = workerResult();
+  const stdout = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: "s-1",
+    structured_output: resultPayload,
+  });
+
+  const finalization = getWorkerDriver("claude").finalize({ exitCode: 9, stdout, spec });
+
+  assert.equal(finalization.ok, true);
+  assert.equal(finalization.structuredResultWritten, true);
+  assert.equal(finalization.resultArtifactRecovered, true);
+  assert.match(finalization.recoveryReason, /exited with status 9/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(spec.resultPath, "utf8")), resultPayload);
 });
 
 test("claude finalize fails on error results and missing structured output", () => {
@@ -279,17 +317,7 @@ test("codex resume invocation includes a model override when provided", () => {
 test("claude finalize omits costUsd when total_cost_usd is absent", () => {
   const dir = tempDir();
   const spec = baseSpec(dir);
-  const workerResult = {
-    status: "passed",
-    summary: "done",
-    changedFiles: [],
-    commandsRun: [],
-    testsRun: [],
-    frAcCoverage: [],
-    risks: [],
-    nextRecommendation: "continue",
-  };
-  const stdout = JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: workerResult });
+  const stdout = JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: workerResult({ changedFiles: [], commandsRun: [], testsRun: [], frAcCoverage: [] }) });
   const finalization = getWorkerDriver("claude").finalize({ exitCode: 0, stdout, spec });
   assert.equal(finalization.ok, true);
   assert.equal(finalization.costUsd, undefined);

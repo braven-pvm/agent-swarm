@@ -1758,6 +1758,8 @@ recovery
             ok: finalization.ok,
             failureReason: finalization.failureReason,
             costUsd: finalization.costUsd,
+            resultArtifactRecovered: finalization.resultArtifactRecovered,
+            recoveryReason: finalization.recoveryReason,
             exitCode: result.status,
             workerEvents,
             structuredResultWritten: finalization.structuredResultWritten,
@@ -2165,6 +2167,8 @@ async function executeOverseerRun(input: {
       executeLimit: input.executeLimit ?? 3,
       driver: input.driver,
       costUsd: overseerFinalization.costUsd,
+      resultArtifactRecovered: overseerFinalization.resultArtifactRecovered,
+      recoveryReason: overseerFinalization.recoveryReason,
       skillBinding,
       skillIsolationFindings,
     });
@@ -2199,6 +2203,8 @@ async function executeOverseerRun(input: {
           driver: input.driver,
           ok: overseerFinalization.ok,
           failureReason: overseerFinalization.failureReason,
+          resultArtifactRecovered: overseerFinalization.resultArtifactRecovered,
+          recoveryReason: overseerFinalization.recoveryReason,
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
@@ -2438,6 +2444,8 @@ async function executeWorkerRun(input: {
         structuredResultWritten: finalization.structuredResultWritten,
         failureReason: finalization.failureReason,
         costUsd: finalization.costUsd,
+        resultArtifactRecovered: finalization.resultArtifactRecovered,
+        recoveryReason: finalization.recoveryReason,
         idleTimedOut: result.idleTimedOut,
         runId,
         previousRunId: input.previousRunId,
@@ -2710,6 +2718,8 @@ async function executeReviewRun(input: {
           structuredResultWritten: reviewFinalization.structuredResultWritten,
           failureReason: reviewFinalization.failureReason,
           costUsd: reviewFinalization.costUsd,
+          resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
+          recoveryReason: reviewFinalization.recoveryReason,
           idleTimedOut: result.idleTimedOut,
           runId,
           promptPath,
@@ -2750,6 +2760,8 @@ async function executeReviewRun(input: {
           exitCode: result.status,
           driver: input.driver,
           failureReason: reviewFinalization.failureReason,
+          resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
+          recoveryReason: reviewFinalization.recoveryReason,
           runId,
           promptPath,
           eventsPath: jsonlPath,
@@ -2976,7 +2988,7 @@ function printWorkerRunResult(result: WorkerRunResult): void {
 
 function printReviewRunResult(result: ReviewRunResult): void {
   const reviewStatus = result.reviewResult?.status ?? "invalid";
-  console.log(`Review ${result.exitCode === 0 && result.reviewResult ? reviewStatus : "failed"} for ${result.sliceId}`);
+  console.log(`Review ${result.reviewResult ? reviewStatus : "failed"} for ${result.sliceId}`);
   console.log(`  run: ${result.runId}`);
   console.log(`  prompt: ${result.promptPath}`);
   console.log(`  events: ${result.eventsPath}`);
@@ -5689,6 +5701,8 @@ function applyOverseerDecision(input: {
   executeLimit: number;
   driver: string;
   costUsd?: number;
+  resultArtifactRecovered?: boolean;
+  recoveryReason?: string;
   skillBinding?: SkillBindingResult;
   skillIsolationFindings?: SkillIsolationFinding[];
 }): OverseerCommandExecution[] {
@@ -5834,6 +5848,8 @@ function applyOverseerDecision(input: {
         nextAction: input.decision.nextAction,
         driver: input.driver,
         costUsd: input.costUsd,
+        resultArtifactRecovered: input.resultArtifactRecovered,
+        recoveryReason: input.recoveryReason,
         skills: input.skillBinding ? summarizeSkillBinding(input.skillBinding) : undefined,
         skillBindingPath: input.skillBinding?.bindingPath,
         skillPacketPath: input.skillBinding?.packetPath,

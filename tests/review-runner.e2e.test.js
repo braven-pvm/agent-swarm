@@ -65,6 +65,43 @@ test("codex reviewer records structured review evidence and gates final verifica
   assert.match(report, /recommendation: Proceed to deterministic verification./);
 });
 
+test("codex reviewer recovers when a valid review artifact exists despite bad process exit", () => {
+  const { workspace, sliceId } = setupWorkspace("test-review-artifact-recovery");
+  const fakeCodexScript = writeFakeReviewCodex();
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "artifact-recovery-worker"]);
+  const reviewOutput = runSwarm(
+    workspace,
+    ["review", sliceId, "--driver", "codex", "--actor", "artifact-recovery-reviewer"],
+    {
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      FAKE_REVIEW_STATUS: "accepted",
+      FAKE_REVIEW_REFS: JSON.stringify(refs),
+      FAKE_REVIEW_EXIT_CODE: "7",
+    },
+  );
+
+  assert.match(reviewOutput, /Review accepted/);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "80"]));
+  const slice = snapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(slice.status, "ready_for_review");
+  assert.equal(slice.reviewResult.status, "accepted");
+  assert.ok(
+    snapshot.agentRuns.some(
+      (run) => run.actor === "artifact-recovery-reviewer" && run.driver === "codex" && run.status === "completed",
+    ),
+  );
+  const reviewCompleted = snapshot.recentEvents.find(
+    (event) => event.type === "review.completed" && event.actor === "artifact-recovery-reviewer",
+  );
+  assert.equal(reviewCompleted.payload.exitCode, 7);
+  assert.equal(reviewCompleted.payload.structuredResultWritten, true);
+  assert.equal(reviewCompleted.payload.resultArtifactRecovered, true);
+  assert.match(reviewCompleted.payload.recoveryReason, /exited with status 7/);
+});
+
 test("deterministic verification accepts review findings wrapped with a result suffix", () => {
   const { workspace, sliceId } = setupWorkspace("test-review-suffix-refs");
   const fakeCodexScript = writeFakeReviewCodex();
@@ -272,6 +309,7 @@ const outputIndex = args.indexOf("--output-last-message");
 const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
 const status = process.env.FAKE_REVIEW_STATUS || "accepted";
 const refs = JSON.parse(process.env.FAKE_REVIEW_REFS || "[]");
+const exitCode = Number(process.env.FAKE_REVIEW_EXIT_CODE || "0");
 const accepted = status === "accepted";
 const prompt = readStdin() || args.at(-1) || "";
 const sandboxIndex = args.indexOf("--sandbox");
@@ -338,6 +376,7 @@ if (outputPath) {
   }) + "\\n", "utf8");
 }
 console.log(JSON.stringify({ type: "turn.completed" }));
+if (exitCode) process.exit(exitCode);
 `,
     "utf8",
   );

@@ -26,6 +26,8 @@ export interface WorkerFinalization {
   structuredResultWritten: boolean;
   failureReason?: string;
   costUsd?: number;
+  resultArtifactRecovered?: boolean;
+  recoveryReason?: string;
 }
 
 export interface WorkerDriverAdapter {
@@ -97,9 +99,50 @@ const codexDriver: WorkerDriverAdapter = {
     return { command, args, stdin: spec.prompt };
   },
   finalize({ exitCode, spec }) {
-    return { ok: exitCode === 0, structuredResultWritten: fs.existsSync(spec.resultPath) };
+    const artifact = validateResultArtifact(spec);
+    const recoveryReason = artifact.ok ? resultArtifactRecoveryReason(exitCode) : undefined;
+    return {
+      ok: artifact.ok,
+      structuredResultWritten: artifact.ok,
+      failureReason: artifact.ok ? undefined : artifact.reason,
+      resultArtifactRecovered: recoveryReason !== undefined,
+      recoveryReason,
+    };
   },
 };
+
+type ResultArtifactValidation = { ok: true } | { ok: false; reason: string };
+
+function validateResultArtifact(spec: WorkerRunSpec): ResultArtifactValidation {
+  if (!fs.existsSync(spec.resultPath)) {
+    return { ok: false, reason: `structured result artifact missing: ${spec.resultPath}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(spec.resultPath, "utf8")) as unknown;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `structured result artifact could not be parsed: ${error instanceof Error ? error.message : String(error)}`.slice(
+        0,
+        1000,
+      ),
+    };
+  }
+  const schema = spec.resultSchema ?? workerResultSchema;
+  const result = schema.safeParse(parsed);
+  if (!result.success) {
+    const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
+    return { ok: false, reason: `structured result artifact failed ${schemaLabel} validation: ${result.error.message}`.slice(0, 1000) };
+  }
+  return { ok: true };
+}
+
+function resultArtifactRecoveryReason(exitCode: number | null): string | undefined {
+  if (exitCode === 0) return undefined;
+  const exitLabel = exitCode === null ? "without an exit code" : `with status ${exitCode}`;
+  return `child process exited ${exitLabel} after writing a valid structured result artifact`;
+}
 
 function lastResultEvent(stdout: string): Record<string, unknown> | undefined {
   const lines = stdout
@@ -194,9 +237,17 @@ const claudeDriver: WorkerDriverAdapter = {
     } else {
       failureReason = "claude result event did not include structured_output";
     }
-    const ok = exitCode === 0 && resultEvent !== undefined && resultEvent.is_error !== true && structuredResultWritten;
+    const ok = resultEvent !== undefined && resultEvent.is_error !== true && structuredResultWritten;
     const costUsd = typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined;
-    return { ok, structuredResultWritten, failureReason: ok ? undefined : failureReason, costUsd };
+    const recoveryReason = ok ? resultArtifactRecoveryReason(exitCode) : undefined;
+    return {
+      ok,
+      structuredResultWritten,
+      failureReason: ok ? undefined : failureReason,
+      costUsd,
+      resultArtifactRecovered: recoveryReason !== undefined,
+      recoveryReason,
+    };
   },
 };
 
