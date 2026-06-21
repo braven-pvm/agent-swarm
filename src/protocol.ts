@@ -103,6 +103,7 @@ export function defaultProtocol(): ProtocolConfig {
           overseer: { required: ["swarm-core", "planning-orchestration", "super-overseer", "recovery-focus"] },
           worker: { required: ["swarm-core", "implementation-worker", "verification-obligations"] },
           reviewer: { required: ["swarm-core", "verification-obligations", "sleuth-review"] },
+          skeptic: { required: ["swarm-core", "verification-obligations", "sleuth-review"] },
           verifier: { required: ["swarm-core", "verification-obligations", "deterministic-verifier"] },
           recovery: { required: ["swarm-core", "implementation-worker", "recovery-focus"] },
         },

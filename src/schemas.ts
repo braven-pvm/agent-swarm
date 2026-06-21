@@ -111,6 +111,26 @@ export const reviewResultSchema = z.object({
 
 export type ReviewResult = z.infer<typeof reviewResultSchema>;
 
+export const skepticFindingVerdictSchema = z.object({
+  ref: z.string().optional(), // FR/AC ref when challenging a frAcFinding (e.g. "AC-INV-001.1")
+  dimension: z.string().optional(), // sleuth dimension when challenging a qualityGate dimension (e.g. "runtime_path")
+  source: z.enum(["fr_ac_finding", "quality_dimension", "required_fix", "escalation"]),
+  verdict: z.enum(["real", "refuted", "uncertain"]),
+  severity: z.enum(["blocker", "major", "minor", "nit"]),
+  reasoning: z.string(),
+});
+
+export const skepticResultSchema = z.object({
+  status: z.enum(["upheld", "partially_refuted", "refuted", "uncertain"]),
+  summary: z.string(),
+  challengedReviewStatus: z.enum(["accepted", "repair_required", "blocked", "human_required"]),
+  findingVerdicts: z.array(skepticFindingVerdictSchema),
+  recommendation: z.string(),
+});
+
+export type SkepticFindingVerdict = z.infer<typeof skepticFindingVerdictSchema>;
+export type SkepticResult = z.infer<typeof skepticResultSchema>;
+
 export const overseerDecisionSchema = z.object({
   status: z.enum(["recommend_commands", "blocked", "human_required", "complete"]),
   summary: z.string(),

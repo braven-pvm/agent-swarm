@@ -4,6 +4,7 @@ import {
   workerResultSchema,
   reviewResultSchema,
   overseerDecisionSchema,
+  skepticResultSchema,
 } from "../dist/schemas.js";
 import {
   zodToDriverJsonSchema,
@@ -87,6 +88,16 @@ const validReview = {
   recommendation: "merge",
 };
 
+const validSkeptic = {
+  status: "upheld",
+  summary: "challenged the review findings independently",
+  challengedReviewStatus: "accepted",
+  findingVerdicts: [
+    { ref: "AC-1", source: "fr_ac_finding", verdict: "real", severity: "major", reasoning: "confirmed by independent inspection" },
+  ],
+  recommendation: "no change needed",
+};
+
 const validOverseer = {
   status: "recommend_commands",
   summary: "next steps",
@@ -147,6 +158,24 @@ const roles = [
       // qualityGate carries a Zod .default(), so Zod fills it when absent and accepts;
       // the JSON Schema keeps it required (matching the hand-written contract) and rejects.
       { label: "missing defaulted qualityGate", make: (v) => { const c = structuredClone(v); delete c.qualityGate; return c; } },
+    ],
+  },
+  {
+    name: "skeptic",
+    zodSchema: skepticResultSchema,
+    valid: validSkeptic,
+    expectedRequired: [
+      "status", "summary", "challengedReviewStatus", "findingVerdicts", "recommendation",
+    ],
+    zodRejects: [
+      { label: "missing required field", make: (v) => { const c = structuredClone(v); delete c.recommendation; return c; } },
+      { label: "bad enum value", make: (v) => ({ ...structuredClone(v), status: "go" }) },
+      { label: "bad nested verdict enum", make: (v) => { const c = structuredClone(v); c.findingVerdicts[0].verdict = "maybe"; return c; } },
+      { label: "bad nested severity enum", make: (v) => { const c = structuredClone(v); c.findingVerdicts[0].severity = "huge"; return c; } },
+    ],
+    stricterThanZod: [
+      { label: "extra unknown top-level field", make: (v) => ({ ...structuredClone(v), bogus: true }) },
+      { label: "extra unknown nested findingVerdicts field", make: (v) => { const c = structuredClone(v); c.findingVerdicts[0].bogus = 1; return c; } },
     ],
   },
   {

@@ -22,7 +22,7 @@ export type HeartbeatState =
   | "blocked";
 
 export type RunMode = "unspecified" | "fixture" | "scripted-codex" | "live-agent-smoke";
-export type AgentRole = "overseer" | "planner" | "worker" | "verifier" | "reviewer" | "recovery";
+export type AgentRole = "overseer" | "planner" | "worker" | "verifier" | "reviewer" | "recovery" | "skeptic";
 
 export interface SourceRef {
   adapterId: string;
@@ -171,7 +171,7 @@ export interface AgentRunRecord {
 export interface EvidenceRecord {
   id: string;
   sliceId: string;
-  kind: "command" | "worker_result" | "review_result" | "artifact" | "note";
+  kind: "command" | "worker_result" | "review_result" | "artifact" | "note" | "finding_challenge";
   summary: string;
   ref?: string;
   payload: Record<string, unknown>;

@@ -22,7 +22,15 @@ import {
   summarizePromptPayload,
 } from "./paths.js";
 import { pullNextSlice } from "./planner.js";
-import { overseerDecisionSchema, reviewResultSchema, workerResultSchema, type OverseerDecision, type ReviewResult } from "./schemas.js";
+import {
+  overseerDecisionSchema,
+  reviewResultSchema,
+  skepticResultSchema,
+  workerResultSchema,
+  type OverseerDecision,
+  type ReviewResult,
+  type SkepticResult,
+} from "./schemas.js";
 import { writeSchemaFromZod } from "./schema-json.js";
 import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
@@ -118,6 +126,19 @@ type ReviewRunResult = {
   resultPath: string;
   reviewerEvents: ReturnType<typeof ingestWorkerJsonl>;
   reviewResult?: ReviewResult;
+  stderr?: string;
+};
+
+type SkepticRunResult = {
+  sliceId: string;
+  runId: string;
+  exitCode: number | null;
+  promptPath: string;
+  eventsPath: string;
+  resultPath: string;
+  skepticEvents: ReturnType<typeof ingestWorkerJsonl>;
+  skepticResult?: SkepticResult;
+  challengedReviewEvidenceId?: string;
   stderr?: string;
 };
 
@@ -939,6 +960,32 @@ program
         model: options.model,
       });
       printReviewRunResult(result);
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command("skeptic")
+  .description("Run an independent skeptic that challenges the latest review findings for a slice")
+  .argument("<slice-id>", "slice identifier")
+  .option("--actor <actor>", "skeptic actor id shown in observability (must be distinct from worker/reviewer)", "skeptic")
+  .option("--driver <driver>", "skeptic driver (fixture or a registered driver)", "codex")
+  .option("--model <model>", "model override passed to the skeptic driver")
+  .action(async (sliceId: string, options: { actor: string; driver: string; model?: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const result = await executeSkepticRun({
+        workspace,
+        store,
+        sliceId,
+        actor: options.actor,
+        driver: parseWorkerDriver(options.driver),
+        model: options.model,
+      });
+      printSkepticRunResult(result);
     } finally {
       store.close();
     }
@@ -2940,6 +2987,391 @@ async function executeReviewRun(input: {
   };
 }
 
+/**
+ * RE-1 skeptic dispatch. Mirrors executeReviewRun (above) as a model-agnostic driver run,
+ * with these DELIBERATE divergences that keep the skeptic ADDITIVE — it records its verdict
+ * but NEVER touches the accept/review gate:
+ *  - records kind:"finding_challenge" evidence (NOT review_result) and emits skeptic.* events.
+ *  - DOES NOT call applyReviewOutcome, updateSliceStatus, updateDependenciesFor,
+ *    insertReviewEscalation, or clearResolvedReviewEscalations — none of the gate state is mutated.
+ *  - success heartbeat is "idle" (not "blocked"); a parse failure emits skeptic.failed but does
+ *    NOT block the slice or insert a review escalation (the explicit divergence from review.failed).
+ * A future reader should NOT "fix" these back toward the review path — consuming verdicts in
+ * gating is RE-2, intentionally out of scope here.
+ */
+async function executeSkepticRun(input: {
+  workspace: string;
+  store: SwarmStore;
+  sliceId: string;
+  actor: string;
+  driver: string;
+  model?: string;
+}): Promise<SkepticRunResult> {
+  const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
+  if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
+  validateSliceDispatchContract(slice);
+  const target = input.store.targetById(slice.targetId);
+  if (!target) throw new Error(`Target not found for slice: ${slice.targetId}`);
+  if (input.driver !== "fixture" && !getWorkerDriver(input.driver)) {
+    throw new Error(`Invalid skeptic driver: ${input.driver}. Expected one of: ${["fixture", ...workerDriverIds()].sort().join(", ")}.`);
+  }
+
+  // INDEPENDENCE GUARD (RE-1's whole point): the skeptic must be a DISTINCT actor, never the
+  // worker or reviewer for this slice. Derived from the durable agent-run LEDGER (not chat
+  // memory). Runs BEFORE any run/evidence/event is created so a rejected request leaves no
+  // residue (the CLI then exits non-zero via the thrown error).
+  const priorActors = input.store
+    .listAgentRuns()
+    .filter((run) => run.sliceId === slice.id && (run.role === "worker" || run.role === "reviewer"))
+    .map((run) => run.actor);
+  if (priorActors.includes(input.actor)) {
+    throw new Error(
+      `Skeptic actor must be independent: '${input.actor}' already acted as worker/reviewer on slice ${slice.id}. Use a distinct --actor.`,
+    );
+  }
+
+  // Read the findings to challenge — the SAME pattern readLatestReviewGate uses: the latest
+  // review_result evidence carrying a parseable reviewResult.
+  const reviewEvidence = input.store
+    .listEvidence(slice.id)
+    .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
+    .at(-1);
+  if (!reviewEvidence) {
+    throw new Error(`No review_result evidence to challenge for slice: ${slice.id}. Run \`swarm review\` first.`);
+  }
+  const parsedToChallenge = reviewResultSchema.safeParse(reviewEvidence.payload.reviewResult);
+  if (!parsedToChallenge.success) {
+    throw new Error(
+      `Latest review_result for slice ${slice.id} could not be parsed and cannot be challenged: ${parsedToChallenge.error.message}`,
+    );
+  }
+  const challengedReview = parsedToChallenge.data;
+  const challengedReviewEvidenceId = reviewEvidence.id;
+
+  const lane = input.store.listLanes().find((item) => item.id === slice.laneId);
+  const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
+  fs.mkdirSync(artifactPath, { recursive: true });
+  const runId = makeId("agentRun");
+  const resultPath = path.join(artifactPath, `skeptic-result-${runId}.json`);
+  const jsonlPath = path.join(artifactPath, `skeptic-events-${runId}.jsonl`);
+  const stderrPath = path.join(artifactPath, `skeptic-stderr-${runId}.log`);
+  const promptPath = path.join(artifactPath, `skeptic-prompt-${runId}.md`);
+  const schemaPath = path.join(input.workspace, "schemas", "skeptic-result.schema.json");
+  writeSkepticResultSchema(schemaPath);
+
+  const protocol = loadProtocol(target.path);
+  const skillBinding = prepareSkillBindings({
+    workspace: input.workspace,
+    targetPath: target.path,
+    artifactPath,
+    runId,
+    role: "skeptic",
+    protocol,
+  });
+  const prompt = buildSkepticPrompt({
+    slice,
+    targetPath: target.path,
+    laneName: lane?.name,
+    challengedReview,
+    challengedReviewEvidenceId,
+    skillPacket: skillBinding.promptSection,
+  });
+  fs.writeFileSync(promptPath, prompt, "utf8");
+  const now = new Date().toISOString();
+  const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
+
+  input.store.insertAgentRun({
+    id: runId,
+    sliceId: slice.id,
+    role: "skeptic",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: input.actor,
+    driver: input.driver,
+    status: "running",
+    attempt,
+    eventsPath: jsonlPath,
+    startedAt: now,
+    updatedAt: now,
+  });
+  input.store.upsertHeartbeat({
+    id: `heartbeat:${input.actor}`,
+    actor: input.actor,
+    state: "verifying",
+    detail: "Independent skeptic process started",
+    entityType: "slice",
+    entityId: slice.id,
+  });
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "skeptic.started",
+      entityType: "slice",
+      entityId: slice.id,
+      payload: {
+        targetPath: target.path,
+        laneId: slice.laneId,
+        skepticActor: input.actor,
+        driver: input.driver,
+        model: input.model,
+        runId,
+        attempt,
+        promptPath,
+        eventsPath: jsonlPath,
+        challengedReviewEvidenceId,
+        challengedReviewStatus: challengedReview.status,
+        skills: summarizeSkillBinding(skillBinding),
+        skillBindingPath: skillBinding.bindingPath,
+        skillPacketPath: skillBinding.packetPath,
+        verificationObligations: summarizeVerificationObligations(slice),
+      },
+    }),
+  );
+
+  let skepticFinalization: WorkerFinalization;
+  let result: {
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+    workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
+    idleTimedOut?: boolean;
+    resultArtifactRecoveryTriggered?: boolean;
+  };
+  if (input.driver === "fixture") {
+    const skepticResult = runFixtureSkeptic({ challengedReview });
+    fs.writeFileSync(resultPath, `${JSON.stringify(skepticResult)}\n`, "utf8");
+    result = {
+      status: 0,
+      stdout: `${JSON.stringify({ type: "fixture.skeptic.completed", sliceId: slice.id, actor: input.actor })}\n`,
+    };
+    skepticFinalization = { ok: true, structuredResultWritten: true };
+  } else {
+    const adapter = getWorkerDriver(input.driver)!;
+    const spec: WorkerRunSpec = {
+      prompt,
+      targetPath: target.path,
+      schemaPath,
+      resultPath,
+      model: input.model,
+      readOnly: false,
+      resultSchema: skepticResultSchema,
+      driverConfig: protocol.protocol.workers.drivers[input.driver] ?? {},
+    };
+    const invocation = adapter.buildInvocation(spec);
+    result = await spawnWorkerStreaming({
+      command: invocation.command,
+      args: invocation.args,
+      stdin: invocation.stdin,
+      cwd: target.path,
+      jsonlPath,
+      actor: input.actor,
+      sliceId: slice.id,
+      store: input.store,
+      driver: input.driver,
+      eventPrefix: "skeptic",
+      runId,
+      classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      resultArtifact: {
+        path: spec.resultPath,
+        isReady: () => validateResultArtifact(spec).ok,
+      },
+    });
+    skepticFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
+  }
+
+  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
+  const skepticEvents =
+    result.workerEvents ??
+    ingestWorkerJsonl({
+      store: input.store,
+      actor: input.actor,
+      sliceId: slice.id,
+      driver: input.driver,
+      jsonl: result.stdout ?? "",
+      eventPrefix: "skeptic",
+    });
+  const parsedSkeptic = readSkepticResultFile(resultPath);
+  const runCompleted = skepticFinalization.ok && parsedSkeptic.ok;
+  input.store.updateAgentRun(runId, {
+    status: runCompleted ? "completed" : "failed",
+    sessionId: skepticEvents.sessionId,
+    eventsPath: jsonlPath,
+    resultPath: fs.existsSync(resultPath) ? resultPath : undefined,
+    stderrPath: result.stderr ? stderrPath : undefined,
+  });
+  const skillIsolationFindings = recordSkillIsolationWarning({
+    store: input.store,
+    actor: input.actor,
+    runId,
+    entityType: "slice",
+    entityId: slice.id,
+    eventPrefix: "skeptic",
+    findings: skepticEvents.skillIsolationFindings,
+  });
+
+  if (parsedSkeptic.ok) {
+    // THE KEY DIVERGENCE — additive only. Record the challenge as evidence and emit skeptic.*
+    // events. We DELIBERATELY do NOT call applyReviewOutcome / updateSliceStatus /
+    // updateDependenciesFor / insertReviewEscalation — the skeptic never gates (RE-2).
+    const challengeEvidenceId = makeId("evidence");
+    input.store.insertEvidence({
+      id: challengeEvidenceId,
+      sliceId: slice.id,
+      kind: "finding_challenge",
+      summary: `Skeptic ${parsedSkeptic.result.status}: ${parsedSkeptic.result.summary}`,
+      ref: resultPath,
+      payload: {
+        path: resultPath,
+        skepticResult: parsedSkeptic.result,
+        challengedReviewEvidenceId,
+        skepticEvents,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "idle",
+      detail: "Independent skeptic completed",
+      entityType: "slice",
+      entityId: slice.id,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "skeptic.completed",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          exitCode: result.status,
+          driver: input.driver,
+          ok: skepticFinalization.ok,
+          structuredResultWritten: skepticFinalization.structuredResultWritten,
+          failureReason: skepticFinalization.failureReason,
+          costUsd: skepticFinalization.costUsd,
+          resultArtifactRecovered: skepticFinalization.resultArtifactRecovered,
+          recoveryReason: skepticFinalization.recoveryReason,
+          idleTimedOut: result.idleTimedOut,
+          resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
+          runId,
+          promptPath,
+          eventsPath: jsonlPath,
+          resultPath,
+          stderrPath: result.stderr ? stderrPath : undefined,
+          skills: summarizeSkillBinding(skillBinding),
+          skillBindingPath: skillBinding.bindingPath,
+          skillPacketPath: skillBinding.packetPath,
+          skepticEvents,
+          skillIsolationFindings,
+          skepticStatus: parsedSkeptic.result.status,
+          challengeEvidenceId,
+          challengedReviewEvidenceId,
+          challengedReviewStatus: parsedSkeptic.result.challengedReviewStatus,
+        },
+      }),
+    );
+    // One skeptic.finding_challenged event per verdict so observability can show the
+    // per-finding stance RE-2 will later consume.
+    for (const verdict of parsedSkeptic.result.findingVerdicts) {
+      input.store.addEvent(
+        createEvent({
+          actor: input.actor,
+          type: "skeptic.finding_challenged",
+          entityType: "slice",
+          entityId: slice.id,
+          payload: {
+            runId,
+            ref: verdict.ref,
+            dimension: verdict.dimension,
+            source: verdict.source,
+            verdict: verdict.verdict,
+            severity: verdict.severity,
+            reasoning: verdict.reasoning,
+            challengedReviewEvidenceId,
+          },
+        }),
+      );
+    }
+  } else {
+    // Parse-failure branch — mirror ONLY the event/heartbeat side. We DELIBERATELY do NOT
+    // updateSliceStatus("blocked") or insertReviewEscalation (those mutate gate state); that is
+    // the explicit divergence from the review.failed path.
+    const reason = parsedSkeptic.reason;
+    input.store.upsertHeartbeat({
+      id: `heartbeat:${input.actor}`,
+      actor: input.actor,
+      state: "blocked",
+      detail: reason,
+      entityType: "slice",
+      entityId: slice.id,
+    });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "skeptic.failed",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          exitCode: result.status,
+          driver: input.driver,
+          failureReason: skepticFinalization.failureReason,
+          resultArtifactRecovered: skepticFinalization.resultArtifactRecovered,
+          recoveryReason: skepticFinalization.recoveryReason,
+          resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
+          runId,
+          promptPath,
+          eventsPath: jsonlPath,
+          resultPath,
+          stderrPath: result.stderr ? stderrPath : undefined,
+          skills: summarizeSkillBinding(skillBinding),
+          skillBindingPath: skillBinding.bindingPath,
+          skillPacketPath: skillBinding.packetPath,
+          skepticEvents,
+          skillIsolationFindings,
+          reason,
+          challengedReviewEvidenceId,
+        },
+      }),
+    );
+  }
+
+  // Checkpoints do not touch the review gate. CheckpointRole has no "skeptic" member (types.ts is
+  // user-owned; RE-1 only added "skeptic" to AgentRole), so the slice checkpoint reuses the
+  // review-adjacent "reviewer" role and the agent_run checkpoint uses "recovery", exactly mirroring
+  // executeReviewRun's checkpoint pair without a third types.ts edit.
+  refreshCheckpoint({
+    store: input.store,
+    role: "reviewer",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: input.actor,
+    reason: parsedSkeptic.ok ? "Skeptic run completed." : "Skeptic run failed.",
+  });
+  refreshCheckpoint({
+    store: input.store,
+    role: "recovery",
+    entityType: "agent_run",
+    entityId: runId,
+    actor: input.actor,
+    reason: "Skeptic run available for recovery context.",
+  });
+
+  return {
+    sliceId: slice.id,
+    runId,
+    exitCode: result.status,
+    promptPath,
+    eventsPath: jsonlPath,
+    resultPath,
+    skepticEvents,
+    skepticResult: parsedSkeptic.ok ? parsedSkeptic.result : undefined,
+    challengedReviewEvidenceId,
+    stderr: result.stderr,
+  };
+}
+
 function spawnWorkerStreaming(input: {
   command: string;
   args: string[];
@@ -3208,6 +3640,24 @@ function printReviewRunResult(result: ReviewRunResult): void {
   if (result.reviewerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.reviewerEvents.parseErrorCount}`);
   console.log(`  result: ${result.resultPath}`);
   if (result.reviewResult) console.log(`  recommendation: ${result.reviewResult.recommendation}`);
+  if (result.stderr?.trim()) console.error(result.stderr.trim());
+}
+
+function printSkepticRunResult(result: SkepticRunResult): void {
+  const skepticStatus = result.skepticResult?.status ?? "invalid";
+  console.log(`Skeptic ${result.skepticResult ? skepticStatus : "failed"} for ${result.sliceId}`);
+  console.log(`  run: ${result.runId}`);
+  console.log(`  prompt: ${result.promptPath}`);
+  console.log(`  events: ${result.eventsPath}`);
+  console.log(`  ingested events: ${result.skepticEvents.eventCount}`);
+  if (result.skepticEvents.sessionId) console.log(`  session: ${result.skepticEvents.sessionId}`);
+  if (result.skepticEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.skepticEvents.parseErrorCount}`);
+  if (result.challengedReviewEvidenceId) console.log(`  challenged review evidence: ${result.challengedReviewEvidenceId}`);
+  console.log(`  result: ${result.resultPath}`);
+  if (result.skepticResult) {
+    console.log(`  finding verdicts: ${result.skepticResult.findingVerdicts.length}`);
+    console.log(`  recommendation: ${result.skepticResult.recommendation}`);
+  }
   if (result.stderr?.trim()) console.error(result.stderr.trim());
 }
 
@@ -4013,6 +4463,139 @@ Review rules:
 `;
 }
 
+/**
+ * Deterministic fixture skeptic. Produces one findingVerdict per item in the challenged review
+ * (frAcFindings, qualityGate.dimensions, requiredFixes, escalations) so the fixture path exercises
+ * the full evidence/event shape without provider spend. DEFAULT-REJECT framing: it does not affirm
+ * findings it cannot independently confirm — for the fixture, every verdict is "uncertain".
+ */
+function runFixtureSkeptic(input: { challengedReview: ReviewResult }): SkepticResult {
+  const review = input.challengedReview;
+  const findingVerdicts: SkepticResult["findingVerdicts"] = [
+    ...review.frAcFindings.map((finding) => ({
+      ref: finding.ref,
+      source: "fr_ac_finding" as const,
+      verdict: "uncertain" as const,
+      severity: "minor" as const,
+      reasoning: `Fixture skeptic could not independently confirm the FR/AC finding for ${finding.ref}; default-rejecting to uncertain.`,
+    })),
+    ...review.qualityGate.dimensions.map((dimension) => ({
+      dimension: dimension.dimension,
+      source: "quality_dimension" as const,
+      verdict: "uncertain" as const,
+      severity: "minor" as const,
+      reasoning: `Fixture skeptic could not independently confirm the ${dimension.dimension} quality dimension; default-rejecting to uncertain.`,
+    })),
+    ...review.requiredFixes.map((fix) => ({
+      source: "required_fix" as const,
+      verdict: "uncertain" as const,
+      severity: "minor" as const,
+      reasoning: `Fixture skeptic could not independently confirm the required fix "${fix}"; default-rejecting to uncertain.`,
+    })),
+    ...review.escalations.map((escalation) => ({
+      source: "escalation" as const,
+      verdict: "uncertain" as const,
+      severity: "minor" as const,
+      reasoning: `Fixture skeptic could not independently confirm the escalation "${escalation.message}"; default-rejecting to uncertain.`,
+    })),
+  ];
+  return {
+    status: "uncertain",
+    summary:
+      "Fixture skeptic challenged the recorded review findings without provider spend; it could not independently confirm any finding and default-rejected each to uncertain.",
+    challengedReviewStatus: review.status,
+    findingVerdicts,
+    recommendation:
+      "Run a real (non-fixture) skeptic driver for an independent challenge; the fixture skeptic only proves the harness path and does not gate.",
+  };
+}
+
+function buildSkepticPrompt(input: {
+  slice: SliceRecord;
+  targetPath: string;
+  laneName?: string;
+  challengedReview: ReviewResult;
+  challengedReviewEvidenceId: string;
+  skillPacket?: string;
+}): string {
+  const review = input.challengedReview;
+  const sourceRefs = input.slice.sourceRefs
+    .map((source) => `- ${source.title ?? source.uri}: ${source.uri}${source.hash ? ` hash:${source.hash}` : ""}`)
+    .join("\n");
+  const frAcFindings =
+    review.frAcFindings.length > 0
+      ? review.frAcFindings.map((finding) => `- [fr_ac_finding] ref:${finding.ref} status:${finding.status} — ${finding.finding}`).join("\n")
+      : "- none";
+  const qualityDimensions =
+    review.qualityGate.dimensions.length > 0
+      ? review.qualityGate.dimensions
+          .map((dimension) => `- [quality_dimension] dimension:${dimension.dimension} status:${dimension.status} risk:${dimension.risk} — ${dimension.finding}`)
+          .join("\n")
+      : "- none";
+  const requiredFixes =
+    review.requiredFixes.length > 0 ? review.requiredFixes.map((fix) => `- [required_fix] ${fix}`).join("\n") : "- none";
+  const escalations =
+    review.escalations.length > 0
+      ? review.escalations.map((escalation) => `- [escalation] level:${escalation.level} — ${escalation.message}`).join("\n")
+      : "- none";
+  const safeDirectoryPath = formatGitSafeDirectoryPath(input.targetPath);
+  return `You are an INDEPENDENT skeptic inside the Agent Swarm MVP harness.
+
+You are NOT the worker and NOT the reviewer. Your single job is to challenge the latest review's findings for this slice on their own merits, using independent inspection and evidence — not by deferring to the reviewer's confidence.
+
+Target workspace:
+${input.targetPath}
+
+Lane:
+${input.laneName ?? input.slice.laneId}
+
+${input.skillPacket ? `${input.skillPacket}\n` : ""}
+Slice:
+${input.slice.id} - ${input.slice.title}
+
+Delivery question:
+${input.slice.deliveryQuestion}
+
+Immutable source refs:
+${sourceRefs}
+
+FR/AC scope:
+${input.slice.frAcRefs.map((ref) => `- ${ref}`).join("\n")}
+
+Challenged review:
+- evidence id: ${input.challengedReviewEvidenceId}
+- review status: ${review.status}
+- review summary: ${review.summary}
+
+Findings under challenge (return one findingVerdicts entry per item below):
+FR/AC findings:
+${frAcFindings}
+
+Quality gate dimensions:
+${qualityDimensions}
+
+Required fixes:
+${requiredFixes}
+
+Escalations:
+${escalations}
+
+Skeptic instructions:
+- Challenge each finding above on its own merits using concrete, independent evidence from code inspection and targeted read-only checks.
+- DEFAULT-REJECT: when you cannot independently confirm a finding from concrete evidence, return verdict 'refuted' or 'uncertain' rather than 'real'. Do not affirm a finding merely because the reviewer asserted it.
+- For each item, set source to one of fr_ac_finding | quality_dimension | required_fix | escalation, carry ref (for fr_ac_finding) or dimension (for quality_dimension) when applicable, and provide verdict (real|refuted|uncertain), severity (blocker|major|minor|nit), and independent reasoning.
+- Set challengedReviewStatus to the review status you challenged (${review.status}).
+- You are NOT a gate: your verdict records an independent challenge and does not by itself accept or block the slice.
+
+Skeptic rules:
+- Do not modify source specs or implementation code; this is an independent challenge, not repair.
+- Do not create, edit, weaken, or reinterpret verification obligations or the review's acceptance criteria.
+- If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
+- Prefer evidence from code inspection and targeted read-only commands; treat missing evidence as grounds for 'uncertain', not 'real'.
+- Return only the required structured JSON result.
+`;
+}
+
 function readArtifactSnippet(filePath: string, maxLength = 4000): string {
   if (!fs.existsSync(filePath)) return `Artifact missing: ${filePath}`;
   const content = fs.readFileSync(filePath, "utf8").trim();
@@ -4070,6 +4653,27 @@ function readReviewResultFile(filePath: string): { ok: true; result: ReviewResul
     return {
       ok: false,
       reason: `review_result schema failed: ${result.error.message}`,
+    };
+  }
+  return { ok: true, result: result.data };
+}
+
+function readSkepticResultFile(filePath: string): { ok: true; result: SkepticResult } | { ok: false; reason: string } {
+  if (!fs.existsSync(filePath)) return { ok: false, reason: `skeptic_result file missing: ${filePath}` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `skeptic_result JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const result = skepticResultSchema.safeParse(parsed);
+  if (!result.success) {
+    return {
+      ok: false,
+      reason: `skeptic_result schema failed: ${result.error.message}`,
     };
   }
   return { ok: true, result: result.data };
@@ -6867,6 +7471,12 @@ function writeReviewResultSchema(schemaPath: string): void {
   // Derived from the canonical reviewResultSchema (src/schemas.ts). Generated in the
   // default ("output") io mode so qualityGate stays required despite its Zod default.
   writeSchemaFromZod(schemaPath, reviewResultSchema);
+}
+
+function writeSkepticResultSchema(schemaPath: string): void {
+  // Derived from the canonical skepticResultSchema (src/schemas.ts) via the SO-1 generator so
+  // the contract the skeptic is held to equals the contract its verdict is judged by.
+  writeSchemaFromZod(schemaPath, skepticResultSchema);
 }
 
 function writeOverseerDecisionSchema(schemaPath: string): void {
