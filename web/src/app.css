@@ -760,6 +760,22 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .skill-refs { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .skill-ref { display: flex; align-items: baseline; gap: var(--s2); }
 .skill-ref-label { font-size: var(--fs-eyebrow); text-transform: uppercase; letter-spacing: .02em; color: var(--muted); flex: none; min-width: 48px; }
+/* ── Skill-isolation leak (global-user-skill read outside the harness packet) ──
+   A WARNING surface (amber + glyph, never colour-alone), not a blocker. The roster badge mirrors
+   .agent-skills; the detail section uses a left amber accent like .ha-notice-warn. */
+.agent-leak { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--amber); background: rgba(214,161,60,.14); border-radius: 8px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+.agent-leak-glyph { font-size: .9em; }
+.skill-leak { border-left: 3px solid var(--amber); background: rgba(214,161,60,.07); border-radius: 6px; padding: var(--s2) var(--s3); margin-top: var(--s2); }
+.skill-leak-head { display: flex; align-items: center; gap: 6px; color: var(--amber); margin: 0 0 4px; }
+.skill-leak-glyph { font-size: 1em; }
+.skill-leak-note { font-size: var(--fs-meta); line-height: 1.45; color: var(--muted); margin: 0 0 var(--s2); }
+.skill-leak-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.skill-leak-item { display: flex; flex-direction: column; gap: 1px; }
+.skill-leak-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: var(--fs-meta); }
+.skill-leak-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); flex: none; }
+.skill-leak-line { font-size: var(--fs-eyebrow); color: var(--muted); flex: none; }
+.skill-leak-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-eyebrow); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-leak-snippet { font-size: var(--fs-eyebrow); line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 /* ── Overseer turn detail (inspector) ────────────────────────────────────
    Structured render of an overseer loop event: eyebrow sub-heads + muted body,
    mono for ids/commands/paths, one accent, glyph+colour for status. Static

@@ -7,8 +7,9 @@
   import OverseerTurnDetail from "~/components/OverseerTurnDetail.svelte";
   import HumanActionDetail from "~/components/HumanActionDetail.svelte";
   import SkillStacks from "~/components/SkillStacks.svelte";
+  import SkillIsolationFindings from "~/components/SkillIsolationFindings.svelte";
   import RecoveryControls from "~/components/RecoveryControls.svelte";
-  import { skillsOf, type SkillBindingSummary } from "~/lib/skills";
+  import { skillsOf, isolationFindingsOf, dedupeFindings, normalizeFindings, type SkillBindingSummary } from "~/lib/skills";
   let { store, onResolved = () => {} }: { store: ConsoleStore; onResolved?: () => void } = $props();
   const sel = $derived(store.selected);
   // A queue action open for resolution takes priority over any entity 'sel' branch below.
@@ -100,6 +101,11 @@
   // skipped entirely (neutral, not an error).
   const agentSkills = $derived<SkillBindingSummary | undefined>(
     sel?.kind === "agent" ? skillsOf(agentRuns[0]) : undefined,
+  );
+  // Skill-isolation leaks across ALL of this actor's runs (deduped) — a leak on any run is worth
+  // surfacing, not only the latest. Empty → the section renders nothing (neutral).
+  const agentLeakFindings = $derived(
+    sel?.kind === "agent" ? dedupeFindings(agentRuns.flatMap((r) => isolationFindingsOf(r))) : [],
   );
   // Coverage lookup to color the working-slice refs + name the spec/domain. Empty when coverage is null.
   const covByRef = $derived.by(() => {
@@ -397,6 +403,10 @@
   function strArr(v: unknown): string[] {
     return asArr(v).filter((x): x is string => typeof x === "string");
   }
+  // Failure-class chip tone. global_skill_leak is a reproducibility WARNING (amber), never a hard
+  // failure/blocker (red) — see docs/architecture/skill-observability-ui-contract.md. Shared by the
+  // run-focus and slice-focus render sites so the tint can't drift between them.
+  const failureClassTone = (fc: string) => (fc === "global_skill_leak" ? "reason-amber" : "reason-red");
   function joinKv(...pairs: Array<[string, unknown]>): string {
     return pairs
       .filter(([, v]) => v != null && v !== "")
@@ -579,6 +589,14 @@
         </section>
       {/if}
 
+      <!-- 2d. Skill isolation — global-user-skill references read outside the harness packet
+           (a warning, not a blocker). Renders nothing when there are no findings. -->
+      {#if agentLeakFindings.length > 0}
+        <section class="agent-section">
+          <SkillIsolationFindings findings={agentLeakFindings} />
+        </section>
+      {/if}
+
       <!-- 3. Runs — what it HAS DONE. Collapsible per-run cards, newest first. -->
       {#if historyLoading && resolvedRuns.length === 0}
         <p class="empty">Loading…</p>
@@ -596,6 +614,13 @@
                 <span class="muted run-when"> · {fmtClock(r.run.startedAt)} · {formatDuration(runDuration(r.run))}</span>
               </button>
               <div class="run-sub">{runSubLine(r)} <span class="muted">· {r.actionCount} action{r.actionCount === 1 ? "" : "s"}</span></div>
+              {#if isolationFindingsOf(r.run).length > 0}
+                <button class="run-act-toggle" style="margin-top:2px;color:var(--amber)"
+                  onclick={() => store.select({ kind: "focusRun", id: r.run.id })}
+                  title="Referenced user-global skills outside the harness packet — open run focus">
+                  ⚠ skill isolation · zoom into run →
+                </button>
+              {/if}
 
               {#if open}
                 <div class="run-body">
@@ -808,7 +833,7 @@
             </div>
             {#if lrfFailureClasses.length > 0}
               <div class="focus-pk-chips">
-                {#each lrfFailureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
+                {#each lrfFailureClasses as fc}<span class="focus-reason {failureClassTone(fc)}">{fc}</span>{/each}
               </div>
             {:else}
               <div class="focus-pk-meta muted">No failure classes</div>
@@ -912,7 +937,7 @@
           <div class="run-subhead">Failure classes</div>
           {#if failureClasses.length > 0}
             <div class="focus-pk-chips">
-              {#each failureClasses as fc}<span class="focus-reason reason-red">{fc}</span>{/each}
+              {#each failureClasses as fc}<span class="focus-reason {failureClassTone(fc)}">{fc}</span>{/each}
             </div>
           {:else}
             <div class="focus-pk-meta muted">No failure classes</div>
@@ -968,6 +993,13 @@
                 </div>
               {/if}
             {/if}
+          {/if}
+
+          <!-- Skill isolation — global-user-skill references in this run's event stream (a warning,
+               not a blocker). The packet exposes them at eventStream.globalSkillReferences. -->
+          {@const leakFindings = normalizeFindings(pick(eventStream, "globalSkillReferences"))}
+          {#if leakFindings.length > 0}
+            <SkillIsolationFindings findings={leakFindings} />
           {/if}
 
           <!-- Event stream -->

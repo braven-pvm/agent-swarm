@@ -59,6 +59,11 @@
           <span class="agent-skills-glyph" aria-hidden="true">⚙</span>{row.skillCount}
         </span>
       {/if}
+      {#if row.skillLeakCount && row.skillLeakCount > 0}
+        <span class="agent-leak" title="{row.skillLeakCount} global-skill reference{row.skillLeakCount === 1 ? '' : 's'} outside the harness packet — open the agent to inspect">
+          <span class="agent-leak-glyph" aria-hidden="true">⚠</span>{row.skillLeakCount}
+        </span>
+      {/if}
       <span class="agent-age age-{level}" title="last signal age">{shortAge(age)}</span>
     </div>
     <div class="agent-now" title={row.nowTarget ?? row.now}>{working ? d.present : d.past}{#if d.target} <code class="now-target">{d.target}</code>{/if}</div>

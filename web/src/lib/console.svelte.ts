@@ -6,7 +6,7 @@ import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup 
 import type { HumanActionItem, HumanActionQueue } from "~/lib/human-actions";
 import type { ControlCommand, DevServer } from "~/lib/control";
 import { commandKindLabel } from "~/lib/control";
-import { skillsOf } from "~/lib/skills";
+import { skillsOf, isolationFindingsOf, dedupeFindings } from "~/lib/skills";
 
 // A transient toast. Two shapes share one stack + the Toaster's auto-dismiss timer, discriminated
 // by `kind`:
@@ -54,6 +54,9 @@ export interface AgentRosterRow {
   // Count of protocol skills bound to the LATEST run (skillsOf(latest)?.count). Undefined
   // when the latest run carries no skill binding (historical / pre-Phase-10D) → neutral.
   skillCount?: number;
+  // Distinct skill-isolation leaks (global-user-skill references) across ANY of this actor's runs,
+  // deduped by path+line. Undefined when none → neutral (no badge). A WARNING, not a blocker.
+  skillLeakCount?: number;
 }
 
 export interface ProofChainRow {
@@ -254,6 +257,11 @@ export function createConsoleStore() {
         // read via skillsOf so we never touch the shared AgentRunRecord type). Undefined
         // when the run has no binding → the roster renders no skill chip (neutral).
         row.skillCount = skillsOf(latest)?.count;
+        // Skill-isolation leaks: a global-user-skill read outside the harness packet on ANY of this
+        // actor's runs (not just the latest) — a leak on an earlier run is still worth flagging.
+        // Deduped by path+line via dedupeFindings; 0 → leave undefined (neutral, no badge).
+        const leaks = dedupeFindings(actorRuns.flatMap((r) => isolationFindingsOf(r)));
+        if (leaks.length > 0) row.skillLeakCount = leaks.length;
         const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
         const rt = endMs - Date.parse(latest.startedAt);
         if (Number.isFinite(rt)) row.runtimeMs = rt;
