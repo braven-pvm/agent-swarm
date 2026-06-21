@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 3 http://127.0.0.1:4319/)"
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" --max-time 3 http://127.0.0.1:4319/)",
+      "Read(//c/Users/Marius/.claude/skills/practical-ui-principles/**)",
+      "Bash(PYTHONUTF8=1 python scripts/contrast.py \"#d6a13c\" \"#191d22\")",
+      "Bash(PYTHONUTF8=1 python scripts/contrast.py \"#d6a13c\" \"#20252b\")",
+      "Bash(PYTHONUTF8=1 python scripts/contrast.py \"#d6a13c\" \"#332f26\")"
     ]
   }
 }
