@@ -1,0 +1,14 @@
+agentId	role	msgs	tool_calls	out_tokens	tools
+a1607f4b97	VERIFY(isReal=True)	16	5	3067	Read:2+Grep:2+StructuredOutput:1
+a1bbdb2803	VERIFY(isReal=True)	30	11	3480	Grep:6+Read:2+Glob:1+Bash:1+StructuredOutput:1
+a2d363d82b	VERIFY(isReal=True)	24	8	4334	Read:6+Grep:1+StructuredOutput:1
+a3b2075eac	REVIEW:Design Quality & Accessibility (pr	45	17	6244	Read:12+Grep:4+StructuredOutput:1
+a6f53d8cc2	REVIEW:CORRECTNESS	153	54	25652	Bash:27+Read:13+StructuredOutput:7+Write:4+Grep:3
+ab1add62f8	VERIFY(isReal=True)	18	6	2394	Read:4+Grep:1+StructuredOutput:1
+ab9d89d7dc	VERIFY(isReal=True)	19	6	1451	Grep:3+Read:2+StructuredOutput:1
+ac6710e4a6	VERIFY(isReal=True)	33	12	3839	Read:8+Grep:3+StructuredOutput:1
+adf90a8ed5	REVIEW:CONTRACT FIDELITY	60	21	7990	Read:8+Grep:8+Bash:4+StructuredOutput:1
+ae585813d4	VERIFY(isReal=True)	20	7	2588	Read:4+Grep:2+StructuredOutput:1
+ae9fe4461e	VERIFY(isReal=True)	22	7	2191	Read:3+Bash:2+Grep:1+StructuredOutput:1
+af4a459d4d	VERIFY(isReal=False)	13	4	2392	Read:2+Grep:1+StructuredOutput:1
+TOTAL	12 agents			65622	(output tokens only; ~708k incl. input/cache)

@@ -1,0 +1,32 @@
+agentId	role	msgs	tools	out_tok	toolnames
+a034a6ace5	VERIFY(keep)	26	9	3110	Read:7+Grep:1+StructuredOutput:1
+a0e814abcd	FORENSIC:Structured output &amp; result	58	22	8166	Read:13+Grep:7+Glob:1+StructuredOutput:1
+a103a0b608	FORENSIC:Resume, recovery &amp; idempot	57	21	8896	Read:14+Grep:5+Glob:1+StructuredOutput:1
+a10fdea02b	VERIFY(keep)	35	13	4135	Read:8+Grep:4+StructuredOutput:1
+a1a9f21dbc	FORENSIC:Orchestration control flow (LL	63	23	15588	Read:12+Grep:6+Bash:2+StructuredOutput:2+Glob:1
+a1f82c83f0	VERIFY(revise)	38	14	3495	Grep:7+Read:6+StructuredOutput:1
+a29598562a	VERIFY(revise)	42	14	5728	Read:7+Grep:5+Glob:1+StructuredOutput:1
+a385f4ca76	VERIFY(revise)	33	12	4732	Read:7+Grep:4+StructuredOutput:1
+a4d03b6979	VERIFY(drop)	31	11	2420	Read:6+Grep:2+Bash:2+StructuredOutput:1
+a5248c0996	VERIFY(drop)	44	17	5569	Read:7+Grep:5+Glob:3+Bash:1+StructuredOutput:1
+a5456f9d86	VERIFY(revise)	32	12	4624	Read:10+Grep:1+StructuredOutput:1
+a55aca44dc	VERIFY(revise)	35	13	5571	Read:8+Grep:4+StructuredOutput:1
+a616b8daa3	VERIFY(revise)	30	11	1513	Read:8+Grep:2+StructuredOutput:1
+a784b0ba36	VERIFY(revise)	60	23	8322	Read:10+Grep:6+Bash:5+Glob:1+StructuredOutput:1
+a7a8f7a271	VERIFY(drop)	41	15	3207	Read:7+Grep:5+Bash:2+StructuredOutput:1
+a7bdda9b52	VERIFY(revise)	40	15	4173	Read:8+Grep:5+Bash:1+StructuredOutput:1
+a8573c2ef0	VERIFY(revise)	33	12	1277	Read:7+Glob:2+Grep:2+StructuredOutput:1
+a8897b900c	VERIFY(revise)	59	24	5542	Bash:12+Read:11+StructuredOutput:1
+a9da881993	VERIFY(keep)	34	12	4773	Read:8+Grep:3+StructuredOutput:1
+aaba24cdaf	VERIFY(revise)	34	11	4372	Read:6+Grep:4+StructuredOutput:1
+aad6e390a2	VERIFY(revise)	33	12	3998	Read:8+Grep:3+StructuredOutput:1
+ab11cbdcb7	FORENSIC:Context packets (shared facts 	70	25	25728	Read:11+Grep:8+StructuredOutput:5+Bash:1
+ab4b47a7d9	VERIFY(drop)	54	20	4933	Read:13+Grep:6+StructuredOutput:1
+ace54e6c16	VERIFY(drop)	35	13	3699	Read:10+Grep:2+StructuredOutput:1
+ad2f97ad2c	FORENSIC:Findings -> escalation/repair 	62	24	3495	Read:13+Grep:8+Glob:2+StructuredOutput:1
+ae0056d802	VERIFY(revise)	33	12	5100	Read:8+Grep:3+StructuredOutput:1
+ae53e61cc1	VERIFY(keep)	32	12	3490	Read:8+Grep:3+StructuredOutput:1
+aef52d3e4c	VERIFY(drop)	28	10	3738	Read:6+Grep:3+StructuredOutput:1
+af1d10ce8f	VERIFY(drop)	31	11	3907	Read:7+Grep:3+StructuredOutput:1
+af5072ef4c	FORENSIC:Scheduling & concurrency (barr	46	17	7068	Read:8+Grep:7+Glob:1+StructuredOutput:1
+TOTAL	30 agents			170369	(output only; ~1.6M incl input/cache)
