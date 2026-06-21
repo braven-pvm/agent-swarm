@@ -77,6 +77,64 @@ test("codex worker JSONL is ingested while the process is still running", async 
   }
 });
 
+test("codex worker recovers from a valid result artifact when the child process stays open", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-artifact-recovery-hung-child-${process.pid}-${Date.now()}`);
+  const target = path.join(workspace, "invoice-api");
+  const fakeCodexDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-swarm-fake-codex-"));
+  const fakeCodexScript = path.join(fakeCodexDir, "fake-codex-hung-after-result.mjs");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+  writeFakeCodexHangsAfterResult(fakeCodexScript);
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const runOutput = execFileSync(process.execPath, [cli, "run", sliceId, "--driver", "codex", "--actor", "artifact-recovery-worker"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+      SWARM_RESULT_ARTIFACT_RECOVERY_QUIET_SECONDS: "1",
+      SWARM_AGENT_IDLE_TIMEOUT_SECONDS: "30",
+    },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15000,
+  });
+  assert.match(runOutput, /Worker completed/);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "100"]));
+  const completedRun = snapshot.agentRuns.find((item) => item.actor === "artifact-recovery-worker");
+  assert.equal(completedRun?.status, "completed");
+  const recoveryEvent = snapshot.recentEvents.find(
+    (event) => event.type === "worker.result_artifact_recovered" && event.actor === "artifact-recovery-worker",
+  );
+  assert.ok(recoveryEvent);
+  assert.equal(recoveryEvent.payload.resultPath, completedRun.resultPath);
+  const completedEvent = snapshot.recentEvents.find(
+    (event) => event.type === "worker.completed" && event.actor === "artifact-recovery-worker",
+  );
+  assert.equal(completedEvent.payload.exitCode, null);
+  assert.equal(completedEvent.payload.resultArtifactRecovered, true);
+  assert.equal(completedEvent.payload.resultArtifactRecoveryTriggered, true);
+  assert.match(completedEvent.payload.recoveryReason, /did not produce a close status/);
+});
+
 function runSwarm(workspace, args) {
   return execFileSync(process.execPath, [cli, ...args], {
     cwd: workspace,
@@ -114,6 +172,36 @@ if (outputPath) {
   }) + "\\n", "utf8");
 }
 console.log(JSON.stringify({ type: "turn.completed" }));
+`,
+    "utf8",
+  );
+}
+
+function writeFakeCodexHangsAfterResult(scriptPath) {
+  fs.writeFileSync(
+    scriptPath,
+    `import fs from "node:fs";
+const args = process.argv.slice(2);
+const outputIndex = args.indexOf("--output-last-message");
+const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : undefined;
+console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-hung-thread" }));
+if (outputPath) {
+  fs.writeFileSync(outputPath, JSON.stringify({
+    status: "passed",
+    summary: "fake codex wrote a valid result before hanging",
+    changedFiles: [],
+    commandsRun: ["npm test"],
+    testsRun: ["npm test"],
+    frAcCoverage: [
+      { ref: "AC-INV-001.1", status: "covered", evidence: "fake evidence" },
+      { ref: "AC-INV-001.2", status: "covered", evidence: "fake evidence" },
+      { ref: "AC-INV-001.3", status: "covered", evidence: "fake evidence" }
+    ],
+    risks: [],
+    nextRecommendation: "continue"
+  }) + "\\n", "utf8");
+}
+setInterval(() => {}, 1000);
 `,
     "utf8",
   );

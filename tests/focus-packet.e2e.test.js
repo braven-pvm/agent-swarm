@@ -109,10 +109,112 @@ test("inspect run classifies failed command and missing structured result", () =
   assert.ok(packet.diagnosis.recommendedInterventions.some((item) => item.includes("Coach the agent")));
   assert.ok(packet.diagnosis.recommendedInterventions.some((item) => item.includes("same-session revive")));
 
+  // FR-PI-001: additive intervention field on the run focus packet for a known failure class.
+  const validActions = [
+    "observe",
+    "coach_same_session",
+    "reask_structured_result",
+    "accept_valid_artifact",
+    "revive_same_session",
+    "restart_fresh",
+    "dispatch_targeted_repair",
+    "escalate_human",
+  ];
+  assert.ok(packet.intervention, "run packet exposes intervention");
+  // run_failed + command_failed with no result artifact -> missing_result; sessionId present.
+  assert.equal(packet.intervention.classification, "missing_result");
+  assert.ok(["low", "medium", "high"].includes(packet.intervention.confidence));
+  assert.ok(validActions.includes(packet.intervention.recommendedAction));
+  assert.equal(packet.intervention.recommendedAction, "coach_same_session");
+  assert.ok(packet.intervention.reason.length > 0);
+  assert.ok(Array.isArray(packet.intervention.evidence));
+  assert.ok(packet.intervention.evidence.includes("RUN-focus-failed"));
+  assert.ok(typeof packet.intervention.risk === "string" && packet.intervention.risk.length > 0);
+
   const slicePacket = JSON.parse(runSwarm(workspace, ["inspect", "slice", sliceId, "--json"]));
   assert.equal(slicePacket.kind, "slice_focus");
   assert.equal(slicePacket.latestRunFocus.run.id, "RUN-focus-failed");
   assert.ok(slicePacket.diagnosis.recommendedInterventions.some((item) => item.includes("high-retry")));
+  // FR-PI-001: slice packet surfaces intervention (from latestRunFocus when present).
+  assert.ok(slicePacket.intervention, "slice packet exposes intervention");
+  assert.equal(slicePacket.intervention.classification, packet.intervention.classification);
+});
+
+test("inspect run classifies valid-artifact hung child without restart churn", () => {
+  const { workspace, sliceId } = setupWorkspace("swarm-focus-valid-artifact");
+  const store = new SwarmStore(workspace);
+  try {
+    const runId = "RUN-focus-valid-artifact";
+    const actor = "focus-worker";
+    const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const eventsPath = path.join(artifactDir, "worker-events.jsonl");
+    const promptPath = path.join(artifactDir, "worker-prompt-RUN-focus-valid-artifact.md");
+    const resultPath = path.join(artifactDir, "worker-result-RUN-focus-valid-artifact.json");
+    const now = new Date().toISOString();
+    fs.writeFileSync(promptPath, "Worker prompt for valid-artifact hung-child test.\n", "utf8");
+    fs.writeFileSync(
+      resultPath,
+      JSON.stringify({ status: "implemented", summary: "Listing implemented", frAcCoverage: [], findings: [] }, null, 2),
+      "utf8",
+    );
+    fs.writeFileSync(
+      eventsPath,
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread-valid-artifact" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: { id: "item_1", type: "command_execution", status: "completed", command: "npm test", exit_code: 0 },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    store.updateSliceStatus(sliceId, "implementing");
+    store.insertAgentRun({
+      id: runId,
+      sliceId,
+      role: "worker",
+      entityType: "slice",
+      entityId: sliceId,
+      actor,
+      driver: "codex",
+      status: "running",
+      sessionId: "session-valid-artifact",
+      attempt: 1,
+      eventsPath,
+      resultPath,
+      startedAt: now,
+      updatedAt: now,
+    });
+    store.upsertHeartbeat({
+      actor,
+      state: "blocked",
+      detail: "Agent child process produced no output for 300s; terminating for supervised recovery.",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: now,
+    });
+    store.addEvent(
+      createEvent({
+        actor,
+        type: "worker.child_idle_timeout",
+        entityType: "slice",
+        entityId: sliceId,
+        payload: { runId, jsonlPath: eventsPath, idleTimeoutMs: 300000 },
+      }),
+    );
+  } finally {
+    store.close();
+  }
+
+  const packet = JSON.parse(runSwarm(workspace, ["inspect", "run", "RUN-focus-valid-artifact", "--json"]));
+  assert.ok(packet.diagnosis.failureClasses.includes("child_idle_timeout"));
+  assert.equal(packet.artifacts.result.exists, true);
+  // FR-PI-001/FR-PI-002: a hung child with a valid artifact must not be downgraded to restart.
+  assert.equal(packet.intervention.classification, "valid_artifact_hung_child");
+  assert.equal(packet.intervention.recommendedAction, "accept_valid_artifact");
+  assert.equal(packet.intervention.confidence, "high");
+  assert.match(packet.intervention.risk, /discard a valid/i);
 });
 
 test("inspect run classifies user-global skill leakage", () => {

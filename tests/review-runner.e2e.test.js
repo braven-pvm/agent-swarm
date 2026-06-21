@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { SwarmStore } from "../dist/storage.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -234,6 +235,24 @@ test("repair-required review remains repairable and a later accepted review clea
       (item) => item.entityId === sliceId && item.level === "blocker" && item.message.includes("Sleuth Review Gate"),
     ),
   );
+  const store = new SwarmStore(workspace);
+  try {
+    const now = new Date().toISOString();
+    store.insertEscalation({
+      id: "ESC-scenario-stale-review",
+      level: "warning",
+      status: "active",
+      entityType: "harness",
+      entityId: "scenario:live-agent-smoke-h2",
+      message: `${sliceId} still has active blocker escalations from the prior failed review; the latest worker evidence must be independently reviewed before acceptance or downstream work.`,
+      reason: "Scenario-level stale review warning copied from a prior overseer pass.",
+      createdBy: "live-overseer",
+      createdAt: now,
+      updatedAt: now,
+    });
+  } finally {
+    store.close();
+  }
 
   const acceptedOutput = runSwarm(
     workspace,
@@ -254,6 +273,10 @@ test("repair-required review remains repairable and a later accepted review clea
   assert.equal(reviewedSlice.reviewResult.status, "accepted");
   assert.equal(
     acceptedSnapshot.activeEscalations.filter((item) => item.entityId === sliceId && item.level === "blocker").length,
+    0,
+  );
+  assert.equal(
+    acceptedSnapshot.activeEscalations.filter((item) => item.id === "ESC-scenario-stale-review").length,
     0,
   );
   assert.ok(

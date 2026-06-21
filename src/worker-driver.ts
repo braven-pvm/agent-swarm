@@ -111,9 +111,9 @@ const codexDriver: WorkerDriverAdapter = {
   },
 };
 
-type ResultArtifactValidation = { ok: true } | { ok: false; reason: string };
+export type ResultArtifactValidation = { ok: true } | { ok: false; reason: string };
 
-function validateResultArtifact(spec: WorkerRunSpec): ResultArtifactValidation {
+export function validateResultArtifact(spec: Pick<WorkerRunSpec, "resultPath" | "resultSchema">): ResultArtifactValidation {
   if (!fs.existsSync(spec.resultPath)) {
     return { ok: false, reason: `structured result artifact missing: ${spec.resultPath}` };
   }
@@ -140,8 +140,8 @@ function validateResultArtifact(spec: WorkerRunSpec): ResultArtifactValidation {
 
 function resultArtifactRecoveryReason(exitCode: number | null): string | undefined {
   if (exitCode === 0) return undefined;
-  const exitLabel = exitCode === null ? "without an exit code" : `with status ${exitCode}`;
-  return `child process exited ${exitLabel} after writing a valid structured result artifact`;
+  if (exitCode === null) return "child process did not produce a close status after writing a valid structured result artifact";
+  return `child process exited with status ${exitCode} after writing a valid structured result artifact`;
 }
 
 function lastResultEvent(stdout: string): Record<string, unknown> | undefined {

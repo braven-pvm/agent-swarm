@@ -147,6 +147,14 @@ export function buildRunFocusPacket(
       failureClasses,
       recommendedInterventions: recommendRunInterventions({ run, failureClasses, hasSession: Boolean(run.sessionId) }),
     },
+    intervention: computeIntervention({
+      run,
+      failureClasses,
+      resultArtifact,
+      relatedEscalations,
+      hasSession: Boolean(run.sessionId),
+      retryCount: run.attempt,
+    }),
   };
 }
 
@@ -166,6 +174,22 @@ export function buildSliceFocusPacket(
   const activeEscalations = relatedActiveEscalations(store, { sliceId: slice.id, laneId: lane?.id });
   const evidence = store.listEvidence(slice.id);
   const leases = store.listLeases().filter((lease) => lease.sliceId === slice.id);
+  const latestRunFocus = latestRun
+    ? buildRunFocusPacket(store, workspace, latestRun.id, { eventLimit: options.eventLimit ?? 12 })
+    : undefined;
+  const sliceRetries = sliceRetryCount(runs);
+  const sliceBlocked =
+    slice.status === "blocked" ||
+    activeEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level));
+  const sliceHumanRequired = activeEscalations.some((item) => item.level === "human_required");
+  const sliceIntervention: FocusIntervention =
+    latestRunFocus?.intervention ?? computeSliceLevelIntervention({
+      slice,
+      retryCount: sliceRetries,
+      blocked: sliceBlocked,
+      humanRequired: sliceHumanRequired,
+      activeEscalations,
+    });
   return {
     kind: "slice_focus",
     generatedAt: new Date().toISOString(),
@@ -205,13 +229,62 @@ export function buildSliceFocusPacket(
       stderrPath: run.stderrPath,
       updatedAt: run.updatedAt,
     })),
-    latestRunFocus: latestRun ? buildRunFocusPacket(store, workspace, latestRun.id, { eventLimit: options.eventLimit ?? 12 }) : undefined,
+    latestRunFocus,
     diagnosis: {
       status: slice.status,
-      blocked: slice.status === "blocked" || activeEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level)),
-      retryCount: sliceRetryCount(runs),
+      blocked: sliceBlocked,
+      retryCount: sliceRetries,
       recommendedInterventions: recommendSliceInterventions(slice, runs, activeEscalations),
     },
+    intervention: sliceIntervention,
+  };
+}
+
+function computeSliceLevelIntervention(input: {
+  slice: SliceRecord;
+  retryCount: number;
+  blocked: boolean;
+  humanRequired: boolean;
+  activeEscalations: EscalationRecord[];
+}): FocusIntervention {
+  const evidence = input.activeEscalations.map((item) => item.id);
+  if (input.humanRequired) {
+    return {
+      classification: "human_verification_failed",
+      confidence: "high",
+      recommendedAction: "escalate_human",
+      reason: "Slice has an active human_required escalation; human verification/decision is needed.",
+      evidence,
+      risk: INTERVENTION_RISK.human_verification_failed,
+    };
+  }
+  if (input.retryCount >= 5 && !["accepted", "closed"].includes(input.slice.status)) {
+    return {
+      classification: "retry_budget_pressure",
+      confidence: "high",
+      recommendedAction: "escalate_human",
+      reason: "Slice retry budget is exhausted (attempt >= 5); escalate for diagnosis before another attempt.",
+      evidence,
+      risk: INTERVENTION_RISK.retry_budget_pressure,
+    };
+  }
+  if (input.blocked) {
+    return {
+      classification: "review_blocker",
+      confidence: "medium",
+      recommendedAction: "dispatch_targeted_repair",
+      reason: "Slice is blocked by an active blocker/critical escalation; resolve before accepting.",
+      evidence,
+      risk: INTERVENTION_RISK.review_blocker,
+    };
+  }
+  return {
+    classification: "none",
+    confidence: "low",
+    recommendedAction: "observe",
+    reason: "No slice-level intervention signal; continue the normal slice lifecycle.",
+    evidence,
+    risk: INTERVENTION_RISK.none,
   };
 }
 
@@ -524,6 +597,176 @@ function recommendRunInterventions(input: { run: AgentRunRecord; failureClasses:
   if (recommendations.length === 0 && input.run.status === "completed") recommendations.push("Continue normal lifecycle: review or deterministic verification as appropriate.");
   if (recommendations.length === 0) recommendations.push("Inspect the latest event tail and decide whether to continue, coach, revive, or restart.");
   return recommendations;
+}
+
+export type InterventionClassification =
+  | "valid_artifact_hung_child"
+  | "schema_failure"
+  | "missing_result"
+  | "stale_running_agent"
+  | "review_blocker"
+  | "human_verification_failed"
+  | "retry_budget_pressure"
+  | "none";
+
+export type InterventionConfidence = "low" | "medium" | "high";
+
+export type InterventionRecommendedAction =
+  | "observe"
+  | "coach_same_session"
+  | "reask_structured_result"
+  | "accept_valid_artifact"
+  | "revive_same_session"
+  | "restart_fresh"
+  | "dispatch_targeted_repair"
+  | "escalate_human";
+
+export type FocusIntervention = {
+  classification: InterventionClassification;
+  confidence: InterventionConfidence;
+  recommendedAction: InterventionRecommendedAction;
+  reason: string;
+  evidence: string[];
+  risk: string;
+};
+
+const INTERVENTION_RISK: Record<InterventionClassification, string> = {
+  valid_artifact_hung_child: "Restart would discard a valid produced artifact; prefer accepting it.",
+  schema_failure: "Re-asking may loop if the structured-result contract is still misunderstood.",
+  missing_result: "Reviving/restarting without the prior result risks redoing completed work.",
+  stale_running_agent: "Killing the child loses in-progress state; revive same session when possible.",
+  review_blocker: "Accepting before the blocker is resolved would let unverified work through.",
+  human_verification_failed: "Proceeding without a human decision violates human_verification_required.",
+  retry_budget_pressure: "Another blind attempt burns budget without diagnosing the root cause.",
+  none: "Low risk; continue the normal lifecycle.",
+};
+
+function mapClassificationToAction(
+  classification: InterventionClassification,
+  context: { hasSession: boolean; humanRequired: boolean; resultExists: boolean },
+): InterventionRecommendedAction {
+  switch (classification) {
+    case "valid_artifact_hung_child":
+      return "accept_valid_artifact";
+    case "schema_failure":
+      return "reask_structured_result";
+    case "missing_result":
+      return context.hasSession ? "revive_same_session" : "restart_fresh";
+    case "stale_running_agent":
+      return context.hasSession ? "revive_same_session" : "restart_fresh";
+    case "review_blocker":
+      return context.humanRequired ? "escalate_human" : "dispatch_targeted_repair";
+    case "human_verification_failed":
+      return "escalate_human";
+    case "retry_budget_pressure":
+      return "escalate_human";
+    case "none":
+    default:
+      return "observe";
+  }
+}
+
+function computeIntervention(input: {
+  run: AgentRunRecord;
+  failureClasses: string[];
+  resultArtifact: ReturnType<typeof summarizeArtifact>;
+  relatedEscalations: EscalationRecord[];
+  hasSession: boolean;
+  retryCount?: number;
+}): FocusIntervention {
+  const classes = new Set(input.failureClasses);
+  const resultExists = Boolean(input.resultArtifact.exists);
+  const humanRequired = input.relatedEscalations.some((item) => item.level === "human_required");
+  const hasArtifactOrEscalationSignal =
+    resultExists ||
+    input.relatedEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level));
+
+  const priority = focusPriority({
+    blocked: input.relatedEscalations.some((item) => ["blocker", "human_required", "critical"].includes(item.level)),
+    highRetry: (input.retryCount ?? input.run.attempt ?? 1) >= 5,
+    latestRunFailed: ["failed", "stale"].includes(input.run.status),
+    failureClasses: input.failureClasses,
+  });
+
+  // First-match-wins priority order. valid_artifact_hung_child must win over generic
+  // stale/missing classes so a recoverable artifact is never downgraded to restart churn.
+  let classification: InterventionClassification = "none";
+  let reason = "";
+  if (classes.has("child_idle_timeout") && resultExists) {
+    classification = "valid_artifact_hung_child";
+    reason = "Child idle-timed-out but a valid structured result artifact already exists; accept it rather than restarting.";
+  } else if (classes.has("child_idle_timeout")) {
+    classification = "stale_running_agent";
+    reason = "Child idle-timed-out with no result artifact produced; the agent is stalled.";
+  } else if (classes.has("agent_event_parse_errors")) {
+    classification = "schema_failure";
+    reason = "Agent event stream contains parse errors; the structured-result contract was not honoured.";
+  } else if (classes.has("missing_structured_result") && !resultExists) {
+    classification = "missing_result";
+    reason = "Run ended without a structured result artifact; re-ask or revive for a final structured result.";
+  } else if (classes.has("quiet_running_agent") || classes.has("run_stale")) {
+    classification = "stale_running_agent";
+    reason = "Agent appears quiet/stale with no recent progress signals.";
+  } else if (humanRequired) {
+    classification = "human_verification_failed";
+    reason = "A human_required escalation is active; human verification/decision is needed before proceeding.";
+  } else if (classes.has("active_blocker")) {
+    classification = "review_blocker";
+    reason = "An active blocker/critical escalation is open against this work; resolve it before accepting.";
+  } else if (classes.has("run_failed") && classes.has("command_failed")) {
+    classification = resultExists ? "none" : "missing_result";
+    reason = resultExists
+      ? "Run failed on a command but a result artifact exists; coach in-session on the failing command."
+      : "Run failed on a command and produced no result artifact; coach in-session on the failing command.";
+  } else if ((input.retryCount ?? input.run.attempt ?? 1) >= 5) {
+    classification = "retry_budget_pressure";
+    reason = "Retry budget is exhausted (attempt >= 5); escalate for diagnosis before another attempt.";
+  } else if (input.failureClasses.length === 0 && input.run.status === "completed") {
+    classification = "none";
+    reason = "Run completed with no failure classes; observe and continue the normal lifecycle.";
+  } else if (input.failureClasses.length === 0) {
+    classification = "none";
+    reason = "No failure classes detected.";
+  } else {
+    classification = "missing_result";
+    reason = "Unclassified failure signals present; treat as missing/incomplete result.";
+  }
+
+  let recommendedAction = mapClassificationToAction(classification, {
+    hasSession: input.hasSession,
+    humanRequired,
+    resultExists,
+  });
+  // run_failed + command_failed but artifact present: coach in-session rather than churn.
+  if (classes.has("run_failed") && classes.has("command_failed") && classification !== "valid_artifact_hung_child") {
+    recommendedAction = "coach_same_session";
+  }
+
+  let confidence: InterventionConfidence;
+  if (classification === "none") {
+    confidence = input.run.status === "completed" ? "high" : "low";
+  } else if (hasArtifactOrEscalationSignal && priority >= 25) {
+    confidence = "high";
+  } else if (priority > 0) {
+    confidence = "medium";
+  } else {
+    confidence = "low";
+  }
+
+  const evidence: string[] = [];
+  evidence.push(input.run.id);
+  if (input.run.resultPath) evidence.push(input.run.resultPath);
+  if (input.run.eventsPath) evidence.push(input.run.eventsPath);
+  for (const escalation of input.relatedEscalations) evidence.push(escalation.id);
+
+  return {
+    classification,
+    confidence,
+    recommendedAction,
+    reason,
+    evidence: [...new Set(evidence)],
+    risk: INTERVENTION_RISK[classification],
+  };
 }
 
 function recommendSliceInterventions(slice: SliceRecord, runs: AgentRunRecord[], activeEscalations: EscalationRecord[]): string[] {

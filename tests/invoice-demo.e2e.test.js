@@ -309,6 +309,10 @@ test("planner creates read-only verification obligations that flow through promp
   assert.match(workerPrompt, /Verification obligations \(read-only\)/);
   assert.match(workerPrompt, /Return status "passed" when your implementation work and worker evidence are complete/);
   assert.match(workerPrompt, /Do not return "needs_human" merely because independent review/);
+  // FR-CP-001: harness-authored settled facts section from the requirement ledger.
+  assert.match(workerPrompt, /Settled facts from the requirement ledger/);
+  assert.match(workerPrompt, /do NOT waive your evidence obligations/i);
+  assert.match(workerPrompt, /Still-blocked \/ human-gated refs/);
   const reviewPrompt = fs.readFileSync(String(reviewStarted.payload.promptPath), "utf8");
   assert.match(reviewPrompt, /Harness-managed skills/);
   assert.match(reviewPrompt, /sleuth-review/);
@@ -787,6 +791,23 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
   assert.ok(
     restarted.recentEvents.some((event) => event.type === "escalation.cleared" && event.payload?.clearedAfterRecovery),
     "successful recovery restart should record a recovery clearance event",
+  );
+
+  // FR-PI-002: recovery records that it consulted the focus/intervention packet BEFORE acting.
+  const consult = restarted.recentEvents.find((event) => event.type === "recovery.focus_consulted");
+  assert.ok(consult, "recovery restart should emit recovery.focus_consulted");
+  assert.equal(consult.payload.recoveryKind, "restart");
+  assert.ok(
+    typeof consult.payload.recommendedAction === "string" && consult.payload.recommendedAction.length > 0,
+    "focus_consulted carries an intervention recommendedAction",
+  );
+  assert.ok(typeof consult.payload.classification === "string");
+  // Ordering ("consulted BEFORE acting") is a source-level guarantee; recentEvents collides
+  // at ms resolution (storage.ts orders events by timestamp only), so we assert both the
+  // consult and the restart_started events are recorded rather than a brittle list index.
+  assert.ok(
+    restarted.recentEvents.some((event) => event.type === "recovery.restart_started"),
+    "recovery.restart_started present",
   );
 });
 

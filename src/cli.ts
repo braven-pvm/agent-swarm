@@ -31,14 +31,21 @@ import { createWorkerJsonlIngestor, extractSessionIdFromWorkerJsonl, ingestWorke
 import { loadProtocol } from "./protocol.js";
 import { prepareSkillBindings, type SkillBindingResult } from "./skills.js";
 import type { SkillIsolationFinding } from "./skill-isolation.js";
-import { getWorkerDriver, workerDriverIds, type WorkerRunSpec, type WorkerFinalization } from "./worker-driver.js";
+import {
+  getWorkerDriver,
+  validateResultArtifact,
+  workerDriverIds,
+  type WorkerRunSpec,
+  type WorkerFinalization,
+} from "./worker-driver.js";
 import { recordHumanVerification } from "./human-actions.js";
-import { buildResumePacket, refreshCheckpoint } from "./checkpoints.js";
+import { buildResumePacket, buildCheckpointPayload, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
 import { sourceDomain, sourceFrAcRefs, sourcePriority, sourceSections, sourceTags, type SourceIndexMetadata } from "./source-index.js";
 import {
   RUN_MODE_META_KEY,
   DEFAULT_RUN_MODE,
+  buildCoverage,
   buildObservabilitySnapshot,
   buildSliceReport,
   buildTimeline,
@@ -81,6 +88,13 @@ import type {
 
 const program = new Command();
 const cliRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// FR-CP-001 / FR-CP-003: DURABLE ledger statuses that make a SIBLING ref a settled
+// fact, and statuses that keep a ref visibly blocked. Declared at module top so the
+// hoisted buildLedgerSettledFacts helper can read them no matter when the CLI action
+// executes (avoids a temporal-dead-zone error on the worker-dispatch path).
+const SETTLED_LEDGER_STATUSES = new Set(["accepted", "verified", "human_verified", "review_passed"]);
+const BLOCKED_LEDGER_STATUSES = new Set(["blocked", "human_input_required", "failed", "awaiting_human_verification"]);
 
 type WorkerRunResult = {
   sliceId: string;
@@ -171,12 +185,33 @@ type SliceRepairContext = {
   }>;
 };
 
+type SettledFact = {
+  ref: string;
+  ledgerStatus: string;
+  sliceId?: string;
+  evidenceIds: string[];
+  commandSummary?: string;
+};
+
+type SettledBlockedRef = {
+  ref: string;
+  status: string;
+  message: string;
+};
+
+type LedgerSettledFacts = {
+  inScopeRefs: string[];
+  acceptedSiblings: SettledFact[];
+  blockedRefs: SettledBlockedRef[];
+};
+
 type WorkerStreamingResult = {
   status: number | null;
   stdout: string;
   stderr: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
   idleTimedOut?: boolean;
+  resultArtifactRecoveryTriggered?: boolean;
 };
 
 type ScenarioManifestLoad = {
@@ -1618,6 +1653,7 @@ recovery
         role: "recovery",
         protocol,
       });
+      const reviveSettledFacts = buildLedgerSettledFacts(store, slice);
       const prompt = buildWorkerRevivePrompt({
         slice,
         targetPath: target.path,
@@ -1626,6 +1662,9 @@ recovery
         previousStatus: previousRun.status,
         priorResultState,
         skillPacket: skillBinding.promptSection,
+        store,
+        recoveredSessionId,
+        settledFacts: reviveSettledFacts,
       });
       fs.writeFileSync(promptPath, prompt, "utf8");
 
@@ -1652,6 +1691,15 @@ recovery
         detail: `Reviving worker session ${recoveredSessionId}`,
         entityType: "slice",
         entityId: slice.id,
+      });
+      emitRecoveryFocusConsulted({
+        store,
+        workspace,
+        actor: options.actor,
+        focusRunId: previousRun.id,
+        eventEntityId: revivedRunId,
+        recoveryKind: "revive",
+        hasSession: true,
       });
       store.addEvent(
         createEvent({
@@ -1704,6 +1752,10 @@ recovery
         runId: revivedRunId,
         classify: adapter.classifyHeartbeat?.bind(adapter),
         idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+        resultArtifact: {
+          path: spec.resultPath,
+          isReady: () => validateResultArtifact(spec).ok,
+        },
       });
       const finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
       const stderrPath = result.stderr ? path.join(artifactPath, `worker-revive-${revivedRunId}-stderr.log`) : undefined;
@@ -1764,6 +1816,7 @@ recovery
             workerEvents,
             structuredResultWritten: finalization.structuredResultWritten,
             idleTimedOut: result.idleTimedOut,
+            resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
             promptPath,
             eventsPath: jsonlPath,
             resultPath: fs.existsSync(lastMessagePath) ? lastMessagePath : undefined,
@@ -1808,6 +1861,15 @@ recovery
       const previousRun = store.listAgentRuns().find((run) => run.id === runId);
       if (!previousRun) throw new Error(`Agent run not found: ${runId}`);
       const driver = options.driver ? parseWorkerDriver(options.driver) : previousRun.driver;
+      emitRecoveryFocusConsulted({
+        store,
+        workspace,
+        actor: "recovery-agent",
+        focusRunId: previousRun.id,
+        eventEntityId: previousRun.id,
+        recoveryKind: "restart",
+        hasSession: Boolean(previousRun.sessionId ?? sessionIdFromAgentRunEvents(previousRun)),
+      });
       store.addEvent(
         createEvent({
           actor: "recovery-agent",
@@ -1916,6 +1978,52 @@ function clearSupersededRecoveryEscalations(input: {
 function sessionIdFromAgentRunEvents(run: AgentRunRecord): string | undefined {
   if (!run.eventsPath || !fs.existsSync(run.eventsPath)) return undefined;
   return extractSessionIdFromWorkerJsonl(fs.readFileSync(run.eventsPath, "utf8"));
+}
+
+// FR-PI-002: record that recovery consulted the focus/intervention packet BEFORE acting.
+// Same-session revive stays preferred when a session id exists and the packet recommends it;
+// a valid-artifact case is documented so it is not silently downgraded into restart churn.
+function emitRecoveryFocusConsulted(input: {
+  store: SwarmStore;
+  workspace: string;
+  actor: string;
+  focusRunId: string;
+  eventEntityId: string;
+  recoveryKind: "revive" | "restart";
+  hasSession: boolean;
+}): void {
+  let intervention: RunFocusPacket["intervention"] | undefined;
+  let focusError: string | undefined;
+  try {
+    const packet = buildRunFocusPacket(input.store, input.workspace, input.focusRunId);
+    intervention = packet.intervention;
+  } catch (error) {
+    focusError = error instanceof Error ? error.message : String(error);
+  }
+  const validArtifact = intervention?.classification === "valid_artifact_hung_child";
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "recovery.focus_consulted",
+      entityType: "agent_run",
+      entityId: input.eventEntityId,
+      payload: {
+        focusRunId: input.focusRunId,
+        recoveryKind: input.recoveryKind,
+        hasSession: input.hasSession,
+        classification: intervention?.classification,
+        recommendedAction: intervention?.recommendedAction,
+        confidence: intervention?.confidence,
+        reason: intervention?.reason,
+        risk: intervention?.risk,
+        evidence: intervention?.evidence,
+        // Document why a valid-artifact run is not downgraded to restart churn.
+        validArtifactPreserved: validArtifact ? true : undefined,
+        samesessionPreferred: input.hasSession && intervention?.recommendedAction === "revive_same_session" ? true : undefined,
+        focusError,
+      },
+    }),
+  );
 }
 
 program
@@ -2075,6 +2183,7 @@ async function executeOverseerRun(input: {
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
     idleTimedOut?: boolean;
+    resultArtifactRecoveryTriggered?: boolean;
   };
   if (input.driver === "fixture") {
     const decision = runFixtureOverseerDecision({ scenario: input.scenario, snapshot });
@@ -2113,6 +2222,10 @@ async function executeOverseerRun(input: {
       runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      resultArtifact: {
+        path: spec.resultPath,
+        isReady: () => validateResultArtifact(spec).ok,
+      },
     });
     overseerFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -2169,6 +2282,7 @@ async function executeOverseerRun(input: {
       costUsd: overseerFinalization.costUsd,
       resultArtifactRecovered: overseerFinalization.resultArtifactRecovered,
       recoveryReason: overseerFinalization.recoveryReason,
+      resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
       skillBinding,
       skillIsolationFindings,
     });
@@ -2205,6 +2319,7 @@ async function executeOverseerRun(input: {
           failureReason: overseerFinalization.failureReason,
           resultArtifactRecovered: overseerFinalization.resultArtifactRecovered,
           recoveryReason: overseerFinalization.recoveryReason,
+          resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
           eventsPath: jsonlPath,
           resultPath,
           stderrPath: result.stderr ? stderrPath : undefined,
@@ -2289,12 +2404,14 @@ async function executeWorkerRun(input: {
     protocol,
   });
   const repairContext = buildSliceRepairContext(input.store, slice);
+  const settledFacts = buildLedgerSettledFacts(input.store, slice);
   const prompt = buildWorkerPrompt({
     slice,
     targetPath: target.path,
     laneName: lane?.name,
     skillPacket: skillBinding.promptSection,
     repairContext,
+    settledFacts,
   });
   fs.writeFileSync(promptPath, prompt, "utf8");
   const now = new Date().toISOString();
@@ -2354,6 +2471,7 @@ async function executeWorkerRun(input: {
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
     idleTimedOut?: boolean;
+    resultArtifactRecoveryTriggered?: boolean;
   };
   let finalization: WorkerFinalization;
   if (driverId === "fixture") {
@@ -2388,6 +2506,10 @@ async function executeWorkerRun(input: {
       runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      resultArtifact: {
+        path: spec.resultPath,
+        isReady: () => validateResultArtifact(spec).ok,
+      },
     });
     finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -2447,6 +2569,7 @@ async function executeWorkerRun(input: {
         resultArtifactRecovered: finalization.resultArtifactRecovered,
         recoveryReason: finalization.recoveryReason,
         idleTimedOut: result.idleTimedOut,
+        resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
         runId,
         previousRunId: input.previousRunId,
         promptPath,
@@ -2603,6 +2726,7 @@ async function executeReviewRun(input: {
     stderr?: string;
     workerEvents?: ReturnType<typeof ingestWorkerJsonl>;
     idleTimedOut?: boolean;
+    resultArtifactRecoveryTriggered?: boolean;
   };
   if (input.driver === "fixture") {
     const reviewResult = runFixtureReview({
@@ -2643,6 +2767,10 @@ async function executeReviewRun(input: {
       runId,
       classify: adapter.classifyHeartbeat?.bind(adapter),
       idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      resultArtifact: {
+        path: spec.resultPath,
+        isReady: () => validateResultArtifact(spec).ok,
+      },
     });
     reviewFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
   }
@@ -2721,6 +2849,7 @@ async function executeReviewRun(input: {
           resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
           recoveryReason: reviewFinalization.recoveryReason,
           idleTimedOut: result.idleTimedOut,
+          resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
           runId,
           promptPath,
           eventsPath: jsonlPath,
@@ -2762,6 +2891,7 @@ async function executeReviewRun(input: {
           failureReason: reviewFinalization.failureReason,
           resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
           recoveryReason: reviewFinalization.recoveryReason,
+          resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
           runId,
           promptPath,
           eventsPath: jsonlPath,
@@ -2825,6 +2955,12 @@ function spawnWorkerStreaming(input: {
   eventPrefix?: string;
   classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
   idleTimeoutMs?: number;
+  resultArtifact?: {
+    path: string;
+    isReady: () => boolean;
+    quietMs?: number;
+    pollMs?: number;
+  };
 }): Promise<WorkerStreamingResult> {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(input.jsonlPath), { recursive: true });
@@ -2845,19 +2981,25 @@ function spawnWorkerStreaming(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       windowsHide: true,
+      detached: process.platform !== "win32",
       stdio: [input.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
     let settled = false;
     let idleTimedOut = false;
+    let resultArtifactRecoveryTriggered = false;
     let killTimer: NodeJS.Timeout | undefined;
     let forceResolveTimer: NodeJS.Timeout | undefined;
+    let resultArtifactPollTimer: NodeJS.Timeout | undefined;
     const idleTimeoutMs = input.idleTimeoutMs ?? configuredAgentIdleTimeoutMs();
+    let lastOutputAt = Date.now();
+    let resultArtifactReadyAt: number | undefined;
     const entityType = input.entityType ?? "slice";
     const entityId = input.entityId ?? input.sliceId;
 
     const clearTimers = () => {
       if (killTimer) clearTimeout(killTimer);
       if (forceResolveTimer) clearTimeout(forceResolveTimer);
+      if (resultArtifactPollTimer) clearInterval(resultArtifactPollTimer);
     };
 
     const resolveOnce = (status: number | null, stderr: string) => {
@@ -2871,6 +3013,7 @@ function spawnWorkerStreaming(input: {
         stderr,
         workerEvents,
         idleTimedOut,
+        resultArtifactRecoveryTriggered,
       });
     };
 
@@ -2913,6 +3056,52 @@ function spawnWorkerStreaming(input: {
     };
     armIdleTimer();
 
+    const armResultArtifactRecovery = () => {
+      if (!input.resultArtifact || settled) return;
+      const quietMs = input.resultArtifact.quietMs ?? configuredResultArtifactRecoveryQuietMs();
+      const pollMs = input.resultArtifact.pollMs ?? 1000;
+      resultArtifactPollTimer = setInterval(() => {
+        if (settled || !input.resultArtifact) return;
+        if (!input.resultArtifact.isReady()) {
+          resultArtifactReadyAt = undefined;
+          return;
+        }
+        const now = Date.now();
+        resultArtifactReadyAt ??= now;
+        if (now - lastOutputAt < quietMs || now - resultArtifactReadyAt < pollMs) return;
+        resultArtifactRecoveryTriggered = true;
+        const message = `Valid structured result artifact exists at ${input.resultArtifact.path}, but the child process has not closed after ${Math.round(quietMs / 1000)}s of quiet output; terminating process tree and recovering from artifact.`;
+        stderrChunks.push(message);
+        input.store.upsertHeartbeat({
+          id: `heartbeat:${input.actor}`,
+          actor: input.actor,
+          state: "idle",
+          detail: message,
+          entityType,
+          entityId,
+        });
+        input.store.addEvent(
+          createEvent({
+            actor: input.actor,
+            type: `${input.eventPrefix ?? "worker"}.result_artifact_recovered`,
+            entityType,
+            entityId,
+            payload: {
+              driver: input.driver,
+              runId: input.runId,
+              pid: child.pid,
+              resultPath: input.resultArtifact.path,
+              quietMs,
+              jsonlPath: input.jsonlPath,
+            },
+          }),
+        );
+        terminateChildProcessTree(child);
+        resolveOnce(null, stderrChunks.join("\n"));
+      }, pollMs);
+    };
+    armResultArtifactRecovery();
+
     // Feed the prompt via stdin (workers/reviewers/overseer) so multi-line prompts
     // survive Windows .cmd shim arg forwarding; harmless when no stdin is provided.
     if (input.stdin !== undefined && child.stdin) {
@@ -2923,6 +3112,7 @@ function spawnWorkerStreaming(input: {
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
+      lastOutputAt = Date.now();
       armIdleTimer();
       stdoutChunks.push(chunk);
       fs.appendFileSync(input.jsonlPath, chunk, "utf8");
@@ -2930,6 +3120,7 @@ function spawnWorkerStreaming(input: {
     });
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
+      lastOutputAt = Date.now();
       armIdleTimer();
       stderrChunks.push(chunk);
     });
@@ -2949,6 +3140,17 @@ function terminateChildProcessTree(child: ChildProcess): void {
       timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     });
+  } else if (child.pid) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      // The process may not have its own group or may already be gone.
+    }
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // Best effort only; fall back to killing the direct child below.
+    }
   }
   try {
     child.kill();
@@ -2963,6 +3165,14 @@ function configuredAgentIdleTimeoutMs(): number | undefined {
   if (!raw) return undefined;
   const seconds = Number.parseInt(raw, 10);
   if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return seconds * 1000;
+}
+
+function configuredResultArtifactRecoveryQuietMs(): number {
+  const raw = process.env.SWARM_RESULT_ARTIFACT_RECOVERY_QUIET_SECONDS;
+  if (!raw) return 3000;
+  const seconds = Number.parseInt(raw, 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 3000;
   return seconds * 1000;
 }
 
@@ -3961,8 +4171,10 @@ function applyReviewOutcome(input: {
 function clearResolvedReviewEscalations(store: SwarmStore, slice: SliceRecord, actor: string, reviewEvidenceId: string): void {
   const activeEscalations = store.listEscalations("active");
   const clearable = activeEscalations.filter((escalation) => {
-    if (escalation.entityType !== "slice" || escalation.entityId !== slice.id) return false;
     if (escalation.level !== "warning" && escalation.level !== "blocker") return false;
+    const directlyScopedToSlice = escalation.entityType === "slice" && escalation.entityId === slice.id;
+    const referencesSlice = escalationText(escalation).includes(slice.id.toLowerCase());
+    if (!directlyScopedToSlice && !referencesSlice) return false;
     return isReviewRepairEscalation(escalation);
   });
   for (const escalation of clearable) {
@@ -3986,9 +4198,13 @@ function clearResolvedReviewEscalations(store: SwarmStore, slice: SliceRecord, a
 }
 
 function isReviewRepairEscalation(escalation: EscalationRecord): boolean {
-  const haystack = `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""}`.toLowerCase();
+  const haystack = escalationText(escalation);
   if (/skill[_ -]isolation|user[- ]global skill|global .*skill/.test(haystack)) return false;
   return /review|reviewer|sleuth|repair|quality gate/.test(haystack);
+}
+
+function escalationText(escalation: EscalationRecord): string {
+  return `${escalation.message ?? ""} ${escalation.reason ?? ""} ${escalation.createdBy ?? ""} ${escalation.entityId ?? ""}`.toLowerCase();
 }
 
 function insertReviewEscalation(
@@ -4179,6 +4395,105 @@ function buildSliceRepairContext(store: SwarmStore, slice: SliceRecord): SliceRe
 
   if (!review && humanFeedback.length === 0 && activeEscalations.length === 0) return undefined;
   return { review, humanFeedback, activeEscalations };
+}
+
+// FR-CP-001 / FR-CP-003: derive settled facts from DURABLE ledger state (never from
+// worker_result claims). Accepted SIBLING refs (entry.sliceId !== slice.id and a
+// terminal/passed ledger status) become settled context; the current slice's own refs
+// are intentionally excluded so a worker claim can never make in-scope refs look settled.
+// Still-blocked / human-gated refs are surfaced separately so they render as visibly
+// blocked rather than settled.
+function buildLedgerSettledFacts(store: SwarmStore, slice: SliceRecord): LedgerSettledFacts {
+  const inScopeRefs = [...slice.frAcRefs];
+  let coverage;
+  try {
+    coverage = buildCoverage(store);
+  } catch {
+    return { inScopeRefs, acceptedSiblings: [], blockedRefs: [] };
+  }
+  const refsByRef = new Map(coverage.refs.map((ref) => [ref.ref, ref]));
+  const commandSummaryCache = new Map<string, string | undefined>();
+  const commandSummaryForSlice = (siblingSliceId: string | undefined): string | undefined => {
+    if (!siblingSliceId) return undefined;
+    if (commandSummaryCache.has(siblingSliceId)) return commandSummaryCache.get(siblingSliceId);
+    let summary: string | undefined;
+    try {
+      const payload = buildCheckpointPayload(store, "worker", "slice", siblingSliceId);
+      const commandEvidence = payload.commandEvidence as
+        | Array<{ evidenceId?: string; summary?: string; passed?: unknown; command?: unknown }>
+        | undefined;
+      const passing = commandEvidence?.find((item) => item.passed === true) ?? commandEvidence?.at(-1);
+      if (passing) {
+        const label = String(passing.command ?? passing.summary ?? "").trim();
+        const passedText = passing.passed === true ? "passed" : "recorded";
+        summary = label ? `${label} ${passedText}` : `command evidence ${passedText}`;
+      }
+    } catch {
+      summary = undefined;
+    }
+    commandSummaryCache.set(siblingSliceId, summary);
+    return summary;
+  };
+
+  const acceptedSiblings: SettledFact[] = [];
+  const blockedRefs: SettledBlockedRef[] = [];
+  for (const entry of coverage.ledger.entries) {
+    // current-slice refs are NEVER settled merely from claims.
+    if (entry.sliceId === slice.id) continue;
+    if (SETTLED_LEDGER_STATUSES.has(entry.status)) {
+      const coverageRef = refsByRef.get(entry.ref);
+      const evidenceIds = (entry.evidenceIds && entry.evidenceIds.length > 0
+        ? entry.evidenceIds
+        : coverageRef?.evidenceIds ?? []).slice(0, 6);
+      acceptedSiblings.push({
+        ref: entry.ref,
+        ledgerStatus: entry.status,
+        sliceId: entry.sliceId,
+        evidenceIds,
+        commandSummary: commandSummaryForSlice(entry.sliceId),
+      });
+    } else if (BLOCKED_LEDGER_STATUSES.has(entry.status)) {
+      blockedRefs.push({
+        ref: entry.ref,
+        status: entry.status,
+        message: entry.reason ?? entry.humanPath?.reason ?? "Blocked or human-gated.",
+      });
+    }
+  }
+  return { inScopeRefs, acceptedSiblings, blockedRefs };
+}
+
+function formatSettledFactsForPrompt(facts: LedgerSettledFacts | undefined, inScopeRefs: string[]): string {
+  const scopeList = inScopeRefs.join(", ");
+  const lines = [
+    "Settled facts from the requirement ledger:",
+    "- This section is harness-authored from DURABLE state (the requirement ledger + checkpoints), NOT from chat or from any worker's claim.",
+    "- Accepted SIBLING FR/AC refs below are settled context only: each is backed by ledger status accepted/verified/human_verified/review_passed and its listed evidence ids. Treat them as already-true facts you may build on.",
+  ];
+  const acceptedSiblings = facts?.acceptedSiblings ?? [];
+  if (acceptedSiblings.length > 0) {
+    for (const fact of acceptedSiblings) {
+      const sliceText = fact.sliceId ? ` - slice ${fact.sliceId}` : "";
+      const evidenceText = fact.evidenceIds.length > 0 ? `; evidence: ${fact.evidenceIds.join(", ")}` : "; evidence: none recorded";
+      const commandText = fact.commandSummary ? `; ${fact.commandSummary}` : "";
+      lines.push(`  - ${fact.ref} (${fact.ledgerStatus})${sliceText}${evidenceText}${commandText}`);
+    }
+  } else {
+    lines.push("  - No accepted sibling FR/AC refs are settled in the ledger yet.");
+  }
+  const blockedRefs = facts?.blockedRefs ?? [];
+  lines.push("- Still-blocked / human-gated refs (NOT settled, do not assume done):");
+  if (blockedRefs.length > 0) {
+    for (const blocked of blockedRefs) {
+      lines.push(`  - ${blocked.ref} (${blocked.status}): ${blocked.message}`);
+    }
+  } else {
+    lines.push("  - none");
+  }
+  lines.push(
+    `- These settled facts do NOT waive your evidence obligations for the current slice scope. You MUST still produce fresh per-FR/AC evidence for every in-scope ref (${scopeList}); the current slice's own refs are NOT settled merely because work was claimed.`,
+  );
+  return `${lines.join("\n")}\n`;
 }
 
 function latestRepairReviewContext(store: SwarmStore, slice: SliceRecord): SliceRepairContext["review"] | undefined {
@@ -5703,6 +6018,7 @@ function applyOverseerDecision(input: {
   costUsd?: number;
   resultArtifactRecovered?: boolean;
   recoveryReason?: string;
+  resultArtifactRecoveryTriggered?: boolean;
   skillBinding?: SkillBindingResult;
   skillIsolationFindings?: SkillIsolationFinding[];
 }): OverseerCommandExecution[] {
@@ -5735,6 +6051,9 @@ function applyOverseerDecision(input: {
         resultPath: input.resultPath,
         eventsPath: input.eventsPath,
         overseerEvents: input.overseerEvents,
+        resultArtifactRecovered: input.resultArtifactRecovered,
+        recoveryReason: input.recoveryReason,
+        resultArtifactRecoveryTriggered: input.resultArtifactRecoveryTriggered,
       },
     }),
   );
@@ -6323,6 +6642,7 @@ function buildWorkerPrompt(input: {
   laneName?: string;
   skillPacket?: string;
   repairContext?: SliceRepairContext;
+  settledFacts?: LedgerSettledFacts;
 }): string {
   const sourceRefs = input.slice.sourceRefs
     .map((source) => `- ${source.title ?? source.uri}: ${source.uri}`)
@@ -6369,6 +6689,7 @@ ${input.slice.expectedEvidence.map((item) => `- ${item}`).join("\n")}
 Verification requirements:
 ${input.slice.verificationRequirements.map((item) => `- ${item}`).join("\n")}
 
+${formatSettledFactsForPrompt(input.settledFacts, input.slice.frAcRefs)}
 ${formatRepairContextForPrompt(input.repairContext)}
 
 Instructions:
@@ -6438,7 +6759,11 @@ function buildWorkerRevivePrompt(input: {
   previousStatus: string;
   priorResultState: string;
   skillPacket?: string;
+  store?: SwarmStore;
+  recoveredSessionId?: string;
+  settledFacts?: LedgerSettledFacts;
 }): string {
+  const resumeBlock = formatReviveResumeBlock(input);
   return `You are being resumed by the Agent Swarm supervised recovery protocol.
 
 Previous run:
@@ -6453,8 +6778,82 @@ Recovery objective:
 - If you cannot safely complete or prove the work, return a structured blocked/failed result with exact reasons.
 
 This is not permission to change source specs or expand scope.
+${resumeBlock}
+${buildWorkerPrompt({ slice: input.slice, targetPath: input.targetPath, laneName: input.laneName, skillPacket: input.skillPacket, settledFacts: input.settledFacts })}`;
+}
 
-${buildWorkerPrompt({ slice: input.slice, targetPath: input.targetPath, laneName: input.laneName, skillPacket: input.skillPacket })}`;
+// FR-CP-002: harness-authored resume/ledger block so a revived session does NOT redo
+// settled work. Renders prev run id + session, current slice status, active blockers/
+// escalations, prior evidence + commands, do-not-redo items, and the next expected
+// action from DURABLE state only. It MUST NOT mark any in-scope ref accepted: it only
+// echoes ledger/checkpoint status, never a worker claim.
+function formatReviveResumeBlock(input: {
+  slice: SliceRecord;
+  previousRunId: string;
+  previousStatus: string;
+  store?: SwarmStore;
+  recoveredSessionId?: string;
+}): string {
+  const lines = [
+    "",
+    "Resume / ledger context (harness-authored from durable state; do NOT redo settled work):",
+    `- Previous run id: ${input.previousRunId}`,
+    `- Previous run session id: ${input.recoveredSessionId ?? "none captured"}`,
+    `- Current slice status (durable): ${input.slice.status}`,
+  ];
+  if (!input.store) {
+    lines.push(
+      "- No durable checkpoint store available; rely on the target state and prior session context.",
+      "- Do not redo: any work already proven by recorded evidence; re-prove only what is missing or failed.",
+      "- Next expected action: confirm in-scope FR/AC evidence, finish only what is missing, emit the structured worker result.",
+    );
+    return `${lines.join("\n")}\n`;
+  }
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = buildCheckpointPayload(input.store, "recovery", "slice", input.slice.id);
+  } catch {
+    payload = {};
+  }
+  const activeBlockers = Array.isArray(payload.activeBlockers) ? (payload.activeBlockers as unknown[]) : [];
+  const missingEvidence = Array.isArray(payload.missingEvidence) ? (payload.missingEvidence as unknown[]) : [];
+  const commandEvidence = Array.isArray(payload.commandEvidence)
+    ? (payload.commandEvidence as Array<{ evidenceId?: unknown; command?: unknown; summary?: unknown; passed?: unknown }>)
+    : [];
+  lines.push("- Active blockers / escalations:");
+  if (activeBlockers.length > 0) {
+    for (const blocker of activeBlockers) lines.push(`  - ${String(blocker)}`);
+  } else {
+    lines.push("  - none");
+  }
+  lines.push("- Prior evidence already recorded (do NOT redo proven work):");
+  if (commandEvidence.length > 0) {
+    for (const item of commandEvidence) {
+      const label = String(item.command ?? item.summary ?? item.evidenceId ?? "command").trim();
+      const passedText = item.passed === true ? "passed" : item.passed === false ? "failed" : "recorded";
+      lines.push(`  - ${label} (${passedText})`);
+    }
+  } else {
+    lines.push("  - none recorded yet");
+  }
+  lines.push("- Still missing or failed FR/AC proof (re-prove only these):");
+  if (missingEvidence.length > 0) {
+    for (const item of missingEvidence) lines.push(`  - ${String(item)}`);
+  } else {
+    lines.push("  - none");
+  }
+  lines.push(
+    "- Do not redo: any in-scope FR/AC already backed by passing recorded evidence above.",
+    `- Next expected action: ${textValueForPrompt(payload.nextIntendedAction)}`,
+    "- Note: settled status here reflects the requirement ledger/checkpoints only; it never marks an in-scope ref accepted on the basis of a worker claim.",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function textValueForPrompt(value: unknown): string {
+  if (value === null || value === undefined) return "Confirm evidence, finish missing work, emit the structured worker result.";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
 }
 
 function writeWorkerResultSchema(schemaPath: string): void {

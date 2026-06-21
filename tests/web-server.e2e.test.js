@@ -443,6 +443,27 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
     assert.equal(runFocus.kind, "run_focus", "run focus packet should have kind run_focus");
     assert.equal(runFocus.run.id, focusRunId, "run focus packet should describe the seeded run");
 
+    // FR-PI-003: the JSON focus packet surface exposes the additive intervention field.
+    const interventionActions = [
+      "observe",
+      "coach_same_session",
+      "reask_structured_result",
+      "accept_valid_artifact",
+      "revive_same_session",
+      "restart_fresh",
+      "dispatch_targeted_repair",
+      "escalate_human",
+    ];
+    assert.ok(runFocus.intervention, "run focus packet should expose intervention");
+    assert.ok(typeof runFocus.intervention.classification === "string", "intervention.classification present");
+    assert.ok(["low", "medium", "high"].includes(runFocus.intervention.confidence), "intervention.confidence is enum");
+    assert.ok(interventionActions.includes(runFocus.intervention.recommendedAction), "intervention.recommendedAction is enum");
+    assert.ok(Array.isArray(runFocus.intervention.evidence), "intervention.evidence is an array");
+    assert.ok(typeof runFocus.intervention.risk === "string", "intervention.risk present");
+    assert.ok(runFocus.intervention.evidence.includes(focusRunId), "intervention.evidence references the run id");
+    assert.ok(sliceFocus.intervention, "slice focus packet should expose intervention");
+    assert.ok(typeof sliceFocus.intervention.classification === "string", "slice intervention.classification present");
+
     const runFocusMissing = await get(port, "/api/focus/run/RUN-does-not-exist");
     assert.equal(runFocusMissing.status, 404, "/api/focus/run/<unknown> should be 404");
 

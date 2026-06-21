@@ -432,6 +432,54 @@ test("live agent runner revives a stalled worker session before restart fallback
   assert.ok(!snapshot.recentEvents.some((event) => event.type === "recovery.restart_completed"));
   assert.ok(snapshot.recentEvents.some((event) => event.type === "verification.completed" && event.payload.passed === true));
 
+  // FR-PI-002: recovery records that it consulted the focus/intervention packet BEFORE
+  // reviving, and same-session revive stays preferred when a session id exists. Note:
+  // recentEvents collides at ms resolution (storage.ts orders events by timestamp only),
+  // so ordering is asserted by event existence + payload, not by list index.
+  const reviveConsult = snapshot.recentEvents.find((event) => event.type === "recovery.focus_consulted");
+  assert.ok(reviveConsult, "recovery revive should emit recovery.focus_consulted");
+  assert.equal(reviveConsult.payload.recoveryKind, "revive");
+  assert.equal(reviveConsult.payload.hasSession, true);
+  assert.ok(
+    typeof reviveConsult.payload.recommendedAction === "string" && reviveConsult.payload.recommendedAction.length > 0,
+    "revive focus_consulted carries an intervention recommendedAction",
+  );
+  // Same-session revive stays preferred (a revive happened; no restart fallback).
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "recovery.revive_started"));
+  assert.ok(!snapshot.recentEvents.some((event) => event.type === "recovery.restart_started"));
+
+  // FR-CP-002: the persisted revive prompt carries a harness-authored resume/ledger
+  // block (prev run id + session, current slice status, prior evidence/commands,
+  // do-not-redo, next expected action) and forwards the settled-facts section, while
+  // NOT marking any in-scope ref accepted.
+  const revivePromptPath = path.join(
+    workspace,
+    ".swarm",
+    "artifacts",
+    summary.sliceId,
+    `worker-revive-prompt-${summary.supervisedRecovery.revivedRunId}.md`,
+  );
+  assert.ok(fs.existsSync(revivePromptPath), "revive prompt artifact should be persisted");
+  const revivePrompt = fs.readFileSync(revivePromptPath, "utf8");
+  assert.match(revivePrompt, /Resume \/ ledger context/);
+  assert.match(revivePrompt, new RegExp(`Previous run id: ${summary.supervisedRecovery.recoveredRunId}`));
+  assert.match(revivePrompt, /Previous run session id: /);
+  assert.match(revivePrompt, /Current slice status \(durable\): /);
+  assert.match(revivePrompt, /Do not redo: any in-scope FR\/AC already backed by passing recorded evidence/);
+  assert.match(revivePrompt, /Next expected action: /);
+  // The embedded worker prompt still carries the settled-facts section.
+  assert.match(revivePrompt, /Settled facts from the requirement ledger/);
+  assert.match(revivePrompt, /do NOT waive your evidence obligations/i);
+  // It must NOT promote an in-scope ref to accepted from a worker claim.
+  const reviveResumeBlock = revivePrompt.slice(
+    revivePrompt.indexOf("Resume / ledger context"),
+    revivePrompt.indexOf("Settled facts from the requirement ledger"),
+  );
+  assert.ok(
+    !/\baccepted\b/i.test(reviveResumeBlock) || /never marks an in-scope ref accepted/.test(reviveResumeBlock),
+    "resume block must not silently mark an in-scope ref accepted",
+  );
+
   const manifest = JSON.parse(fs.readFileSync(path.join(workspace, "live-agent-smoke.json"), "utf8"));
   assert.equal(manifest.phase, "phase-6-fault-injection");
   assert.equal(manifest.liveRun.fault, "supervised-revive");
