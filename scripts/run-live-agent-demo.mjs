@@ -479,6 +479,28 @@ if (fullProductMode) {
 }
 
 const finalSnapshot = observe(260);
+// Reconcile harness-performed escalation clearances into our ledgers. The harness itself clears
+// the repair blocker during review acceptance (escalation.cleared payload.clearedAfterReviewAccepted,
+// actor = reviewer) and the stale-run blocker when a restart run supersedes it
+// (payload.previousRunId === the stale run id) — often BEFORE the acceptance loop's own per-turn
+// clearing pass can act. Counting both keeps repairClearances/staleRecoveryClearances a faithful
+// record of "the blocker was cleared after acceptance/recovery", regardless of which actor cleared it.
+for (const event of finalSnapshot.recentEvents) {
+  if (event.type !== "escalation.cleared") continue;
+  const p = event.payload ?? {};
+  if (p.clearedAfterReviewAccepted === true) {
+    const already = repairClearances.some((c) => c.sliceId === p.sliceId && c.clearedBy === event.actor);
+    if (!already) {
+      repairClearances.push({ sliceId: p.sliceId, escalationId: p.escalationId, message: p.reason, clearedBy: event.actor, viaHarness: true });
+    }
+  }
+  if (p.previousRunId && staleRecovery.staleRunId && p.previousRunId === staleRecovery.staleRunId) {
+    const already = staleRecoveryClearances.some((c) => c.staleRunId === staleRecovery.staleRunId && c.clearedBy === event.actor);
+    if (!already) {
+      staleRecoveryClearances.push({ sliceId: staleRecovery.sliceId, staleRunId: staleRecovery.staleRunId, recoveryRunId: p.recoveryRunId, message: p.reason, clearedBy: event.actor, viaHarness: true });
+    }
+  }
+}
 const finalSourceMutations = inspectSourceMutations(finalSnapshot.sources);
 const graph = JSON.parse(runSwarm(["graph", "--format", "json"]));
 const acceptedSlice = finalSnapshot.slices.filter((slice) => slice.status === "accepted").at(-1);
