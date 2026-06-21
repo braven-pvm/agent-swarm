@@ -1055,6 +1055,35 @@ program
       const commandPassed = result.status === 0;
       const workerGate = readAndValidateWorkerResult(store, slice, options.actor);
       const reviewGate = readLatestReviewGate(store, slice, options.actor);
+      // RE-2: record each skeptic downgrade so a human can see what was downgraded and why (residualRisk
+      // line + harness event). VISIBILITY: nothing hidden. Recorded ONLY at the verify consumer — the
+      // single point where a downgrade actually changes an accept decision.
+      const reviewGateDowngrades = reviewGate.downgrades ?? [];
+      const reviewGateResidualRisks = reviewGateDowngrades.map(
+        (d) =>
+          `DOWNGRADED ${d.kind} ${d.target} (${d.fromSeverity}) by skeptic ${d.skepticActor}: ${d.reasoning} (challenge ${d.challengeEvidenceId})`,
+      );
+      for (const downgrade of reviewGateDowngrades) {
+        store.addEvent(
+          createEvent({
+            actor: options.actor,
+            type: "review.finding_downgraded",
+            entityType: "slice",
+            entityId: slice.id,
+            payload: {
+              dimension: downgrade.kind === "dimension" ? downgrade.target : undefined,
+              concern: downgrade.kind === "concern" || downgrade.kind === "status" ? downgrade.target : undefined,
+              targetKind: downgrade.kind,
+              fromSeverity: downgrade.fromSeverity,
+              skepticVerdict: downgrade.skepticVerdict,
+              reasoning: downgrade.reasoning,
+              skepticActor: downgrade.skepticActor,
+              challengeEvidenceId: downgrade.challengeEvidenceId,
+              reviewEvidenceId: reviewGate.evidenceId,
+            },
+          }),
+        );
+      }
       const activeAcceptanceBlockers = store
         .listEscalations("active")
         .filter((item) => item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
@@ -1102,6 +1131,7 @@ program
           commandPassed,
           workerGate,
           reviewGate,
+          reviewGateResidualRisks,
           activeAcceptanceBlockers,
           verificationObligations: summarizeVerificationObligations(slice),
           frAcResults,
@@ -1137,6 +1167,7 @@ program
             commandPassed,
             workerGate,
             reviewGate,
+            reviewGateResidualRisks,
             activeAcceptanceBlockers,
             verificationObligations: summarizeVerificationObligations(slice),
             frAcResults,
@@ -3138,7 +3169,12 @@ async function executeSkepticRun(input: {
     resultArtifactRecoveryTriggered?: boolean;
   };
   if (input.driver === "fixture") {
-    const skepticResult = runFixtureSkeptic({ challengedReview });
+    // TEST SEAM (RE-2): strictly fixture-only and only when SWARM_FIXTURE_SKEPTIC_RESULT is set, allow a
+    // seeded skepticResult JSON file (validated by skepticResultSchema) to route a deterministic "refuted"
+    // verdict through the REAL independence guard + REAL finding_challenge recording, with no provider
+    // spend. When the env var is absent, the canned (uncertain) fixture result is used — production
+    // fixture behavior is unchanged.
+    const skepticResult = loadSeededFixtureSkepticResult() ?? runFixtureSkeptic({ challengedReview });
     fs.writeFileSync(resultPath, `${JSON.stringify(skepticResult)}\n`, "utf8");
     result = {
       status: 0,
@@ -3226,6 +3262,7 @@ async function executeSkepticRun(input: {
         path: resultPath,
         skepticResult: parsedSkeptic.result,
         challengedReviewEvidenceId,
+        skepticActor: input.actor,
         skepticEvents,
       },
       createdAt: new Date().toISOString(),
@@ -4469,6 +4506,24 @@ Review rules:
  * the full evidence/event shape without provider spend. DEFAULT-REJECT framing: it does not affirm
  * findings it cannot independently confirm — for the fixture, every verdict is "uncertain".
  */
+// TEST SEAM (RE-2): only ever consulted from the fixture skeptic path, and only when
+// SWARM_FIXTURE_SKEPTIC_RESULT names a readable JSON file whose contents validate against
+// skepticResultSchema. Returns undefined (-> canned fixture result) otherwise, so production fixture
+// behavior is unchanged. This must never leak into any non-fixture driver.
+function loadSeededFixtureSkepticResult(): SkepticResult | undefined {
+  const seedPath = process.env.SWARM_FIXTURE_SKEPTIC_RESULT;
+  if (!seedPath || !seedPath.trim()) return undefined;
+  if (!fs.existsSync(seedPath)) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(seedPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const parsed = skepticResultSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+
 function runFixtureSkeptic(input: { challengedReview: ReviewResult }): SkepticResult {
   const review = input.challengedReview;
   const findingVerdicts: SkepticResult["findingVerdicts"] = [
@@ -4688,7 +4743,14 @@ function applyReviewOutcome(input: {
   sourceMutationsAfter: SourceMutationFinding[];
 }): void {
   const sourceMutationDetected = input.result.sourceMutationDetected || input.sourceMutationsAfter.some((item) => item.mutated);
-  const qualityBlockingReasons = reviewQualityBlockingReasons(input.result);
+  // RE-2: route through the wrapper for single-source-of-truth. At REVIEW time the skeptic has not run yet
+  // (skeptic runs AFTER review), so no finding_challenge exists for the latest review and this resolves to
+  // the pure path. Recording downgrades here is intentionally omitted — recording happens only at the
+  // verify consumer where a downgrade actually changes an accept decision.
+  const { reasons: qualityBlockingReasons } = reviewQualityBlockingDecision(input.result, {
+    store: input.store,
+    slice: input.slice,
+  });
   const effectiveStatus = sourceMutationDetected
     ? "human_required"
     : input.result.status === "repair_required" || input.result.status === "human_required"
@@ -4916,7 +4978,7 @@ function readLatestReviewGate(
   store: SwarmStore,
   slice: SliceRecord,
   verifier: string,
-): { passed: boolean; reason: string; status?: ReviewResult["status"]; evidenceId?: string } {
+): { passed: boolean; reason: string; status?: ReviewResult["status"]; evidenceId?: string; downgrades?: GateDowngrade[] } {
   const reviewEvidence = store
     .listEvidence(slice.id)
     .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
@@ -4967,13 +5029,20 @@ function readLatestReviewGate(
       evidenceId: reviewEvidence.id,
     };
   }
-  const qualityBlockingReasons = reviewQualityBlockingReasons(parsed.data);
+  // RE-2: consult the latest independent finding_challenge to downgrade ONLY quality-gate reasons the
+  // skeptic explicitly refuted. On the no-skeptic path this is byte-identical to reviewQualityBlockingReasons.
+  const { reasons: qualityBlockingReasons, downgrades } = reviewQualityBlockingDecision(parsed.data, {
+    store,
+    slice,
+    reviewEvidenceId: reviewEvidence.id,
+  });
   if (qualityBlockingReasons.length > 0) {
     return {
       passed: false,
       reason: `latest review quality gate failed: ${qualityBlockingReasons.join("; ")}`,
       status: "blocked",
       evidenceId: reviewEvidence.id,
+      downgrades,
     };
   }
   return {
@@ -4981,6 +5050,7 @@ function readLatestReviewGate(
     reason: "latest review accepted",
     status: "accepted",
     evidenceId: reviewEvidence.id,
+    downgrades,
   };
 }
 
@@ -5160,6 +5230,141 @@ function reviewQualityBlockingReasons(result: ReviewResult): string[] {
     }
   }
   return reasons;
+}
+
+// RE-2: a single quality-gate blocking reason the independent skeptic explicitly REFUTED, recorded so a
+// human can see exactly what was downgraded and why (residualRisk line + harness event). The skeptic can
+// ONLY ever downgrade quality-gate findings (dimensions/concerns/status); hard backstops are evaluated
+// BEFORE this wrapper runs and are structurally immune.
+type GateDowngrade = {
+  target: string; // dimension name (or concern/status text) that was downgraded
+  kind: "dimension" | "concern" | "status";
+  fromSeverity: string; // e.g. "failed/high" for a dimension, or "blocking" for a concern/status
+  skepticVerdict: "refuted";
+  reasoning: string;
+  skepticActor: string;
+  challengeEvidenceId: string;
+};
+
+// RE-2: the SAME provenance reviewQualityBlockingReasons builds, carried alongside each reason so matching
+// does not re-parse the formatted string. (R1=status, R2=concern, R3=dimension.)
+type QualityBlockingReason =
+  | { kind: "status"; reason: string; target: string; fromSeverity: string }
+  | { kind: "concern"; reason: string; target: string; fromSeverity: string }
+  | { kind: "dimension"; reason: string; target: string; fromSeverity: string };
+
+// Mirror of reviewQualityBlockingReasons but carrying structured provenance. MUST stay byte-identical in
+// the `reason` strings + ordering to reviewQualityBlockingReasons (test (c) asserts this).
+function reviewQualityBlockingReasonsStructured(result: ReviewResult): QualityBlockingReason[] {
+  const gate = result.qualityGate;
+  const entries: QualityBlockingReason[] = [];
+  if (gate.status === "failed") {
+    entries.push({ kind: "status", reason: `qualityGate.status=${gate.status}`, target: gate.status, fromSeverity: "blocking" });
+  }
+  for (const concern of gate.blockingConcerns) {
+    const trimmed = concern.trim();
+    if (trimmed) entries.push({ kind: "concern", reason: trimmed, target: trimmed, fromSeverity: "blocking" });
+  }
+  for (const dimension of gate.dimensions) {
+    if (dimension.status === "failed" || dimension.risk === "high") {
+      entries.push({
+        kind: "dimension",
+        reason: `${dimension.dimension} ${dimension.status}/${dimension.risk}: ${dimension.finding}`,
+        target: dimension.dimension,
+        fromSeverity: `${dimension.status}/${dimension.risk}`,
+      });
+    }
+  }
+  return entries;
+}
+
+// RE-2: read the LATEST independent finding_challenge for the slice and downgrade ONLY quality-gate
+// blocking reasons the skeptic explicitly REFUTED. Default-keep-blocking: anything not explicitly refuted
+// by an admissible independent skeptic stays blocking. When ctx is omitted OR there is no admissible
+// independent challenge, this returns reviewQualityBlockingReasons(result) UNCHANGED (byte-identical),
+// guaranteeing the no-skeptic path is unaffected.
+function reviewQualityBlockingDecision(
+  result: ReviewResult,
+  ctx?: { store: SwarmStore; slice: SliceRecord; reviewEvidenceId?: string },
+): { reasons: string[]; downgrades: GateDowngrade[] } {
+  const baseReasons = reviewQualityBlockingReasons(result);
+  if (!ctx) return { reasons: baseReasons, downgrades: [] };
+  const { store, slice } = ctx;
+
+  // 1) latest finding_challenge for the slice (same read pattern as readLatestReviewGate / review_result).
+  const challengeEvidence = store
+    .listEvidence(slice.id)
+    .filter((item) => item.kind === "finding_challenge")
+    .at(-1);
+  if (!challengeEvidence) return { reasons: baseReasons, downgrades: [] };
+
+  const parsedSkeptic = skepticResultSchema.safeParse(challengeEvidence.payload.skepticResult);
+  if (!parsedSkeptic.success) return { reasons: baseReasons, downgrades: [] };
+
+  // ORDERING/LATEST safety hole closer (risks#5): only consult a challenge that targeted the SAME
+  // review_result the gate is reading. A stale challenge against a prior review must NOT downgrade a new
+  // review by accidental dimension-name collision.
+  if (ctx.reviewEvidenceId) {
+    const challengedReviewEvidenceId =
+      typeof challengeEvidence.payload.challengedReviewEvidenceId === "string"
+        ? challengeEvidence.payload.challengedReviewEvidenceId
+        : undefined;
+    if (challengedReviewEvidenceId !== ctx.reviewEvidenceId) return { reasons: baseReasons, downgrades: [] };
+  }
+
+  // 2) INDEPENDENCE bound to the AUTHOR of the CONSUMED challenge — not merely "some independent skeptic
+  // run exists for the slice" (that decoupling let a non-independent challenge author ride on an unrelated
+  // honest run). The consumed challenge counts ONLY if its OWN author ran as a skeptic on this slice AND is
+  // not a worker/reviewer actor for the slice. The author is persisted on the challenge payload
+  // (skepticActor); older challenges lacking it are conservatively ignored (no downgrade — keep blocking).
+  const challengeAuthor =
+    typeof challengeEvidence.payload.skepticActor === "string"
+      ? challengeEvidence.payload.skepticActor
+      : undefined;
+  if (!challengeAuthor) return { reasons: baseReasons, downgrades: [] };
+  const runs = store.listAgentRuns().filter((run) => run.sliceId === slice.id);
+  const workerReviewerActors = new Set(
+    runs.filter((run) => run.role === "worker" || run.role === "reviewer").map((run) => run.actor),
+  );
+  const authorRanAsSkeptic = runs.some((run) => run.role === "skeptic" && run.actor === challengeAuthor);
+  if (!authorRanAsSkeptic || workerReviewerActors.has(challengeAuthor)) {
+    return { reasons: baseReasons, downgrades: [] };
+  }
+  const skepticActor = challengeAuthor;
+
+  // 3) match each quality reason to a quality_dimension verdict. ONLY quality_dimension verdicts are ever
+  // consulted — fr_ac_finding / required_fix / escalation verdicts are filtered out so a skeptic can never
+  // influence the hard backstops (test (b)).
+  const qualityVerdicts = parsedSkeptic.data.findingVerdicts.filter((v) => v.source === "quality_dimension");
+  const structured = reviewQualityBlockingReasonsStructured(result);
+  const keptReasons: string[] = [];
+  const downgrades: GateDowngrade[] = [];
+
+  for (const entry of structured) {
+    // A dimension reason matches by exact dimension-name equality; concern/status only via the exact-string
+    // fallback (their target IS the concern/status text). Default-keep-blocking otherwise.
+    const matching = qualityVerdicts.filter((v) => (v.dimension ?? "") === entry.target);
+    const anyReal = matching.some((v) => v.verdict === "real");
+    const refuting = matching.find((v) => v.verdict === "refuted");
+    // Conservative: a "real" verdict always wins over a "refuted" one; "uncertain" never downgrades.
+    if (refuting && !anyReal) {
+      downgrades.push({
+        target: entry.target,
+        kind: entry.kind,
+        fromSeverity: entry.fromSeverity,
+        skepticVerdict: "refuted",
+        reasoning: refuting.reasoning,
+        skepticActor,
+        challengeEvidenceId: challengeEvidence.id,
+      });
+    } else {
+      keptReasons.push(entry.reason);
+    }
+  }
+
+  // The kept reasons are produced by FILTERING the structured list (preserving order + exact strings); on
+  // any no-downgrade path keptReasons === baseReasons element-for-element.
+  return { reasons: keptReasons, downgrades };
 }
 
 function validateSliceDispatchContract(slice: SliceRecord): void {
