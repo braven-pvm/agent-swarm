@@ -66,14 +66,31 @@ All six FRs met; build green; 34/34 focused tests pass; **0 existing tests weake
   `review-runner`, `web-server`, `invoice-demo` → **34 tests, 34 pass, 0 fail, 0 skip** (de-ANSI'd
   summary, exit 0).
 - Integrity: existing files the workflow touched have **0 removed/changed assertion lines** — additive.
-- `tests/live-agent-runner.e2e.test.js` (long full-product E2E, +48 additive): launched separately;
-  it can exceed shell timeouts per the handoff caveat — see test-output.txt for final status. The
-  targeted FR coverage above does not depend on it.
+- `tests/live-agent-runner.e2e.test.js` (full file, 15 tests): **13 pass, 2 fail** — but the 2
+  failures are **PRE-EXISTING, not from this slice** (see below). The supervised-revive test that
+  carries this slice's new FR-PI-002/FR-CP-002 assertions **passes 1/1 in isolation**.
+
+### Pre-existing failures found (out of scope, bisect-proven NOT caused by this slice)
+- `live agent runner repairs after reviewer blocks acceptance once` and
+  `live agent runner recovers a stale worker run through restart` fail on
+  `assert.ok(Object.entries(summary.assertions).every(...))` — specifically
+  `reviewerRepairEscalationCleared` / `staleRunEscalationCleared` are false (escalation clearing in
+  those fault flows).
+- **Bisect proof:** reverting `src/{cli,focus,worker-driver}.ts` to the last clean commit `f394fcd`
+  (before this session's source changes — before both the in-flight Codex hardening and this slice)
+  and rebuilding, **both tests still fail identically**. So they predate this work and were already
+  red on `origin/main`; the escalation-matcher refactor is not the cause either (failed with the old
+  matcher).
+- Environmental note: this dev box currently has 9 stray node processes and ~1,729 accumulated
+  `.swarm-demo/test-live-agent-*` workspaces; a contributing environmental factor is plausible but the
+  failures reproduce deterministically here. Recommend triaging these two as a separate task
+  (escalation-clearing in the reviewer-repair / stale-run demo-runner flows), independent of this slice.
 
 ## Residual risk
 
-- The long `live-agent-runner` full E2E was not confirmed green within the verification window (slow by
-  design). Its changes are additive and the focused suite passes; re-run it explicitly to close out.
+- Two `live-agent-runner` tests (reviewer-repair, stale-run) are red — **bisect-proven pre-existing**
+  (fail at `f394fcd` too), about escalation clearing, unrelated to this slice. They were already red
+  on `origin/main`. Triage separately; not a regression from this work.
 - `computeIntervention` classification is heuristic (priority-ordered first-match). It is advisory and
   additive — no existing consumer is forced to act on it yet (FR-PI-002 only *records* consultation).
 - Settled-facts only promotes **ledger-accepted** sibling refs; correct by FR-CP-003, but coverage of

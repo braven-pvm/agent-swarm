@@ -20,3 +20,15 @@ LONG E2E (slow, additive +48):
   node --test tests/live-agent-runner.e2e.test.js  -> see status note below
 (live-agent-runner final status appended below)
 starting live-agent-runner (slow, modified +48) in background
+
+LONG E2E final status (live-agent-runner.e2e.test.js, full file):
+  15 tests | 13 pass | 2 fail
+  Failing: "repairs after reviewer blocks acceptance once", "recovers a stale worker run through restart"
+  Both fail on assert.ok(every(summary.assertions)==true):
+    reviewerRepairEscalationCleared = false ; staleRunEscalationCleared = false
+  Supervised-revive test (carries THIS slice's new assertions) -> passes 1/1 in isolation.
+
+BISECT (definitive): reverted src/{cli,focus,worker-driver}.ts to f394fcd (last clean commit,
+  pre-this-session source changes), rebuilt with tsc, re-ran both tests -> STILL FAIL (0 pass / 1 fail each).
+  => PRE-EXISTING failures, NOT caused by this slice nor the escalation-matcher refactor. Already red on origin/main.
+  Env note: 9 stray node procs + ~1729 accumulated .swarm-demo/test-live-agent-* workspaces on this box.
