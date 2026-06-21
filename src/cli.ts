@@ -23,6 +23,7 @@ import {
 } from "./paths.js";
 import { pullNextSlice } from "./planner.js";
 import { overseerDecisionSchema, reviewResultSchema, workerResultSchema, type OverseerDecision, type ReviewResult } from "./schemas.js";
+import { writeSchemaFromZod } from "./schema-json.js";
 import { registerFileSource } from "./source-adapter.js";
 import { SwarmStore } from "./storage.js";
 import { createWebViewerServer } from "./web-server.js";
@@ -6857,224 +6858,18 @@ function textValueForPrompt(value: unknown): string {
 }
 
 function writeWorkerResultSchema(schemaPath: string): void {
-  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-  fs.writeFileSync(
-    schemaPath,
-    `${JSON.stringify(
-      {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "status",
-          "summary",
-          "changedFiles",
-          "commandsRun",
-          "testsRun",
-          "frAcCoverage",
-          "risks",
-          "nextRecommendation",
-        ],
-        properties: {
-          status: { type: "string", enum: ["passed", "failed", "blocked", "needs_human"] },
-          summary: { type: "string" },
-          changedFiles: { type: "array", items: { type: "string" } },
-          commandsRun: { type: "array", items: { type: "string" } },
-          testsRun: { type: "array", items: { type: "string" } },
-          frAcCoverage: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["ref", "status", "evidence"],
-              properties: {
-                ref: { type: "string" },
-                status: { type: "string", enum: ["covered", "not_covered", "blocked"] },
-                evidence: { type: "string" },
-              },
-            },
-          },
-          risks: { type: "array", items: { type: "string" } },
-          nextRecommendation: { type: "string" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  // Derived from the canonical workerResultSchema (src/schemas.ts) so the contract a
+  // worker is held to equals the contract its result is judged by.
+  writeSchemaFromZod(schemaPath, workerResultSchema);
 }
 
 function writeReviewResultSchema(schemaPath: string): void {
-  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-  fs.writeFileSync(
-    schemaPath,
-    `${JSON.stringify(
-      {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "status",
-          "summary",
-          "frAcFindings",
-          "testAssessment",
-          "sourceMutationDetected",
-          "stubOrHardcodeRisk",
-          "qualityGate",
-          "requiredFixes",
-          "escalations",
-          "recommendation",
-        ],
-        properties: {
-          status: { type: "string", enum: ["accepted", "repair_required", "blocked", "human_required"] },
-          summary: { type: "string" },
-          frAcFindings: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["ref", "status", "evidence", "finding"],
-              properties: {
-                ref: { type: "string" },
-                status: { type: "string", enum: ["passed", "failed", "missing_evidence", "uncertain"] },
-                evidence: { type: "array", items: { type: "string" } },
-                finding: { type: "string" },
-              },
-            },
-          },
-          testAssessment: { type: "string" },
-          sourceMutationDetected: { type: "boolean" },
-          stubOrHardcodeRisk: { type: "string", enum: ["none", "low", "medium", "high"] },
-          qualityGate: {
-            type: "object",
-            additionalProperties: false,
-            required: ["status", "summary", "dimensions", "blockingConcerns", "residualRisks"],
-            properties: {
-              status: { type: "string", enum: ["passed", "warning", "failed"] },
-              summary: { type: "string" },
-              dimensions: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["dimension", "status", "risk", "evidence", "finding"],
-                  properties: {
-                    dimension: {
-                      type: "string",
-                      enum: [
-                        "runtime_path",
-                        "stub_or_hardcode",
-                        "test_meaningfulness",
-                        "error_handling",
-                        "integration_fit",
-                        "maintainability",
-                        "real_world_readiness",
-                      ],
-                    },
-                    status: { type: "string", enum: ["passed", "warning", "failed", "not_applicable"] },
-                    risk: { type: "string", enum: ["none", "low", "medium", "high"] },
-                    evidence: { type: "array", items: { type: "string" } },
-                    finding: { type: "string" },
-                  },
-                },
-              },
-              blockingConcerns: { type: "array", items: { type: "string" } },
-              residualRisks: { type: "array", items: { type: "string" } },
-            },
-          },
-          requiredFixes: { type: "array", items: { type: "string" } },
-          escalations: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["level", "message"],
-              properties: {
-                level: { type: "string", enum: ["warning", "blocker", "human_required", "critical"] },
-                message: { type: "string" },
-              },
-            },
-          },
-          recommendation: { type: "string" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  // Derived from the canonical reviewResultSchema (src/schemas.ts). Generated in the
+  // default ("output") io mode so qualityGate stays required despite its Zod default.
+  writeSchemaFromZod(schemaPath, reviewResultSchema);
 }
 
 function writeOverseerDecisionSchema(schemaPath: string): void {
-  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-  fs.writeFileSync(
-    schemaPath,
-    `${JSON.stringify(
-      {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "status",
-          "summary",
-          "scenario",
-          "currentPriority",
-          "recommendedCommands",
-          "lanePlan",
-          "blockers",
-          "stopCondition",
-          "nextAction",
-        ],
-        properties: {
-          status: { type: "string", enum: ["recommend_commands", "blocked", "human_required", "complete"] },
-          summary: { type: "string" },
-          scenario: { type: "string" },
-          currentPriority: { type: "string" },
-          recommendedCommands: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["command", "purpose", "expectedStateChange", "requiresHuman"],
-              properties: {
-                command: { type: "string" },
-                purpose: { type: "string" },
-                expectedStateChange: { type: "string" },
-                requiresHuman: { type: "boolean" },
-              },
-            },
-          },
-          lanePlan: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["laneName", "purpose", "nextAction"],
-              properties: {
-                laneName: { type: "string" },
-                purpose: { type: "string" },
-                nextAction: { type: "string" },
-              },
-            },
-          },
-          blockers: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["level", "message", "scope"],
-              properties: {
-                level: { type: "string", enum: ["warning", "blocker", "human_required", "critical"] },
-                message: { type: "string" },
-                scope: { type: "string" },
-              },
-            },
-          },
-          stopCondition: { type: "string" },
-          nextAction: { type: "string" },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  // Derived from the canonical overseerDecisionSchema (src/schemas.ts).
+  writeSchemaFromZod(schemaPath, overseerDecisionSchema);
 }
