@@ -1,0 +1,17 @@
+agentId	role	msgs	tools	out_tok	toolnames
+a01ae9c5a2	VERIFY(build=True tests=True)	35	12	2045	Read:4+PowerShell:3+Grep:3+Bash:1+StructuredOutput:1
+a126a0f050	SKEPTIC FR-PI-003(met=True)	72	25	7916	Grep:10+Bash:8+Read:6+StructuredOutput:1
+a5dd8f8552	IMPL(Slice B — Peek-in  tsc=True)	155	55	20526	Grep:15+Edit:13+Read:12+PowerShell:12+Bash:2+StructuredOutput:1
+a6b56dc4dd	SKEPTIC FR-CP-003(met=True)	58	21	7957	Read:11+Grep:6+Bash:3+StructuredOutput:1
+a7089db985	IMPL(Slice A — Ledger-d tsc=True)	257	95	34585	Read:31+Grep:30+PowerShell:15+Edit:14+Glob:2+Write:1+Bash:1+StructuredOutput:1
+a7fc316be7	SKEPTIC FR-CP-002(met=True)	83	29	9939	Grep:11+Read:6+Bash:5+PowerShell:4+Glob:2+StructuredOutput:1
+a889487fb4	SKEPTIC FR-PI-001(met=True)	41	14	4712	Grep:6+PowerShell:5+Read:2+StructuredOutput:1
+a929929adb	TEST(pass=True)	91	35	19742	Grep:15+Read:12+PowerShell:5+Bash:1+Write:1+StructuredOutput:1
+ac233d954c	BASELINE:Baseline lens (READ-ONLY	82	32	13609	Read:19+Grep:11+Glob:1+StructuredOutput:1
+ac84667977	SKEPTIC FR-CP-001(met=True)	69	25	6955	Grep:12+Read:8+Bash:4+StructuredOutput:1
+ad057ff9c3	DESIGN	68	26	3869	Read:18+Grep:6+Bash:1+StructuredOutput:1
+ad38cdd7f1	BASELINE:focus-recovery (focus pa	75	28	9680	Read:14+Grep:10+Bash:3+StructuredOutput:1
+ae9a53b532	META	90	33	5437	Bash:23+Read:6+PowerShell:3+StructuredOutput:1
+aef4d6a57b	SKEPTIC FR-PI-002(met=True)	61	21	6930	Read:7+Bash:7+Grep:6+StructuredOutput:1
+afb1f7e5a3	BASELINE:prompt-ledger (worker-pr	98	39	12974	Grep:16+Read:16+Glob:6+StructuredOutput:1
+TOTAL	15 agents			166876	(output only; ~1.3M incl input/cache)

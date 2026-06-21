@@ -14,6 +14,7 @@ with every candidate improvement run through an independent skeptic that re-read
 | [ground-truth-agent-swarm.md](ground-truth-agent-swarm.md) | What **agent-swarm actually does** today, per subsystem, cited to `src/` |
 | [lessons-for-agent-swarm.md](lessons-for-agent-swarm.md) | The **12 source-confirmed recommendations** (+ what got dropped) |
 | [meta-run-analysis.md](meta-run-analysis.md) | Analysis of the **two Workflow runs** used to produce this study |
+| [claude-workflow-implementation-handoff.md](claude-workflow-implementation-handoff.md) | Actionable handoff for a Claude Workflow implementation run: no-redo context, peek-in/intervention packets, and required meta-analysis artifacts |
 
 ## Artifacts (reproducible)
 

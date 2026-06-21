@@ -1,0 +1,22 @@
+Independent verification (main agent), 2026-06-21
+Repo: x:/repositories/agent-swarm
+
+BUILD:
+  npm run build  (tsc && npm run build:web)  ->  exit 0, no TypeScript errors (run twice)
+
+FOCUSED TESTS:
+  node --test tests/fr-focused.e2e.test.js tests/settled-facts.e2e.test.js \
+              tests/focus-packet.e2e.test.js tests/streaming-worker.e2e.test.js \
+              tests/review-runner.e2e.test.js tests/web-server.e2e.test.js \
+              tests/invoice-demo.e2e.test.js
+  ->  tests 34 | pass 34 | fail 0 | cancelled 0 | skipped 0  (exit 0)
+
+INTEGRITY (additivity):
+  Existing files touched by the workflow: 0 removed/changed assertion lines.
+  src/focus.ts removed lines: 3 (modify-in-place: const hoist + intervention add)
+  src/cli.ts removed lines: 5 (modify-in-place: imports + buildWorkerPrompt call + settledFacts arg)
+
+LONG E2E (slow, additive +48):
+  node --test tests/live-agent-runner.e2e.test.js  -> see status note below
+(live-agent-runner final status appended below)
+starting live-agent-runner (slow, modified +48) in background
