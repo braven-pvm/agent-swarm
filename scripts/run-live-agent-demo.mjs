@@ -8,8 +8,15 @@ import { refreshCheckpoint } from "../dist/checkpoints.js";
 import { createEvent } from "../dist/events.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
+import { loadProtocol } from "../dist/protocol.js";
 import { SwarmStore } from "../dist/storage.js";
 import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
+import {
+  computeConcurrentBatch,
+  computeOverlap,
+  dispatchPool,
+  runSwarmAsync,
+} from "./concurrent-dispatch.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -84,6 +91,10 @@ const scenarioEntityId = `scenario:${scenario}`;
 const runStartedAt = new Date().toISOString();
 const runId = sanitizeRunId(args["run-id"] ?? `LAR-${compactTimestamp(runStartedAt)}-${scenario}-${faultMode}-${process.pid}`);
 const SWARM_CLI_MAX_BUFFER = 50 * 1024 * 1024;
+// SC-1 concurrency budget (SC-2's maxActiveLanes). Read from the protocol via the same precedence as
+// planner.ts resolveMaxActiveLanes (per-target projectOverrides.<target>.maxActiveLanes > protocol-wide
+// lanes.maxActiveLanes > DEFAULT_MAX_ACTIVE_LANES 3). Option B: no src change, read protocol from dist.
+const concurrencyBudget = resolveConcurrencyBudget();
 const productReadinessRefs = ["AC-PROD-001.1", "AC-PROD-001.2", "AC-PROD-001.3", "AC-PROD-001.4"];
 const productReadinessBlockerIds = new Set([
   "dashboard-test-script",
@@ -441,6 +452,14 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
     if (finalOutcome !== "accepted") raiseScenarioEscalation(finalOutcome, finalReason);
     finalSliceId = readyForVerify.id;
     break;
+  }
+
+  // SC-1 BOUNDED CONCURRENT DISPATCH (serial fallback below). When >= 2 independent,
+  // dependency-satisfied slices each have a concurrency-safe next mechanical stage, dispatch up to the
+  // budget concurrently and reconcile from the ledger on the next iteration. When <= 1, this is a no-op
+  // and the existing serial orchestrate path runs unchanged (single-slice ticks stay byte-stable).
+  if (await tryConcurrentDispatch(turn, before)) {
+    continue;
   }
 
   const output = runSwarm([
@@ -3506,6 +3525,127 @@ function findInvoiceTarget(store) {
 
 function isActiveSlice(slice) {
   return !["accepted", "closed"].includes(slice.status);
+}
+
+// SC-1: resolve the concurrency budget from the protocol, mirroring planner.ts resolveMaxActiveLanes.
+// targetName precedence: invoice-dashboard / invoice-api project overrides, else protocol-wide lanes.
+function resolveConcurrencyBudget() {
+  try {
+    const protocol = loadProtocol(workspace);
+    const lanes = protocol?.protocol?.lanes ?? {};
+    const overrides = lanes.projectOverrides;
+    const overrideValue =
+      overrides && typeof overrides === "object"
+        ? Object.values(overrides)
+            .map((entry) => entry?.maxActiveLanes)
+            .find((value) => typeof value === "number" && Number.isFinite(value) && value >= 1)
+        : undefined;
+    const candidate = overrideValue ?? lanes.maxActiveLanes;
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 1) {
+      return candidate;
+    }
+  } catch {
+    // Protocol read is best-effort; fall through to the SC-2 default.
+  }
+  return 3;
+}
+
+// SC-1: per-slice Depends-On resolver generalized from inspectDashboardDependencyGate. The dashboard
+// target's spec carries a `Depends-On:` line on its backend prerequisites; backend/other slices have no
+// parseable Depends-On and are treated as dependency-free (matching today's behavior). We map a slice to
+// its source spec via its target so the gate reads EACH slice's own spec, not only dashboardSpec.
+function dependsOnRefsForSlice(slice, snapshot) {
+  const target = (snapshot.targets ?? []).find((item) => item.id === slice.targetId);
+  const targetPath = target?.path ? path.resolve(target.path).toLowerCase() : "";
+  const isDashboard =
+    target?.name === "invoice-dashboard" ||
+    targetPath === path.resolve(dashboardTarget).toLowerCase() ||
+    (target?.path && path.basename(target.path) === "invoice-dashboard");
+  if (isDashboard) return parseDependsOnRefs(dashboardSpec);
+  return [];
+}
+
+// SC-1 BOUNDED CONCURRENT DISPATCH (with serial fallback). Computes the set of independent,
+// dependency-satisfied slices whose next mechanical stage (run/review) can run concurrently this tick.
+// When >= 2 are dispatchable it fires up to `concurrencyBudget` of them via runSwarmAsync (truly
+// parallel spawn) and records a `scheduler` turn with an overlap marker. When <= 1 it returns false so
+// the caller falls through to the EXISTING serial orchestrate path — keeping single-slice ticks
+// byte-stable. Returns true iff a concurrent batch was dispatched (caller should `continue`).
+async function tryConcurrentDispatch(turn, before) {
+  if (concurrencyBudget <= 1) return false;
+  const dispatchable = computeConcurrentBatch(before, {
+    dependsOnRefsForSlice: (slice) => dependsOnRefsForSlice(slice, before),
+    targetForSlice: (slice) => (before.targets ?? []).find((item) => item.id === slice.targetId),
+  });
+  if (dispatchable.length < 2) return false;
+
+  const batch = dispatchable.slice(0, concurrencyBudget);
+  const dispatched = batch.map((entry) => ({
+    sliceId: entry.slice.id,
+    stage: entry.stage,
+    role: entry.role,
+    actor: entry.actor,
+    startedAt: undefined,
+    settledAt: undefined,
+    ok: undefined,
+    status: undefined,
+    outputPath: undefined,
+  }));
+
+  await dispatchPool(batch, concurrencyBudget, async (entry, index) => {
+    const record = dispatched[index];
+    const commandArgs = [
+      entry.stage === "run" ? "run" : "review",
+      entry.slice.id,
+      "--actor",
+      entry.actor,
+      "--driver",
+      driver,
+    ];
+    record.startedAt = Date.now();
+    const result = await runSwarmAsync({
+      nodeExecPath: process.execPath,
+      cli,
+      commandArgs,
+      cwd: repoRoot,
+      env: { ...process.env, SWARM_LIVE_FAULT: faultMode, SWARM_WORKSPACE: workspace },
+    });
+    record.settledAt = Date.now();
+    record.ok = result.ok;
+    record.status = result.status;
+    const outputPath = path.join(artifactsPath, `turn-${turn}-concurrent-${entry.stage}-${entry.slice.id}.txt`);
+    fs.writeFileSync(
+      outputPath,
+      [
+        `command: swarm ${commandArgs.join(" ")}`,
+        `exitCode: ${result.status ?? "unknown"}`,
+        `ok: ${result.ok ? "true" : "false"}`,
+        result.error ? `error: ${result.error}` : undefined,
+        "--- stdout ---",
+        result.stdout.trimEnd(),
+        "--- stderr ---",
+        result.stderr.trimEnd(),
+        "",
+      ]
+        .filter((line) => line !== undefined)
+        .join("\n"),
+      "utf8",
+    );
+    record.outputPath = outputPath;
+    return result;
+  });
+
+  turns.push({
+    turn,
+    kind: "scheduler",
+    budget: concurrencyBudget,
+    batchSize: batch.length,
+    overlap: computeOverlap(dispatched),
+    dispatched,
+    reason:
+      "Bounded concurrent dispatch of independent, dependency-satisfied slices; each slice advances from its own ledger evidence on the next observe.",
+  });
+  return true;
 }
 
 function isProductReadinessSlice(slice) {

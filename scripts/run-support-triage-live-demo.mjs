@@ -8,8 +8,15 @@ import { createEvent } from "../dist/events.js";
 import { buildHumanActionQueue } from "../dist/human-actions.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
+import { loadProtocol } from "../dist/protocol.js";
 import { SwarmStore } from "../dist/storage.js";
 import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
+import {
+  computeConcurrentBatch,
+  computeOverlap,
+  dispatchPool,
+  runSwarmAsync,
+} from "./concurrent-dispatch.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -45,6 +52,9 @@ const maxRepairAttempts = positiveInt(args["max-repair-attempts"], 8);
 const mode = args.mode ?? "full-product";
 const runStartedAt = new Date().toISOString();
 const runId = safeRunId(args["run-id"] ?? `H2-${compactTimestamp(runStartedAt)}-${process.pid}`);
+// SC-1 concurrency budget (SC-2's maxActiveLanes), read from the protocol with the same precedence as
+// planner.ts resolveMaxActiveLanes. No src change (Option B) — read protocol from dist.
+const concurrencyBudget = resolveConcurrencyBudget();
 
 assertApprovedWorkspace(workspace);
 if (!fs.existsSync(cli)) throw new Error(`Built CLI not found: ${cli}. Run npm run build first.`);
@@ -224,6 +234,12 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       if (coverageDecision.terminal) break;
       if (coverageDecision.continue) continue;
     }
+    continue;
+  }
+
+  // SC-1 BOUNDED CONCURRENT DISPATCH (serial fallback below). Dispatch up to the budget of independent,
+  // dependency-satisfied slices concurrently when >= 2 are ready; otherwise the serial path runs.
+  if (await tryConcurrentDispatch(turn, before)) {
     continue;
   }
 
@@ -1078,6 +1094,132 @@ function recordRepairRetryBudgetExhausted(result) {
 function h2WorkerActorForTarget(target, slice) {
   const haystack = [target?.name, target?.path, slice.title, ...slice.frAcRefs].filter(Boolean).join(" ").toLowerCase();
   return /dashboard|ui|frontend|design|web/.test(haystack) ? "dashboard-worker" : "backend-worker";
+}
+
+// SC-1: resolve the concurrency budget from the protocol, mirroring planner.ts resolveMaxActiveLanes.
+function resolveConcurrencyBudget() {
+  try {
+    const protocol = loadProtocol(workspace);
+    const lanes = protocol?.protocol?.lanes ?? {};
+    const overrides = lanes.projectOverrides;
+    const overrideValue =
+      overrides && typeof overrides === "object"
+        ? Object.values(overrides)
+            .map((entry) => entry?.maxActiveLanes)
+            .find((value) => typeof value === "number" && Number.isFinite(value) && value >= 1)
+        : undefined;
+    const candidate = overrideValue ?? lanes.maxActiveLanes;
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 1) {
+      return candidate;
+    }
+  } catch {
+    // best-effort; fall through to SC-2 default
+  }
+  return 3;
+}
+
+// SC-1: parse a `Depends-On:` line from a spec file (generalized dependency gate).
+function parseDependsOnRefsFromFile(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return [];
+  const content = fs.readFileSync(filePath, "utf8");
+  const match = /^Depends-On:\s*(.+)$/im.exec(content);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+// SC-1: a slice's declared Depends-On refs, read from EACH of its own source specs (sourceRefs uris are
+// plain filesystem paths in this scenario). A slice with no parseable Depends-On is dependency-free.
+function dependsOnRefsForSlice(slice) {
+  const refs = new Set();
+  for (const sourceRef of slice.sourceRefs ?? []) {
+    const uri = typeof sourceRef === "string" ? sourceRef : sourceRef?.uri;
+    if (!uri) continue;
+    for (const ref of parseDependsOnRefsFromFile(uri)) refs.add(ref);
+  }
+  return [...refs];
+}
+
+// SC-1 BOUNDED CONCURRENT DISPATCH (with serial fallback) for the H2 runner — identical contract to the
+// primary runner. Dispatches up to `concurrencyBudget` independent, dependency-satisfied run/review
+// stages concurrently when >= 2 are ready; otherwise returns false so the serial orchestrate path runs.
+async function tryConcurrentDispatch(turn, before) {
+  if (concurrencyBudget <= 1) return false;
+  const dispatchable = computeConcurrentBatch(before, {
+    dependsOnRefsForSlice,
+    targetForSlice: (slice) => (before.targets ?? []).find((item) => item.id === slice.targetId),
+  });
+  if (dispatchable.length < 2) return false;
+
+  const batch = dispatchable.slice(0, concurrencyBudget);
+  const dispatched = batch.map((entry) => ({
+    sliceId: entry.slice.id,
+    stage: entry.stage,
+    role: entry.role,
+    actor: entry.actor,
+    startedAt: undefined,
+    settledAt: undefined,
+    ok: undefined,
+    status: undefined,
+    outputPath: undefined,
+  }));
+
+  await dispatchPool(batch, concurrencyBudget, async (entry, index) => {
+    const record = dispatched[index];
+    const commandArgs = [
+      entry.stage === "run" ? "run" : "review",
+      entry.slice.id,
+      "--actor",
+      entry.actor,
+      "--driver",
+      driver,
+    ];
+    record.startedAt = Date.now();
+    const result = await runSwarmAsync({
+      nodeExecPath: process.execPath,
+      cli,
+      commandArgs,
+      cwd: workspace,
+      env: { ...process.env },
+    });
+    record.settledAt = Date.now();
+    record.ok = result.ok;
+    record.status = result.status;
+    const outputPath = path.join(artifactDir, `turn-${turn}-concurrent-${entry.stage}-${entry.slice.id}.txt`);
+    fs.writeFileSync(
+      outputPath,
+      [
+        `command: swarm ${commandArgs.join(" ")}`,
+        `exitCode: ${result.status ?? "unknown"}`,
+        `ok: ${result.ok ? "true" : "false"}`,
+        result.error ? `error: ${result.error}` : undefined,
+        "--- stdout ---",
+        result.stdout.trimEnd(),
+        "--- stderr ---",
+        result.stderr.trimEnd(),
+        "",
+      ]
+        .filter((line) => line !== undefined)
+        .join("\n"),
+      "utf8",
+    );
+    record.outputPath = outputPath;
+    return result;
+  });
+
+  turns.push({
+    turn,
+    kind: "scheduler",
+    budget: concurrencyBudget,
+    batchSize: batch.length,
+    overlap: computeOverlap(dispatched),
+    dispatched,
+    reason:
+      "Bounded concurrent dispatch of independent, dependency-satisfied slices; each slice advances from its own ledger evidence on the next observe.",
+  });
+  return true;
 }
 
 function maxAttempt(runs) {
