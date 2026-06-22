@@ -8,6 +8,7 @@ import { createEvent } from "../dist/events.js";
 import { buildHumanActionQueue } from "../dist/human-actions.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
+import { evaluateRunGuards } from "../dist/orchestrator.js";
 import { loadProtocol } from "../dist/protocol.js";
 import { SwarmStore } from "../dist/storage.js";
 import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
@@ -94,28 +95,23 @@ let finalCoverageGate;
 
 for (let turn = 1; turn <= maxTurns; turn += 1) {
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-  if (elapsedSeconds > maxRuntimeSeconds) {
-    finalOutcome = "blocked";
-    finalReason = `Max runtime exceeded: ${elapsedSeconds}s > ${maxRuntimeSeconds}s.`;
-    break;
-  }
-
   const before = observe(220);
   const sourceMutations = inspectSourceMutations(before.sources);
-  if (sourceMutations.some((source) => source.mutated)) {
-    finalOutcome = "human_required";
-    finalReason = "Immutable source mutation detected during H2 live run.";
-    turns.push({ turn, kind: "source-mutation", sourceMutations });
-    break;
-  }
-  if (before.slices.length > maxSlices) {
-    finalOutcome = "blocked";
-    finalReason = `Max slices exceeded: ${before.slices.length} > ${maxSlices}.`;
-    break;
-  }
-  if (before.agentRuns.length > maxAgentRuns) {
-    finalOutcome = "blocked";
-    finalReason = `Max agent runs exceeded: ${before.agentRuns.length} > ${maxAgentRuns}.`;
+  const decision = evaluateRunGuards({
+    elapsedSeconds,
+    sourceMutated: sourceMutations.some((source) => source.mutated),
+    sliceCount: before.slices.length,
+    agentRunCount: before.agentRuns.length,
+    limits: { maxRuntimeSeconds, maxSlices, maxAgentRuns },
+  });
+  if (decision.stop) {
+    finalOutcome = decision.outcome;
+    if (decision.kind === "source-mutation") {
+      finalReason = "Immutable source mutation detected during H2 live run.";
+      turns.push({ turn, kind: "source-mutation", sourceMutations });
+    } else {
+      finalReason = decision.reason;
+    }
     break;
   }
 

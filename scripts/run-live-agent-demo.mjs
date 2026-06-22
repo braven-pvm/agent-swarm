@@ -8,6 +8,7 @@ import { refreshCheckpoint } from "../dist/checkpoints.js";
 import { createEvent } from "../dist/events.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
+import { evaluateRunGuards } from "../dist/orchestrator.js";
 import { loadProtocol } from "../dist/protocol.js";
 import { SwarmStore } from "../dist/storage.js";
 import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
@@ -241,32 +242,25 @@ let finalCoverageGate = undefined;
 
 for (let turn = 1; turn <= maxTurns; turn += 1) {
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-  if (elapsedSeconds > maxRuntimeSeconds) {
-    finalOutcome = "blocked";
-    finalReason = `Max runtime exceeded: ${elapsedSeconds}s > ${maxRuntimeSeconds}s.`;
-    raiseScenarioEscalation("blocker", finalReason);
-    break;
-  }
-
   const before = observe(200);
   const sourceMutations = inspectSourceMutations(before.sources);
-  if (sourceMutations.some((item) => item.mutated)) {
-    finalOutcome = "human_required";
-    finalReason = "Immutable source mutation detected during live acceptance loop.";
-    raiseScenarioEscalation("human_required", finalReason);
-    break;
-  }
-
-  if (before.slices.length > maxSlices) {
-    finalOutcome = "blocked";
-    finalReason = `Max slices exceeded: ${before.slices.length} > ${maxSlices}.`;
-    raiseScenarioEscalation("blocker", finalReason);
-    break;
-  }
-  if (before.agentRuns.length > maxAgentRuns) {
-    finalOutcome = "blocked";
-    finalReason = `Max agent runs exceeded: ${before.agentRuns.length} > ${maxAgentRuns}.`;
-    raiseScenarioEscalation("blocker", finalReason);
+  const decision = evaluateRunGuards({
+    elapsedSeconds,
+    sourceMutated: sourceMutations.some((item) => item.mutated),
+    sliceCount: before.slices.length,
+    agentRunCount: before.agentRuns.length,
+    limits: { maxRuntimeSeconds, maxSlices, maxAgentRuns },
+  });
+  if (decision.stop) {
+    finalOutcome = decision.outcome;
+    finalReason =
+      decision.kind === "source-mutation"
+        ? "Immutable source mutation detected during live acceptance loop."
+        : decision.reason;
+    raiseScenarioEscalation(
+      decision.outcome === "human_required" ? "human_required" : "blocker",
+      finalReason,
+    );
     break;
   }
 
