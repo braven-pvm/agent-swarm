@@ -87,6 +87,43 @@ describe("console store", () => {
     expect(chain[0].citations).toContain("test passes");
   });
 
+  it("derives downgradeCount on a skeptic/reviewer row from review.finding_downgraded events", () => {
+    const s = createConsoleStore();
+    const snap = baseSnapshot();
+    // A skeptic run on SLICE-1 + a downgrade event on that slice → the row carries downgradeCount 1.
+    snap.agentRuns = [
+      ...snap.agentRuns,
+      { id: "R-SK", sliceId: "SLICE-1", role: "skeptic", actor: "skeptic-1", driver: "claude", status: "completed", attempt: 1, startedAt: "", updatedAt: "" } as any,
+    ];
+    snap.recentEvents = [{
+      id: "DG1", timestamp: "2026-06-14T08:06:00Z", actor: "verifier-1", type: "review.finding_downgraded",
+      entityType: "slice", entityId: "SLICE-1",
+      payload: { dimension: "runtime_path", targetKind: "dimension", fromSeverity: "blocker", skepticVerdict: "refuted", reasoning: "covered", skepticActor: "skeptic-1" },
+    }];
+    s.hydrate(snap);
+    expect(s.agents.find((a) => a.actor === "skeptic-1")!.downgradeCount).toBe(1);
+    // A worker on the SAME slice does NOT get the badge (only review/skeptic/verifier roles).
+    expect(s.agents.find((a) => a.actor === "backend-worker")!.downgradeCount).toBeUndefined();
+  });
+
+  it("derives journalReplayed on a row when one of its runs has a worker.journal_hit (and not otherwise)", () => {
+    const s = createConsoleStore();
+    const snap = baseSnapshot();
+    // backend-worker's run R1 was replayed from the journal → the row carries journalReplayed.
+    snap.recentEvents = [{
+      id: "JH1", timestamp: "2026-06-14T08:01:00Z", actor: "backend-worker", type: "worker.journal_hit",
+      entityType: "slice", entityId: "SLICE-1",
+      payload: { runId: "R1", driver: "codex", journalKey: "jk-1", storedDriver: "codex", soundnessNote: "result only" },
+    }];
+    s.hydrate(snap);
+    expect(s.agents.find((a) => a.actor === "backend-worker")!.journalReplayed).toBe(true);
+
+    // With the journal off (no worker.journal_hit), the same row leaves journalReplayed undefined.
+    const clean = createConsoleStore();
+    clean.hydrate(baseSnapshot());
+    expect(clean.agents.find((a) => a.actor === "backend-worker")!.journalReplayed).toBeUndefined();
+  });
+
   it("applyEvent caps recentEvents at 200, keeping newest", () => {
     const s = createConsoleStore();
     s.hydrate(baseSnapshot());
@@ -150,5 +187,19 @@ describe("console store", () => {
     s.setDevServers([{ id: "d1", status: "running", targetName: "ui", command: "npm", args: ["run", "start"] }]);
     expect(s.devServers).toHaveLength(1);
     expect(s.commandKindLabel("recovery-restart")).toBe("Recovery restart");
+  });
+
+  it("settings: null until set, then holds the read-only protocol config; resets on null", () => {
+    const s = createConsoleStore();
+    // Default: no /api/settings read yet → the status strip shows nothing.
+    expect(s.settings).toBeNull();
+    s.setSettings({ resultJournal: true, maxActiveLanes: 5 });
+    expect(s.settings).toEqual({ resultJournal: true, maxActiveLanes: 5 });
+    // A later read can replace it wholesale (e.g. journal toggled off, budget restored).
+    s.setSettings({ resultJournal: false, maxActiveLanes: 3 });
+    expect(s.settings).toEqual({ resultJournal: false, maxActiveLanes: 3 });
+    // A null pass (e.g. a swallowed fetch error path) resets to the neutral default.
+    s.setSettings(null);
+    expect(s.settings).toBeNull();
   });
 });

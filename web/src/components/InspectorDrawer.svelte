@@ -8,14 +8,23 @@
   import HumanActionDetail from "~/components/HumanActionDetail.svelte";
   import SkillStacks from "~/components/SkillStacks.svelte";
   import SkillIsolationFindings from "~/components/SkillIsolationFindings.svelte";
+  import FindingDowngradeCallout from "~/components/FindingDowngradeCallout.svelte";
   import RecoveryControls from "~/components/RecoveryControls.svelte";
   import { skillsOf, isolationFindingsOf, dedupeFindings, normalizeFindings, type SkillBindingSummary } from "~/lib/skills";
+  import { downgradesForSlice, challengedVerdictsOf, verdictTone, severityLabel, type ChallengedVerdict } from "~/lib/skeptic";
+  import { journalReplayForRun, journalReplayTitle, type JournalReplay } from "~/lib/journal";
   let { store, onResolved = () => {} }: { store: ConsoleStore; onResolved?: () => void } = $props();
   const sel = $derived(store.selected);
   // A queue action open for resolution takes priority over any entity 'sel' branch below.
   const selectedAction = $derived(store.selectedAction);
   const slice = $derived(sel?.kind === "slice" ? store.snapshot?.slices.find((s) => s.id === sel.id) : undefined);
   const chain = $derived(sel?.kind === "slice" ? store.proofChainFor(sel.id) : []);
+  // Quality-gate overrides for the selected slice: every review.finding_downgraded where an
+  // independent skeptic overrode a BLOCKING concern (does NOT show on reviewResult.qualityGate).
+  // Empty → the callout renders nothing (neutral). Read tolerantly from recentEvents.
+  const sliceDowngrades = $derived(
+    sel?.kind === "slice" ? downgradesForSlice(store.snapshot?.recentEvents ?? [], sel.id) : [],
+  );
   // Current heartbeat state for the selected agent.
   const heartbeat = $derived(sel?.kind === "agent" ? store.snapshot?.heartbeats.find((h) => h.actor === sel.actor) : undefined);
   const currentState = $derived(heartbeat?.state);
@@ -57,6 +66,7 @@
     if (role === "reviewer") return "Review";
     if (role === "worker") return "Work";
     if (role === "verifier") return "Verify";
+    if (role === "skeptic") return "Challenge";
     return role ?? "Run";
   }
 
@@ -107,6 +117,21 @@
   const agentLeakFindings = $derived(
     sel?.kind === "agent" ? dedupeFindings(agentRuns.flatMap((r) => isolationFindingsOf(r))) : [],
   );
+  // Quality-gate overrides keyed by slice, for THIS agent's runs. The same review.finding_downgraded
+  // a slice shows is also surfaced on the agent's reviewer/skeptic run card (the run whose slice was
+  // accepted past a blocking gate). Memoised so the lookup is cheap inside the run loop.
+  const downgradesBySlice = $derived.by(() => {
+    const map = new Map<string, ReturnType<typeof downgradesForSlice>>();
+    if (sel?.kind !== "agent") return map;
+    const events = store.snapshot?.recentEvents ?? [];
+    for (const run of agentRuns) {
+      if (run.role !== "reviewer" && run.role !== "skeptic") continue;
+      if (map.has(run.sliceId)) continue;
+      const dg = downgradesForSlice(events, run.sliceId);
+      if (dg.length > 0) map.set(run.sliceId, dg);
+    }
+    return map;
+  });
   // Coverage lookup to color the working-slice refs + name the spec/domain. Empty when coverage is null.
   const covByRef = $derived.by(() => {
     const map = new Map<string, CoverageRef>();
@@ -141,6 +166,8 @@
     verdict: string;                                        // review status OR slice status
     review?: ReviewResult;                                  // reviewer runs
     fracResults?: SliceWithDetail["frAcResults"];           // worker/verifier runs
+    challenges?: ChallengedVerdict[];                       // skeptic runs: per-finding verdicts
+    replay?: JournalReplay;                                 // set ONLY when this run was journal-replayed
     activity: ActivityGroup[];                              // run-scoped, grouped
     markers: Array<{ id: string; ts: string; label: string; hint?: string }>;
     actionCount: number;
@@ -151,8 +178,13 @@
     "review.started": "started review",
     "review.completed": "completed review",
     "review.escalation_raised": "raised escalation",
+    "review.finding_downgraded": "downgraded blocking concern",
     "worker.completed": "completed work",
     "verification.completed": "completed verification",
+    "skeptic.started": "started challenge",
+    "skeptic.completed": "completed challenge",
+    "skeptic.finding_challenged": "challenged finding",
+    "skeptic.failed": "challenge failed",
   };
   function markerLabel(type: string): string {
     if (MARKER_LABELS[type]) return MARKER_LABELS[type];
@@ -160,7 +192,7 @@
     const tail = type.split(".").slice(1).join(" ").replace(/_/g, " ");
     return tail || type;
   }
-  const MARKER_RE = /^(review|worker|verification|overseer)\.|completed$|escalation_raised$/;
+  const MARKER_RE = /^(review|worker|verification|overseer|skeptic)\.|completed$|escalation_raised$/;
 
   // Extract activity entries (agent_events with a target) from a slice of history.
   function activityEntries(events: HarnessEvent[]) {
@@ -191,9 +223,15 @@
       let verdict: string;
       let review: ReviewResult | undefined;
       let fracResults: SliceWithDetail["frAcResults"] | undefined;
+      let challenges: ChallengedVerdict[] | undefined;
       if (run.role === "reviewer" && slc) {
         review = reviewForRun(run, slc);
         verdict = review?.status ?? slc.status;
+      } else if (run.role === "skeptic") {
+        // The skeptic's real output is its per-finding challenge verdicts (from the run's
+        // skeptic.finding_challenged events, or the slice's finding_challenge evidence as fallback).
+        challenges = challengedVerdictsOf(agentHistory, run.id, slc?.evidence);
+        verdict = slc?.status ?? run.status;
       } else {
         verdict = slc?.status ?? run.status;
         fracResults = slc?.frAcResults;
@@ -208,7 +246,14 @@
       const entries = activityEntries(inWindow);
       const activity = groupRunActivity(entries);
       const markers = markerRows(inWindow).sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-      return { run, slice: slc, op: opLabel(run.role), verdict, review, fracResults, activity, markers, actionCount: entries.length };
+      // Result-journal replay for THIS run (matched by runId across full history, not the window):
+      // undefined for a freshly-spawned run (the default-off norm) → the run card shows no badge.
+      // Prefer fetched agent history; fall back to the rolling recentEvents tail (the journal_hit
+      // for a recent run is still on the snapshot before history loads / when history is unavailable).
+      const replay =
+        journalReplayForRun(agentHistory, run.id) ??
+        journalReplayForRun(store.snapshot?.recentEvents ?? [], run.id);
+      return { run, slice: slc, op: opLabel(run.role), verdict, review, fracResults, challenges, replay, activity, markers, actionCount: entries.length };
     });
   })());
 
@@ -314,6 +359,14 @@
   // One-line collapsed summary for a run card.
   function runSubLine(r: ResolvedRun): string {
     if (r.review?.recommendation) return truncate(r.review.recommendation, 90);
+    if (r.challenges && r.challenges.length > 0) {
+      const refuted = r.challenges.filter((c) => c.verdict === "refuted").length;
+      const real = r.challenges.filter((c) => c.verdict === "real").length;
+      const parts = [`${r.challenges.length} finding${r.challenges.length === 1 ? "" : "s"} challenged`];
+      if (refuted) parts.push(`${refuted} refuted`);
+      if (real) parts.push(`${real} upheld`);
+      return parts.join(" · ");
+    }
     if (r.fracResults && r.fracResults.length > 0) {
       return r.fracResults.map((f) => `${f.ref} ${f.status}`).join(" · ");
     }
@@ -442,6 +495,11 @@
           </div>
         {/each}
       </div>
+
+      <!-- Quality-gate overrides — SAFETY callout. A skeptic overrode a BLOCKING concern so this
+           slice was accepted; it does NOT show on the reviewer's qualityGate, so surface it here,
+           by the acceptance proof. Renders nothing when there are no downgrades (neutral). -->
+      <FindingDowngradeCallout downgrades={sliceDowngrades} />
 
       <!-- Report — human-readable slice report, lazily fetched on first open. -->
       <section class="agent-section">
@@ -611,6 +669,11 @@
                 <span class="run-op">{r.op}</span>
                 <span class="run-slice">{r.slice ? `${r.slice.id} · ${shortTitle(r.slice.title)}` : r.run.sliceId}</span>
                 <span class="verdict verdict-{verdictClass(r.verdict)}">{r.verdict}</span>
+                {#if r.replay}
+                  <span class="run-replayed" title={journalReplayTitle(r.replay)}>
+                    <span class="run-replayed-glyph" aria-hidden="true">↺</span>replayed
+                  </span>
+                {/if}
                 <span class="muted run-when"> · {fmtClock(r.run.startedAt)} · {formatDuration(runDuration(r.run))}</span>
               </button>
               <div class="run-sub">{runSubLine(r)} <span class="muted">· {r.actionCount} action{r.actionCount === 1 ? "" : "s"}</span></div>
@@ -624,6 +687,11 @@
 
               {#if open}
                 <div class="run-body">
+                  <!-- Quality-gate override callout — only when this run's slice was accepted past a
+                       blocking concern (reviewer/skeptic runs). Same safety surface as the slice view. -->
+                  {#if (r.run.role === "reviewer" || r.run.role === "skeptic") && downgradesBySlice.get(r.run.sliceId)}
+                    <FindingDowngradeCallout downgrades={downgradesBySlice.get(r.run.sliceId) ?? []} />
+                  {/if}
                   {#if r.review}
                     {#if r.review.recommendation}
                       <div class="run-rec"><Markdown md={r.review.recommendation} inline /></div>
@@ -685,6 +753,24 @@
                         {#each r.review.escalations as esc}<li><b>{esc.level}</b> {esc.message}</li>{/each}
                       </ul>
                     {/if}
+                  {:else if r.challenges && r.challenges.length > 0}
+                    <!-- Skeptic run — the per-finding challenge verdicts (the skeptic's real output:
+                         which reviewer concerns it found Real vs Refuted vs Uncertain, and why). -->
+                    <div class="run-subhead">Challenged findings ({r.challenges.length})</div>
+                    <div class="sk-verdicts">
+                      {#each r.challenges as c, ci (c.ref ?? c.dimension ?? ci)}
+                        {@const tone = verdictTone(c.verdict)}
+                        {@const what = c.ref ?? c.dimension ?? c.source ?? "finding"}
+                        <div class="sk-verdict-row">
+                          <span class="sk-verdict-ref">{what}</span>
+                          <span class="sk-verdict {tone.cls}" title="Skeptic verdict: {tone.label}">
+                            <span class="sk-verdict-glyph" aria-hidden="true">{tone.glyph}</span>{tone.label}
+                          </span>
+                          {#if severityLabel(c.severity)}<span class="muted">{severityLabel(c.severity)}</span>{/if}
+                          {#if c.reasoning}<span class="sk-verdict-reason"> — {truncate(c.reasoning, 110)}</span>{/if}
+                        </div>
+                      {/each}
+                    </div>
                   {:else if r.fracResults && r.fracResults.length > 0}
                     <div class="run-subhead">Findings ({r.fracResults.length})</div>
                     {#each r.fracResults as fr (fr.ref)}

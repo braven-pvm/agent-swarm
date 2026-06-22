@@ -89,4 +89,52 @@ describe("buildOverseerLog", () => {
   it("returns an empty array when there are no overseer loop events", () => {
     expect(buildOverseerLog([ev("a", "overseer.agent_event", t(1))], [], humanizeToken)).toEqual([]);
   });
+
+  it("summarises a fast_path row from its command key + slice", () => {
+    const events: HarnessEvent[] = [
+      ev("a", "overseer.fast_path", t(1), {
+        decisionSource: "deterministic", commandKey: "review", sliceId: "SLICE-9",
+        purpose: "Review the export slice.", command: "swarm run reviewer SLICE-9",
+      }),
+    ];
+    const log = buildOverseerLog(events, [], humanizeToken);
+    expect(log[0].action).toBe("Fast path");
+    expect(log[0].summary).toBe("review SLICE-9");
+  });
+
+  it("falls back to purpose then command for a fast_path row missing a key/slice", () => {
+    const events: HarnessEvent[] = [
+      ev("a", "overseer.fast_path", t(1), { decisionSource: "deterministic", purpose: "Advance the queue head." }),
+    ];
+    expect(buildOverseerLog(events, [], humanizeToken)[0].summary).toBe("Advance the queue head.");
+  });
+
+  it("tags a fast_path row as a deterministic (code) decision source", () => {
+    const events: HarnessEvent[] = [ev("a", "overseer.fast_path", t(1), { decisionSource: "deterministic", commandKey: "work" })];
+    expect(buildOverseerLog(events, [], humanizeToken)[0].decisionSource).toBe("deterministic");
+  });
+
+  it("defaults a fast_path row to deterministic even if decisionSource is absent", () => {
+    const events: HarnessEvent[] = [ev("a", "overseer.fast_path", t(1), { commandKey: "work" })];
+    expect(buildOverseerLog(events, [], humanizeToken)[0].decisionSource).toBe("deterministic");
+  });
+
+  it("tags LLM decision + completion rows as an llm decision source", () => {
+    const events: HarnessEvent[] = [
+      ev("a", "overseer.decision_recorded", t(1), { summary: "Dispatch the worker." }),
+      ev("b", "overseer.completed", t(2), { nextAction: "Await the worker result." }),
+    ];
+    const log = buildOverseerLog(events, [], humanizeToken);
+    expect(log.find((r) => r.type === "overseer.decision_recorded")?.decisionSource).toBe("llm");
+    expect(log.find((r) => r.type === "overseer.completed")?.decisionSource).toBe("llm");
+  });
+
+  it("leaves plumbing rows (command / batch lifecycle) without a decision source", () => {
+    const events: HarnessEvent[] = [
+      ev("a", "overseer.command_completed", t(1)),
+      ev("b", "overseer.commands_completed", t(2), { executed: 2 }),
+    ];
+    const log = buildOverseerLog(events, [], humanizeToken);
+    expect(log.every((r) => r.decisionSource === undefined)).toBe(true);
+  });
 });

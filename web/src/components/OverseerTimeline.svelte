@@ -18,7 +18,16 @@
     if (type === "overseer.decision_recorded") return { glyph: "◆", cls: "ov-ic-decision" };
     if (type === "overseer.command_started" || type === "overseer.command_completed") return { glyph: "›", cls: "ov-ic-cmd" };
     if (type === "overseer.commands_completed") return { glyph: "✓", cls: "ov-ic-batch" };
+    if (type === "overseer.fast_path") return { glyph: "⚡", cls: "ov-ic-fastpath" };
     return { glyph: "•", cls: "ov-ic-turn" }; // started / completed turn lifecycle
+  }
+
+  // Calm code-vs-LLM source chip: deterministic turns ran from precomputed code (no LLM call);
+  // a normal optimisation, NOT a warning — so a quiet glyph+label chip, never an alarm tone.
+  function sourceChip(src: "deterministic" | "llm"): { glyph: string; label: string; cls: string } {
+    return src === "deterministic"
+      ? { glyph: "⚡", label: "Code", cls: "ov-src-code" }
+      : { glyph: "✦", label: "LLM", cls: "ov-src-llm" };
   }
 </script>
 
@@ -68,7 +77,7 @@
           <span class="ov-row-time" title="time since this event">{shortAge(age)}</span>
           <span class="ov-row-body">
             <span class="ov-row-action">
-              {row.action}{#if row.count > 1}<span class="ov-row-count" title="{row.count} consecutive">×{row.count}</span>{/if}
+              {row.action}{#if row.count > 1}<span class="ov-row-count" title="{row.count} consecutive">×{row.count}</span>{/if}{#if row.decisionSource}{@const sc = sourceChip(row.decisionSource)}<span class="ov-src {sc.cls}" title={row.decisionSource === "deterministic" ? "Deterministic turn — chosen by code, no LLM call" : "LLM-driven turn"}><span class="ov-src-glyph" aria-hidden="true">{sc.glyph}</span>{sc.label}</span>{/if}
             </span>
             {#if row.summary}{@const ic = rowIcon(row.type)}<span class="ov-row-summary"><span class="ov-row-ic {ic.cls}" aria-hidden="true">{ic.glyph}</span>{row.summary}</span>{/if}
           </span>

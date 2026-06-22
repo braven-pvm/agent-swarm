@@ -64,6 +64,16 @@
           <span class="agent-leak-glyph" aria-hidden="true">⚠</span>{row.skillLeakCount}
         </span>
       {/if}
+      {#if row.downgradeCount && row.downgradeCount > 0}
+        <span class="agent-downgrade" title="{row.downgradeCount} blocking quality concern{row.downgradeCount === 1 ? '' : 's'} overridden by a skeptic to accept — open the agent to inspect">
+          <span class="agent-downgrade-glyph" aria-hidden="true">⚠</span>{row.downgradeCount}
+        </span>
+      {/if}
+      {#if row.journalReplayed}
+        <span class="agent-replayed" title="A run was replayed from the result journal — not freshly spawned; open the agent to inspect">
+          <span class="agent-replayed-glyph" aria-hidden="true">↺</span>replayed
+        </span>
+      {/if}
       <span class="agent-age age-{level}" title="last signal age">{shortAge(age)}</span>
     </div>
     <div class="agent-now" title={row.nowTarget ?? row.now}>{working ? d.present : d.past}{#if d.target} <code class="now-target">{d.target}</code>{/if}</div>

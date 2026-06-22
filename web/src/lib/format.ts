@@ -564,15 +564,16 @@ export function formatAge(iso: string, now: number = Date.now()): string {
 // dependency on the store module (and tests can build rows inline).
 export interface RosterGroupRow { actor: string; role?: string; latest: string; runStatus?: string; }
 
-// Group order: overseer first (the conductor), then the worker→reviewer→verifier delivery chain,
-// then planner, then recovery; any unknown/absent role sinks to the bottom.
-const ROLE_ORDER = ["overseer", "worker", "reviewer", "verifier", "planner", "recovery"];
+// Group order: overseer first (the conductor), then the worker→reviewer→skeptic→verifier delivery
+// chain (the skeptic challenges the reviewer's findings, so it sits right after the reviewer), then
+// planner, then recovery; any unknown/absent role sinks to the bottom.
+const ROLE_ORDER = ["overseer", "worker", "reviewer", "skeptic", "verifier", "planner", "recovery"];
 
 // Sentence-case plural label per role for the group eyebrow (e.g. "Reviewers"). "recovery" has no
 // natural plural, so it stays as the section name "Recovery". Unknown roles render humanized.
 const ROLE_LABELS: Record<string, string> = {
   overseer: "Overseers", worker: "Workers", reviewer: "Reviewers",
-  verifier: "Verifiers", planner: "Planners", recovery: "Recovery",
+  skeptic: "Skeptics", verifier: "Verifiers", planner: "Planners", recovery: "Recovery",
 };
 
 /** Group eyebrow label for a role bucket: the plural map, else a humanized fallback, else "Other". */

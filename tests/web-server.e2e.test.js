@@ -485,6 +485,17 @@ test("web-server serves SPA, read APIs, SSE, and local human-action writes", asy
     assert.ok(Array.isArray(coverage.byDomain), "/api/coverage should have byDomain array");
     assert.ok(Array.isArray(coverage.refs), "/api/coverage should have refs array");
 
+    // --- /api/settings: read-only protocol config the Command Bridge surfaces (defaults here) ---
+    const settingsRes = await get(port, "/api/settings");
+    assert.equal(settingsRes.status, 200, "/api/settings should be 200");
+    assert.match(settingsRes.type, /application\/json/, "/api/settings should be JSON");
+    const settings = JSON.parse(settingsRes.body);
+    assert.equal(typeof settings.resultJournal, "boolean", "/api/settings resultJournal should be a boolean");
+    assert.equal(typeof settings.maxActiveLanes, "number", "/api/settings maxActiveLanes should be a number");
+    // The seeded workspace has no protocol.yaml override, so it returns the safe defaults.
+    assert.equal(settings.resultJournal, false, "result journal defaults OFF without an opt-in");
+    assert.equal(settings.maxActiveLanes, 3, "lane budget defaults to 3 without an override");
+
     const humanActionsRes = await get(port, "/api/human-actions");
     assert.equal(humanActionsRes.status, 200, "/api/human-actions should be 200");
     const humanActions = JSON.parse(humanActionsRes.body);
@@ -858,5 +869,46 @@ test("run observability follows manifest-linked scenario summary and readiness a
     );
   } finally {
     server.close();
+  }
+});
+
+test("/api/settings reflects the target's protocol.yaml opt-ins (resultJournal + lane budget)", async () => {
+  // Force the env disable OFF so the protocol opt-in is the only signal under test (an explicit
+  // SWARM_RESULT_JOURNAL=off would otherwise win over the protocol opt-in by design).
+  const priorEnv = process.env.SWARM_RESULT_JOURNAL;
+  delete process.env.SWARM_RESULT_JOURNAL;
+  const { workspace, historyRoot } = await seedWorkspace();
+
+  // Write a protocol.yaml under the first target's path that opts INTO the result journal and
+  // raises the lane budget. loadProtocol reads <targetPath>/.swarm/protocol.yaml.
+  const targetPath = path.join(workspace, "invoice-api");
+  const protocolDir = path.join(targetPath, ".swarm");
+  fs.mkdirSync(protocolDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(protocolDir, "protocol.yaml"),
+    [
+      "protocol:",
+      "  workers:",
+      "    resultJournal: true",
+      "  lanes:",
+      "    maxActiveLanes: 5",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const webDistPath = fixtureWebDist();
+  const server = createWebViewerServer({ workspace, defaultEventCount: 20, historyRoot, webDistPath });
+  const port = await listen(server);
+  try {
+    const res = await get(port, "/api/settings");
+    assert.equal(res.status, 200, "/api/settings should be 200");
+    const settings = JSON.parse(res.body);
+    assert.equal(settings.resultJournal, true, "protocol.yaml resultJournal: true should surface as enabled");
+    assert.equal(settings.maxActiveLanes, 5, "protocol.yaml maxActiveLanes override should surface");
+  } finally {
+    server.close();
+    if (priorEnv === undefined) delete process.env.SWARM_RESULT_JOURNAL;
+    else process.env.SWARM_RESULT_JOURNAL = priorEnv;
   }
 });

@@ -27,6 +27,8 @@ import {
 } from "./observability.js";
 import { buildRunFocusPacket, buildSliceFocusPacket } from "./focus.js";
 import { buildHumanActionQueue, clearHumanEscalation, recordHumanVerification } from "./human-actions.js";
+import { loadProtocol } from "./protocol.js";
+import { resultJournalEnabled } from "./result-journal.js";
 
 type ControlCommandStatus = "running" | "completed" | "failed";
 
@@ -231,6 +233,22 @@ export function createWebViewerServer(input: {
         }
         if (requestUrl.pathname === "/api/coverage") {
           sendJson(response, buildCoverage(store));
+          return;
+        }
+        // Read-only protocol settings the Command Bridge surfaces as a calm status strip:
+        //   - resultJournal: whether this workspace opts into the content-addressed worker-RESULT
+        //     journal (default OFF; honours the SWARM_RESULT_JOURNAL env override, with an explicit
+        //     env disable winning). Drives the "Result journal: on/off" indicator + the replayed badge.
+        //   - maxActiveLanes: the SC-2 lane budget (default 3). Drives the "Lane budget: N" indicator.
+        // Resolved from the registered target's protocol.yaml (falling back to the workspace path and
+        // then to defaults). Static config, so it is its own small route rather than riding /api/snapshot.
+        if (requestUrl.pathname === "/api/settings") {
+          const protocol = loadProtocol(store.firstTarget()?.path ?? input.workspace);
+          const maxActiveLanesRaw = protocol.protocol.lanes?.maxActiveLanes;
+          sendJson(response, {
+            resultJournal: resultJournalEnabled(protocol.protocol.workers.resultJournal),
+            maxActiveLanes: typeof maxActiveLanesRaw === "number" ? maxActiveLanesRaw : 3,
+          });
           return;
         }
         if (requestUrl.pathname === "/api/run-observability") {

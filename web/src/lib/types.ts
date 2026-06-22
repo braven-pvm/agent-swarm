@@ -1,7 +1,7 @@
 export type EntityType = "harness" | "source" | "target" | "lane" | "slice" | "lease" | "dependency" | "agent_run" | "heartbeat" | "escalation" | "evidence";
 export type HeartbeatState = "idle" | "thinking" | "reading" | "editing" | "testing" | "verifying" | "waiting" | "blocked";
 export type RunMode = "unspecified" | "fixture" | "scripted-codex" | "live-agent-smoke";
-export type AgentRole = "overseer" | "planner" | "worker" | "verifier" | "reviewer" | "recovery";
+export type AgentRole = "overseer" | "planner" | "worker" | "verifier" | "reviewer" | "skeptic" | "recovery";
 export type SliceStatus = "candidate" | "ready" | "claimed" | "implementing" | "implemented" | "verifying" | "repairing" | "blocked" | "ready_for_review" | "accepted" | "closed";
 
 export interface HarnessEvent { id: string; timestamp: string; actor: string; type: string; entityType: EntityType; entityId: string; payload: Record<string, unknown>; }
@@ -12,7 +12,7 @@ export interface LeaseRecord { id: string; frAcRef: string; sliceId: string; lan
 export interface HeartbeatRecord { id: string; actor: string; state: HeartbeatState; detail?: string; entityType?: EntityType; entityId?: string; timestamp: string; }
 export interface SkillIsolationFinding { kind: "global_user_skill_reference"; severity: "warning"; path: string; snippet: string; lineNumber?: number; }
 export interface AgentRunRecord { id: string; sliceId: string; role?: AgentRole; entityType?: EntityType; entityId?: string; actor: string; driver: string; status: "running" | "completed" | "failed" | "stale" | "released"; sessionId?: string; attempt: number; eventsPath?: string; resultPath?: string; stderrPath?: string; skills?: unknown; skillBindingPath?: string; skillPacketPath?: string; skillIsolationFindings?: SkillIsolationFinding[]; startedAt: string; updatedAt: string; }
-export interface EvidenceRecord { id: string; sliceId: string; kind: "command" | "worker_result" | "review_result" | "artifact" | "note"; summary: string; ref?: string; payload: Record<string, unknown>; createdAt: string; }
+export interface EvidenceRecord { id: string; sliceId: string; kind: "command" | "worker_result" | "review_result" | "finding_challenge" | "artifact" | "note"; summary: string; ref?: string; payload: Record<string, unknown>; createdAt: string; }
 export type FrAcVerificationStatus = "passed" | "failed" | "missing_evidence" | "awaiting_human_verification" | "human_verified" | "human_input_required" | "overridden";
 export interface VerificationCriterionResult { criterionId: string; status: FrAcVerificationStatus; expectedOutcome: string; actualOutcome: string; evidenceIds: string[]; }
 export interface FrAcVerificationResult { ref: string; status: FrAcVerificationStatus; evidenceIds: string[]; proof: string; verifiedBy: string; criteriaResults?: VerificationCriterionResult[]; }
@@ -338,3 +338,110 @@ export type SelectedEntity =
   | { kind: "overseerTurn"; eventId: string }
   | { kind: "focusSlice"; id: string }
   | { kind: "focusRun"; id: string };
+
+// ── New backend store artifacts (skeptic / downgrade / fast-path / journal / settings) ──
+// These shapes mirror loose HarnessEvent.payload / EvidenceRecord.payload fields emitted by the
+// backend. They are kept additive + all-optional so tolerant readers (which guard for absence)
+// never throw on a partial or future payload; the canonical source is src/cli.ts.
+
+/** Verdict an independent skeptic returns when challenging a reviewer finding. */
+export type SkepticVerdict = "real" | "refuted" | "uncertain";
+/** Severity of the challenged finding (mirrors the reviewer/verifier severity ladder). */
+export type SkepticSeverity = "blocker" | "major" | "minor" | "nit";
+/** Where the challenged finding originated. */
+export type SkepticFindingSource = "fr_ac_finding" | "quality_dimension" | "required_fix" | "escalation";
+/** Overall skeptic-run outcome. */
+export type SkepticStatus = "upheld" | "partially_refuted" | "refuted" | "uncertain";
+
+/** Payload of a `skeptic.finding_challenged` event — one per challenged verdict (src/cli.ts:3596). */
+export interface SkepticFindingChallengedPayload {
+  runId?: string;
+  ref?: string;
+  dimension?: string;
+  source?: SkepticFindingSource;
+  verdict?: SkepticVerdict;
+  severity?: SkepticSeverity;
+  reasoning?: string;
+  challengedReviewEvidenceId?: string;
+}
+
+/** Per-verdict entry inside a `finding_challenge` evidence record's `skepticResult` (src/schemas.ts:114). */
+export interface SkepticFindingVerdict {
+  ref?: string;
+  dimension?: string;
+  source?: SkepticFindingSource;
+  verdict?: SkepticVerdict;
+  severity?: SkepticSeverity;
+  reasoning?: string;
+}
+
+/** `skepticResult` object carried on a `finding_challenge` evidence payload (src/schemas.ts:123). */
+export interface SkepticResult {
+  status?: SkepticStatus;
+  summary?: string;
+  challengedReviewStatus?: "accepted" | "repair_required" | "blocked" | "human_required";
+  findingVerdicts?: SkepticFindingVerdict[];
+  recommendation?: string;
+}
+
+/** Payload of a `finding_challenge` EvidenceRecord (src/cli.ts:3536). */
+export interface FindingChallengePayload {
+  path?: string;
+  skepticResult?: SkepticResult;
+  challengedReviewEvidenceId?: string;
+  skepticActor?: string;
+}
+
+/**
+ * Payload of a `review.finding_downgraded` event (src/cli.ts:1076). Emitted by the VERIFIER when an
+ * independent skeptic overrode a blocking quality concern to accept — a SAFETY-relevant override
+ * that does NOT mutate reviewResult.qualityGate.
+ */
+export interface FindingDowngradedPayload {
+  dimension?: string;
+  concern?: string;
+  targetKind?: "dimension" | "concern" | "status";
+  fromSeverity?: string;
+  skepticVerdict?: SkepticVerdict;
+  reasoning?: string;
+  skepticActor?: string;
+  challengeEvidenceId?: string;
+  reviewEvidenceId?: string;
+}
+
+/** Source of an overseer turn's decision: deterministic code vs an LLM turn. */
+export type OverseerDecisionSource = "deterministic" | "llm";
+
+/** Payload of an `overseer.fast_path` event (src/cli.ts:2312) — a deterministic (code) decision. */
+export interface OverseerFastPathPayload {
+  runId?: string;
+  scenario?: string;
+  decisionSource?: OverseerDecisionSource;
+  sliceId?: string;
+  sliceStatus?: string;
+  commandKey?: string;
+  command?: string;
+  purpose?: string;
+  reason?: string;
+}
+
+/**
+ * Payload of a `worker.journal_hit` event (src/cli.ts:2717) — the worker leaf was REPLAYED from the
+ * opt-in result journal, not freshly spawned. Only fires when the journal is enabled (default off).
+ */
+export interface WorkerJournalHitPayload {
+  runId?: string;
+  driver?: string;
+  model?: string;
+  journalKey?: string;
+  resultPath?: string;
+  storedAt?: string;
+  storedDriver?: string;
+  soundnessNote?: string;
+}
+
+/** Read-only swarm settings exposed by GET /api/settings. */
+export interface SettingsResponse {
+  resultJournal: boolean;
+  maxActiveLanes: number;
+}

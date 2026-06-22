@@ -35,6 +35,12 @@
   const runStopped = $derived(
     !!snap && !anyRunActive && runningControl === 0 && (!!finalOutcome || (snap?.agentRuns?.length ?? 0) > 0),
   );
+
+  // ── Read-only protocol settings strip ────────────────────────────────────
+  // Calm, de-emphasised run-context indicators (plain muted text, no pill) sitting beside
+  // mode/scenario/phase: the result-journal opt-in (default OFF; when ON it explains the run-card
+  // "replayed" badge) and the SC-2 lane budget. Renders nothing until /api/settings lands.
+  const settings = $derived(store.settings);
 </script>
 
 <header class="statusbar">
@@ -49,6 +55,21 @@
     <span class="sb-stat">scenario: {snap?.scenario ?? "—"}</span>
     <span class="sb-stat">phase: {snap?.phase ?? "—"}</span>
     <span class="sb-stat sb-turn" title="overseer turn">turn <strong>{snap?.turnCount ?? "—"}</strong></span>
+    {#if settings}
+      <span
+        class="sb-stat sb-setting sb-journal"
+        class:on={settings.resultJournal}
+        title={settings.resultJournal
+          ? "Worker result journal is ON — matching worker leaves may be replayed from a prior stored result instead of re-spawned."
+          : "Worker result journal is OFF — every worker leaf is freshly spawned."}
+      >
+        <span class="sb-setting-glyph" aria-hidden="true">{settings.resultJournal ? "●" : "○"}</span>
+        result journal: {settings.resultJournal ? "on" : "off"}
+      </span>
+      <span class="sb-stat sb-setting" title="SC-2 lane budget — the maximum number of concurrently active lanes">
+        lane budget: <strong>{settings.maxActiveLanes}</strong>
+      </span>
+    {/if}
   </span>
   <!-- Health group: live operational metrics, weighted up -->
   <span class="sb-group sb-health">

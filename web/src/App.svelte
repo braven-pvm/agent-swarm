@@ -46,6 +46,9 @@
     // stops the snapshot from hydrating.
     fetchControlCommands().then(store.setControlCommands).catch(() => {});
     fetchDevServers().then(store.setDevServers).catch(() => {});
+    // Read-only protocol settings (result journal + lane budget) for the status strip. Static config
+    // on its own swallow-on-error fetch so a settings hiccup never stops the snapshot from hydrating.
+    api.settings().then(store.setSettings).catch(() => {});
     try {
       const [snap, cov] = await Promise.all([api.snapshot(200), api.coverage().catch(() => null)]);
       store.hydrate(snap);

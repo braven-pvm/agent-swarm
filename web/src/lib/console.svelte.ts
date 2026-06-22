@@ -1,12 +1,14 @@
 import type {
   SnapshotResponse, HarnessEvent, HeartbeatRecord, AgentActivity, SelectedEntity, CoverageSummary,
-  AgentFocusItem, CheckpointRecord,
+  AgentFocusItem, CheckpointRecord, OverseerDecisionSource, SettingsResponse,
 } from "~/lib/types";
 import { groupEscalations, humanizeToken, cleanSliceTitle, type EscalationGroup } from "~/lib/format";
 import type { HumanActionItem, HumanActionQueue } from "~/lib/human-actions";
 import type { ControlCommand, DevServer } from "~/lib/control";
 import { commandKindLabel } from "~/lib/control";
 import { skillsOf, isolationFindingsOf, dedupeFindings } from "~/lib/skills";
+import { downgradesForSlice } from "~/lib/skeptic";
+import { anyJournalReplay } from "~/lib/journal";
 
 // A transient toast. Two shapes share one stack + the Toaster's auto-dismiss timer, discriminated
 // by `kind`:
@@ -57,6 +59,14 @@ export interface AgentRosterRow {
   // Distinct skill-isolation leaks (global-user-skill references) across ANY of this actor's runs,
   // deduped by path+line. Undefined when none → neutral (no badge). A WARNING, not a blocker.
   skillLeakCount?: number;
+  // Count of quality-gate overrides (review.finding_downgraded) on the slices this actor's
+  // reviewer/skeptic/verifier runs touched — a blocking concern the skeptic overrode to accept.
+  // Undefined when none → neutral (no badge). A WARNING the operator must be able to see at a glance.
+  downgradeCount?: number;
+  // True when ANY of this actor's runs was REPLAYED from the opt-in result journal (a
+  // worker.journal_hit fired for the run) rather than freshly spawned. Only ever set when the
+  // journal is enabled (default OFF) → default workspaces leave this undefined (no badge).
+  journalReplayed?: boolean;
 }
 
 export interface ProofChainRow {
@@ -81,6 +91,22 @@ export interface OverseerLogRow {
   summary?: string;    // per-event detail: command subject + exit, decision summary, counts, next action
   ts: string;          // newest event timestamp in the run (ISO)
   count: number;       // how many consecutive same-type events folded in
+  // The turn's decision source: "deterministic" (code chose the next command — overseer.fast_path)
+  // vs "llm" (the LLM produced a decision/completion). undefined for plumbing rows (command/batch
+  // lifecycle) that aren't a turn decision. Drives the calm code-vs-LLM chip in the loop log.
+  decisionSource?: OverseerDecisionSource;
+}
+
+// Classify a loop event's decision source for the calm code-vs-LLM chip. fast_path is the
+// deterministic (code) turn; the LLM decision/completion events are "llm". Other lifecycle
+// rows (command_started/completed, commands_completed, started) are not a turn decision → undefined.
+function rowDecisionSource(ev: HarnessEvent): OverseerDecisionSource | undefined {
+  if (ev.type === "overseer.fast_path") {
+    const src = (ev.payload as Record<string, unknown> | undefined)?.decisionSource;
+    return src === "llm" ? "llm" : "deterministic";
+  }
+  if (ev.type === "overseer.decision_recorded" || ev.type === "overseer.completed") return "llm";
+  return undefined;
 }
 
 // A non-heartbeat overseer event is a loop event (the heartbeat-activity stream,
@@ -135,6 +161,12 @@ function eventDetail(ev: HarnessEvent, checkpoints: CheckpointRecord[]): string 
       return asStr(p.nextAction) ?? asStr(p.status);
     case "overseer.started":
       return p.attempt != null ? `attempt ${p.attempt}` : undefined;
+    case "overseer.fast_path": {
+      // Deterministic (code) turn: the next command was read straight off the mechanical queue head.
+      // Lead with WHAT it chose (commandKey + slice), mirroring the command rows' subject phrasing.
+      const label = [asStr(p.commandKey), asStr(p.sliceId)].filter(Boolean).join(" ");
+      return label || asStr(p.purpose) || asStr(p.command);
+    }
     default:
       return undefined;
   }
@@ -164,7 +196,7 @@ export function buildOverseerLog(
       continue;
     }
     const bare = ev.type.replace("overseer.", "");
-    rows.push({ id: ev.id, type: ev.type, action: humanize(bare) || bare, summary: detail, ts: ev.timestamp, count: 1 });
+    rows.push({ id: ev.id, type: ev.type, action: humanize(bare) || bare, summary: detail, ts: ev.timestamp, count: 1, decisionSource: rowDecisionSource(ev) });
   }
   return rows.reverse(); // newest-first
 }
@@ -189,6 +221,11 @@ export function createConsoleStore() {
   // alongside the snapshot in App.refresh() and replaced wholesale (the server order is preserved).
   let controlCommands = $state<ControlCommand[]>([]);
   let devServers = $state<DevServer[]>([]);
+  // ── Read-only protocol settings ──────────────────────────────────────────
+  // workers.resultJournal (default OFF) + lanes.maxActiveLanes (default 3), fetched alongside the
+  // snapshot in App.refresh() and replaced wholesale. Null until the first /api/settings read lands
+  // (the status strip shows nothing until then). Static config — never mutated by SSE.
+  let settings = $state<SettingsResponse | null>(null);
 
   // ── New-action toasts ──────────────────────────────────────────────────
   // Toasts fire only for GENUINELY NEW action ids — ids seen on a later poll that were never seen
@@ -262,6 +299,20 @@ export function createConsoleStore() {
         // Deduped by path+line via dedupeFindings; 0 → leave undefined (neutral, no badge).
         const leaks = dedupeFindings(actorRuns.flatMap((r) => isolationFindingsOf(r)));
         if (leaks.length > 0) row.skillLeakCount = leaks.length;
+        // Quality-gate overrides on the slices this actor's reviewer/skeptic/verifier runs touched.
+        // A blocking concern that an independent skeptic overrode to accept — a WARNING that must be
+        // visible on the roster. Count distinct downgrades across the actor's reviewed slices.
+        if (["reviewer", "skeptic", "verifier"].includes(row.role ?? "")) {
+          const sliceIds = new Set(actorRuns.map((r) => r.sliceId).filter(Boolean));
+          let dgCount = 0;
+          for (const sid of sliceIds) dgCount += downgradesForSlice(snapshot.recentEvents, sid).length;
+          if (dgCount > 0) row.downgradeCount = dgCount;
+        }
+        // Result-journal replay: ANY of this actor's runs was REPLAYED from the opt-in journal
+        // (worker.journal_hit) rather than freshly spawned. Only ever true when the journal is
+        // enabled (default OFF) — so default workspaces leave this undefined (no badge). recentEvents
+        // is the rolling tail; the run card re-derives precisely from full agent history on open.
+        if (anyJournalReplay(snapshot.recentEvents, actorRuns.map((r) => r.id))) row.journalReplayed = true;
         const endMs = latest.status === "running" ? nowMs : Date.parse(latest.updatedAt);
         const rt = endMs - Date.parse(latest.startedAt);
         if (Number.isFinite(rt)) row.runtimeMs = rt;
@@ -320,6 +371,7 @@ export function createConsoleStore() {
     get toasts() { return toasts; },
     get controlCommands() { return controlCommands; },
     get devServers() { return devServers; },
+    get settings() { return settings; },
     // Newest-first view of the control feed, regardless of server order (id/startedAt may both be
     // present; prefer startedAt, fall back to a stable tail-first reverse).
     get controlCommandsNewestFirst() {
@@ -338,6 +390,7 @@ export function createConsoleStore() {
     setCoverage(c: CoverageSummary) { coverage = c; },
     setControlCommands(c: ControlCommand[]) { controlCommands = Array.isArray(c) ? c : []; },
     setDevServers(s: DevServer[]) { devServers = Array.isArray(s) ? s : []; },
+    setSettings(s: SettingsResponse | null) { settings = s ?? null; },
     setHumanActions(q: HumanActionQueue) {
       humanActions = q;
       const actions = q?.actions ?? [];

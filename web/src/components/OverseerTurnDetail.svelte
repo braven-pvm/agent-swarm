@@ -59,6 +59,7 @@
   const isBatch = $derived(kind === "commands_completed" || kind === "completed");
   const isDecision = $derived(kind === "decision_recorded");
   const isStart = $derived(kind === "started");
+  const isFastPath = $derived(kind === "fast_path");
 
   // ── One-line summary appropriate to the type. ──
   const summary = $derived((() => {
@@ -80,8 +81,19 @@
       const driver = asStr(pick(payload, "driver"));
       return [scenario && `Started ${scenario}`, driver && `via ${driver}`].filter(Boolean).join(" ") || undefined;
     }
+    if (isFastPath) {
+      const ck = asStr(pick(payload, "commandKey"));
+      const slice = asStr(pick(payload, "sliceId"));
+      const subj = [ck, slice].filter(Boolean).join(" · ");
+      return subj ? `Code chose ${subj} — no LLM call.` : "Deterministic turn — no LLM call.";
+    }
     return undefined;
   })());
+
+  // Fast-path fields. decisionSource defaults to "deterministic" (this event type is the code path).
+  const decisionSource = $derived(asStr(pick(payload, "decisionSource")) ?? "deterministic");
+  const fpSliceStatus = $derived(asStr(pick(payload, "sliceStatus")));
+  const fpReason = $derived(asStr(pick(payload, "reason")));
 
   // Command-event fields.
   const command = $derived(asStr(pick(payload, "command")));
@@ -349,6 +361,41 @@
       <div class="ovt-eyebrow">Files</div>
       {#if promptPath}{@render artifact("prompt", promptPath)}{/if}
       {#if manifestPath}{@render artifact("manifest", manifestPath)}{/if}
+    {/if}
+  {/if}
+
+  <!-- FAST PATH (deterministic / code turn) -->
+  {#if isFastPath}
+    <div class="ovt-eyebrow">Decision source</div>
+    <div class="ovt-src-row">
+      {#if decisionSource === "deterministic"}
+        <span class="ovt-src ovt-src-code" title="Chosen by code — no LLM call this turn">
+          <span class="ovt-src-glyph" aria-hidden="true">⚡</span>Code · deterministic
+        </span>
+      {:else}
+        <span class="ovt-src ovt-src-llm" title="LLM-driven turn">
+          <span class="ovt-src-glyph" aria-hidden="true">✦</span>LLM
+        </span>
+      {/if}
+    </div>
+    {#if commandKey || sliceId || fpSliceStatus}
+      <div class="ovt-kv">
+        {#if commandKey}<div class="kv"><b>Command key</b><code>{commandKey}</code></div>{/if}
+        {#if sliceId}<div class="kv"><b>Slice</b><code>{sliceId}</code></div>{/if}
+        {#if fpSliceStatus}<div class="kv"><b>Slice status</b><span class="ovt-kv-v">{fpSliceStatus}</span></div>{/if}
+      </div>
+    {/if}
+    {#if command}
+      <div class="ovt-eyebrow">Command</div>
+      <pre class="json ovt-cmd-raw" title={command}>{command}</pre>
+    {/if}
+    {#if purpose}
+      <div class="ovt-eyebrow">Purpose</div>
+      <p class="ovt-para muted">{purpose}</p>
+    {/if}
+    {#if fpReason}
+      <div class="ovt-eyebrow">Why code, not LLM</div>
+      <p class="ovt-para muted">{fpReason}</p>
     {/if}
   {/if}
 

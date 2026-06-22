@@ -57,6 +57,13 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-
 .sb-stat { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 /* The live turn count is the one moving number here — weight it up to --ink. */
 .sb-turn { color: var(--ink); } .sb-turn strong { font-weight: 600; }
+/* Read-only protocol settings (result journal + lane budget): calm muted run-context, same family
+   as mode/scenario/phase. A glyph+text pair carries meaning so the on/off state never rides on
+   colour alone; the green --on tint is reinforcement, not the only signal. */
+.sb-setting { display: inline-flex; align-items: center; gap: var(--s1); }
+.sb-setting strong { color: var(--ink); font-weight: 600; }
+.sb-setting-glyph { font-size: var(--fs-eyebrow); line-height: 1; }
+.sb-journal.on { color: var(--green); }
 .brand { font-weight: 600; } .spacer { flex: 1; }
 .chip { border: 1px solid var(--line-2); border-radius: 10px; padding: 1px 8px; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .chip.conn.on { color: var(--green); border-color: var(--line-2); } .chip.conn.off { color: var(--muted); }
@@ -243,7 +250,13 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .ov-row-count { color: var(--muted); font-size: var(--fs-meta); margin-left: var(--s1); }
 .ov-row-summary { color: rgba(255,255,255,0.52); font-size: var(--fs-meta); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .ov-row-ic { margin-right: 5px; font-size: .9em; }
-.ov-ic-decision { color: var(--accent); } .ov-ic-cmd { color: var(--muted); } .ov-ic-batch { color: var(--green); } .ov-ic-turn { color: var(--faint); }
+.ov-ic-decision { color: var(--accent); } .ov-ic-cmd { color: var(--muted); } .ov-ic-batch { color: var(--green); } .ov-ic-turn { color: var(--faint); } .ov-ic-fastpath { color: var(--blue); }
+/* Code-vs-LLM source chip — a calm, neutral marker (deterministic fast-path is a normal
+   optimisation, NOT a warning). Glyph + label so meaning never rides on colour alone. */
+.ov-src { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 6px; margin-left: var(--s2); white-space: nowrap; vertical-align: baseline; }
+.ov-src-glyph { font-size: .9em; opacity: .85; }
+.ov-src-code { background: rgba(91,157,255,.14); color: var(--blue); }
+.ov-src-llm { background: rgba(255,255,255,.06); color: var(--muted); }
 .ov-row-decision { background: rgba(91,157,255,0.05); }
 .ov-row-decision .ov-row-summary { color: var(--muted); }
 .ov-more { display: block; width: 100%; text-align: center; background: none; border: 1px dashed var(--line-3); border-radius: var(--radius); padding: 6px var(--s3); margin-top: var(--s3); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; }
@@ -765,6 +778,20 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
    .agent-skills; the detail section uses a left amber accent like .ha-notice-warn. */
 .agent-leak { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--amber); background: rgba(214,161,60,.14); border-radius: 8px; padding: 0 5px; font-variant-numeric: tabular-nums; }
 .agent-leak-glyph { font-size: .9em; }
+/* Quality-gate override roster badge — a blocking concern a skeptic overrode to accept. Amber +
+   glyph (never colour-alone), mirrors .agent-leak. The detail callout lives in the inspector. */
+.agent-downgrade { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--amber); background: rgba(214,161,60,.14); border-radius: 8px; padding: 0 5px; font-variant-numeric: tabular-nums; }
+.agent-downgrade-glyph { font-size: .9em; }
+/* ── Result-journal replay badge (worker.journal_hit) ──────────────────────
+   A run was REPLAYED from the opt-in result journal, not freshly spawned. Provenance, NOT a
+   warning, so the badge is CALM/neutral-blue (never amber/red) and always pairs the ↺ glyph with
+   explicit "replayed" text (never colour-alone). Only renders when a journal_hit fired for the run,
+   so default-off workspaces (the norm) show nothing. .agent-replayed is the roster badge; the
+   run-card variant (.run-replayed) shares the tone. */
+.agent-replayed { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--blue); background: rgba(91,157,255,.14); border-radius: 8px; padding: 0 5px; }
+.agent-replayed-glyph { font-size: .9em; }
+.run-replayed { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: var(--fs-eyebrow); color: var(--blue); background: rgba(91,157,255,.14); border-radius: 8px; padding: 0 5px; }
+.run-replayed-glyph { font-size: .9em; }
 .skill-leak { border-left: 3px solid var(--amber); background: rgba(214,161,60,.07); border-radius: 6px; padding: var(--s2) var(--s3); margin-top: var(--s2); }
 .skill-leak-head { display: flex; align-items: center; gap: 6px; color: var(--amber); margin: 0 0 4px; }
 .skill-leak-glyph { font-size: 1em; }
@@ -776,6 +803,35 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .skill-leak-line { font-size: var(--fs-eyebrow); color: var(--muted); flex: none; }
 .skill-leak-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-eyebrow); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-leak-snippet { font-size: var(--fs-eyebrow); line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+/* ── Quality-gate override (review.finding_downgraded) ─────────────────────
+   The SAFETY surface: an independent skeptic overrode a BLOCKING quality concern so the slice was
+   accepted. A WARNING callout (amber + ⚠ glyph + explicit text — never colour-alone) that must be
+   impossible to miss wherever acceptance shows. Mirrors .skill-leak's left-amber idiom. */
+.downgrade-callout { border-left: 3px solid var(--amber); background: rgba(214,161,60,.07); border-radius: 6px; padding: var(--s2) var(--s3); margin: var(--s2) 0; }
+.downgrade-head { display: flex; align-items: center; gap: 6px; color: var(--amber); margin: 0 0 4px; }
+.downgrade-glyph { font-size: 1em; }
+.downgrade-note { font-size: var(--fs-meta); line-height: 1.45; color: var(--muted); margin: 0 0 var(--s2); }
+.downgrade-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.downgrade-item { display: flex; flex-direction: column; gap: 2px; }
+.downgrade-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: var(--fs-meta); }
+.downgrade-what { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.downgrade-from { font-size: var(--fs-eyebrow); color: var(--amber); background: rgba(214,161,60,.14); border-radius: 8px; padding: 0 5px; flex: none; }
+.downgrade-who { font-size: var(--fs-eyebrow); }
+.downgrade-actor { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); }
+.downgrade-why { font-size: var(--fs-eyebrow); line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+/* ── Skeptic per-finding verdict chips ────────────────────────────────────
+   real = the reviewer's concern STANDS (red ✕); refuted = the challenge OVERTURNED it (green ✓);
+   uncertain/unknown = neutral amber (?). Glyph + label so meaning never rides on colour alone. */
+.sk-verdict { display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; white-space: nowrap; }
+.sk-verdict-glyph { font-size: .9em; }
+.sk-verdict-real { background: rgba(239,107,97,.14); color: var(--red); }
+.sk-verdict-refuted { background: rgba(92,184,122,.14); color: var(--green); }
+.sk-verdict-uncertain { background: rgba(214,161,60,.14); color: var(--amber); }
+/* Skeptic run card — the per-finding challenge verdicts list (one row per finding). */
+.sk-verdicts { display: flex; flex-direction: column; gap: var(--s1); }
+.sk-verdict-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: var(--fs-meta); }
+.sk-verdict-ref { font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; background: rgba(255,255,255,.06); color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+.sk-verdict-reason { color: var(--muted); overflow-wrap: anywhere; }
 /* ── Overseer turn detail (inspector) ────────────────────────────────────
    Structured render of an overseer loop event: eyebrow sub-heads + muted body,
    mono for ids/commands/paths, one accent, glyph+colour for status. Static
@@ -827,6 +883,13 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .ovt-blockers li { font-size: var(--fs-body); color: var(--red); }
 .ovt-blocker-glyph { margin-right: 4px; }
 .ovt-raw-toggle { margin-top: var(--s3); }
+/* Fast-path decision-source chip in the turn detail — calm code-vs-LLM marker, glyph + label
+   so the meaning never rides on colour alone. Mirrors the .ov-src loop-log chip. */
+.ovt-src-row { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s1); }
+.ovt-src { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
+.ovt-src-glyph { font-size: .9em; opacity: .85; }
+.ovt-src-code { background: rgba(91,157,255,.14); color: var(--blue); }
+.ovt-src-llm { background: rgba(255,255,255,.06); color: var(--muted); }
 /* Run-observability badges (StatusBar) */
 .ro-badge { font-size: var(--fs-meta); border-radius: 10px; padding: 1px 8px; }
 .ro-badge strong { font-weight: 600; }

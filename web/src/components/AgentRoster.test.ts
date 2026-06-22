@@ -81,6 +81,53 @@ describe("AgentRoster", () => {
     expect(getByText("Show fewer")).toBeTruthy();
   });
 
+  it("flags a skeptic/reviewer row with a quality-gate override badge", () => {
+    const store = createConsoleStore();
+    store.hydrate({
+      ...base(),
+      agentRuns: [run("skeptic-1", "skeptic", "completed")],
+      recentEvents: [{
+        id: "E1", timestamp: NOW, actor: "verifier-1", type: "review.finding_downgraded",
+        entityType: "slice", entityId: "S1",
+        payload: { dimension: "runtime_path", targetKind: "dimension", fromSeverity: "blocker", skepticVerdict: "refuted", reasoning: "covered", skepticActor: "skeptic-1" },
+      }],
+    } as any);
+    const { container } = render(AgentRoster, { props: { store, onSelect: () => {} } });
+    const badge = container.querySelector(".agent-downgrade");
+    expect(badge).toBeTruthy();
+    expect(badge?.textContent).toContain("1");
+  });
+
+  it("shows NO override badge for a worker on a clean slice (neutral default)", () => {
+    const store = createConsoleStore();
+    store.hydrate({ ...base(), agentRuns: [run("w1", "worker", "completed")] } as any);
+    const { container } = render(AgentRoster, { props: { store, onSelect: () => {} } });
+    expect(container.querySelector(".agent-downgrade")).toBeNull();
+  });
+
+  it("flags a worker row with a journal 'replayed' badge when its run was replayed", () => {
+    const store = createConsoleStore();
+    store.hydrate({
+      ...base(),
+      agentRuns: [run("w1", "worker", "completed")],
+      recentEvents: [{
+        id: "E1", timestamp: NOW, actor: "w1", type: "worker.journal_hit",
+        entityType: "slice", entityId: "S1",
+        payload: { runId: "R:w1", driver: "fixture", journalKey: "jk-1", storedDriver: "codex", soundnessNote: "result only" },
+      }],
+    } as any);
+    const { container, getByText } = render(AgentRoster, { props: { store, onSelect: () => {} } });
+    expect(container.querySelector(".agent-replayed")).toBeTruthy();
+    expect(getByText("replayed")).toBeTruthy();
+  });
+
+  it("shows NO replayed badge with the journal off (no worker.journal_hit event — default workspaces)", () => {
+    const store = createConsoleStore();
+    store.hydrate({ ...base(), agentRuns: [run("w1", "worker", "completed")] } as any);
+    const { container } = render(AgentRoster, { props: { store, onSelect: () => {} } });
+    expect(container.querySelector(".agent-replayed")).toBeNull();
+  });
+
   it("always shows every active and stalled agent (never truncated)", () => {
     const store = createConsoleStore();
     // 5 active verifiers — all must render even though >3, because truncation targets idle only.

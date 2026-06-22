@@ -279,6 +279,7 @@ describe("roleGroupLabel", () => {
     expect(roleGroupLabel("overseer")).toBe("Overseers");
     expect(roleGroupLabel("worker")).toBe("Workers");
     expect(roleGroupLabel("reviewer")).toBe("Reviewers");
+    expect(roleGroupLabel("skeptic")).toBe("Skeptics");
     expect(roleGroupLabel("verifier")).toBe("Verifiers");
     expect(roleGroupLabel("planner")).toBe("Planners");
     expect(roleGroupLabel("recovery")).toBe("Recovery");
@@ -296,21 +297,22 @@ describe("groupAgentsByRole", () => {
     actor, role, runStatus: opts.runStatus, latest: new Date(NOW - (opts.ageMs ?? 0)).toISOString(),
   });
 
-  it("orders groups overseer→worker→reviewer→verifier→planner→recovery, unknown last", () => {
+  it("orders groups overseer→worker→reviewer→skeptic→verifier→planner→recovery, unknown last", () => {
     const groups = groupAgentsByRole([
       row("p", "planner", { runStatus: "running" }),
       row("u", "scout", { runStatus: "running" }),
       row("o", "overseer", { runStatus: "running" }),
       row("w", "worker", { runStatus: "running" }),
       row("rc", "recovery", { runStatus: "running" }),
+      row("sk", "skeptic", { runStatus: "running" }),
       row("rv", "reviewer", { runStatus: "running" }),
       row("v", "verifier", { runStatus: "running" }),
     ], NOW);
     expect(groups.map((g) => g.role)).toEqual([
-      "overseer", "worker", "reviewer", "verifier", "planner", "recovery", "scout",
+      "overseer", "worker", "reviewer", "skeptic", "verifier", "planner", "recovery", "scout",
     ]);
     expect(groups.map((g) => g.label)).toEqual([
-      "Overseers", "Workers", "Reviewers", "Verifiers", "Planners", "Recovery", "Scout",
+      "Overseers", "Workers", "Reviewers", "Skeptics", "Verifiers", "Planners", "Recovery", "Scout",
     ]);
   });
 

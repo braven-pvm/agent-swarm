@@ -72,6 +72,43 @@ describe("OverseerTurnDetail", () => {
     expect(container.querySelectorAll(".ovt-log-btn").length).toBe(2);
   });
 
+  it("renders a fast_path turn with a deterministic (code) source chip + command/purpose/reason", () => {
+    const event = ev("overseer.fast_path", {
+      runId: "RUN-fp",
+      scenario: "live-agent-smoke",
+      decisionSource: "deterministic",
+      sliceId: "SLICE-9",
+      sliceStatus: "ready_for_review",
+      commandKey: "review",
+      command: "swarm run reviewer SLICE-9",
+      purpose: "Review the export slice.",
+      reason: "Precomputed mechanical queue head equals the deterministic nextCommand; LLM invocation skipped.",
+    });
+    const { getByText, container } = render(OverseerTurnDetail, { props: { event } });
+    // Humanized title.
+    expect(getByText("Fast path")).toBeTruthy();
+    // Decision-source section + the calm code chip (glyph + label, never colour alone).
+    expect(getByText("Decision source")).toBeTruthy();
+    const chip = container.querySelector(".ovt-src-code");
+    expect(chip).toBeTruthy();
+    expect(chip?.textContent).toMatch(/Code/);
+    // Command, purpose, and the why-code-not-LLM reason all surface.
+    expect(getByText("swarm run reviewer SLICE-9")).toBeTruthy();
+    expect(getByText("Review the export slice.")).toBeTruthy();
+    expect(getByText("Why code, not LLM")).toBeTruthy();
+    expect(getByText(/LLM invocation skipped/)).toBeTruthy();
+    // Slice + status key-values rendered.
+    expect(getByText("SLICE-9")).toBeTruthy();
+    expect(getByText("ready_for_review")).toBeTruthy();
+  });
+
+  it("defaults a fast_path turn to the code chip when decisionSource is absent", () => {
+    const event = ev("overseer.fast_path", { runId: "RUN-fp2", commandKey: "work", sliceId: "SLICE-1" });
+    const { container } = render(OverseerTurnDetail, { props: { event } });
+    expect(container.querySelector(".ovt-src-code")).toBeTruthy();
+    expect(container.querySelector(".ovt-src-llm")).toBeNull();
+  });
+
   it("falls back to the raw payload for an unknown event type", () => {
     const event = ev("overseer.mystery_event", { runId: "RUN-q", weird: { nested: 42 } });
     const { getByText, queryByText } = render(OverseerTurnDetail, { props: { event } });
