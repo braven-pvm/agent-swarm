@@ -13,7 +13,7 @@ let apiBaseUrl;
 export async function createReviewServer() {
   await ensureApiServer();
 
-  return http.createServer(async (request, response) => {
+  const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/") {
@@ -33,6 +33,12 @@ export async function createReviewServer() {
       sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   });
+  server.once("close", () => {
+    apiServer?.close();
+    apiServer = undefined;
+    apiBaseUrl = undefined;
+  });
+  return server;
 }
 
 async function ensureApiServer() {

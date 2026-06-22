@@ -1,12 +1,48 @@
 # New Agent Start Here
 
-Last updated: 2026-06-20
+Last updated: 2026-06-22
 
 This repository is an agentic development harness prototype. It exists to coordinate autonomous implementation agents against approved immutable requirements at scale, while keeping planning, work, verification, evidence, recovery, and progress visible.
 
 If you are a fresh Codex instance, start here before editing code.
 
 ## Latest State
+
+2026-06-22 post-Workflow reassessment:
+
+- The Claude Workflow handoff implementation is now on `main`: schema-invalid result re-ask, shared driver result persistence, lazy skeptic review, lane-budget enforcement, bounded concurrent dependency-satisfied slice dispatch, deterministic overseer fast-paths, reusable run guards, ledger-derived settled facts in worker/revive prompts, structured focus/intervention packets, recovery `focus_consulted` events, and the opt-in content-addressed worker-result journal prototype.
+- The next run should not be just "kick H2." Use a two-layer proof: focused generic control-plane regressions first, then the real H2 product run.
+- Preflight:
+
+```powershell
+npm run build
+node --test tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js
+node --test tests\support-triage-fake.e2e.test.js tests\support-triage-live-runner.e2e.test.js
+git diff --check
+```
+
+- Deterministic H2 lifecycle check:
+
+```powershell
+npm run demo:live-agent:h2:fake
+```
+
+- Start observability for a clean H2 workspace on the standard port:
+
+```powershell
+node dist\cli.js smoke live-agent reset --scenario live-agent-smoke-h2
+node dist\cli.js serve --workspace .swarm-demo\live-agent-smoke-h2 --host 127.0.0.1 --port 4319
+```
+
+- Real H2 run after the reset/serve step:
+
+```powershell
+node dist\cli.js smoke live-agent full --scenario live-agent-smoke-h2
+```
+
+- H2 remains the real product smoke. Do not tune the support-triage product spec to manufacture every new control-plane fault; focused tests should cover fault classes such as intervention classification, valid-artifact hung-child recovery, schema re-ask, settled-facts scope isolation, and recovery consult ordering.
+- Use `full --reset` only when no same-workspace UI server needs to stay up, or launch reset through Command Bridge so it can exclude its own server process.
+- Reassessment verification passed on 2026-06-22: build, focused FR/focus/settled-facts tests (`13/13`), focused H2 fake/live-runner tests (`9/9`), `git diff --check`, and the direct `npm run demo:live-agent:h2:fake` wrapper. The wrapper initially exposed a Windows reset lock from an orphaned support-ui review probe; `fixtures/templates/support-ui/src/server.js` now closes its companion support-api server whenever the returned review server closes.
 
 2026-06-20 human-verification rework/control note:
 
@@ -371,7 +407,7 @@ Run-mode boundary:
 
 ## Next Coherent Slice
 
-Next slice: discuss escalation semantics for high-retry and human-verification repair loops, then run a fresh H2 real-agent pass only after the UI team has consumed the new control-command activity/repair-context shape.
+Next slice: run the clean post-Workflow preflight sequence, then run a fresh H2 real-agent pass from scratch with the UI server on `http://127.0.0.1:4319/`.
 
 Phase 11A/11B have committed support-triage source specs and scenario skills, and `swarm smoke live-agent reset --scenario live-agent-smoke-h2` creates the reset-only H2 workspace without replacing invoice smoke. Phase 11C adds deterministic fake-agent H2 execution, consumes the scenario manifest instead of invoice-specific assumptions, proves target-specific skill binding, exercises human-verification packet flow, and tests reviewer rejection/repair. Phase 11D now routes `swarm smoke live-agent full --reset --scenario live-agent-smoke-h2` to the H2 live runner; the remaining checkpoint is a tightly bounded real Codex run observed through the dashboard.
 

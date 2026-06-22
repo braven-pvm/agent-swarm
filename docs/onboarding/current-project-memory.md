@@ -1,10 +1,56 @@
 # Current Project Memory
 
-Last updated: 2026-06-20
+Last updated: 2026-06-22
 
 This file is the durable handoff memory for the current state of `agent-swarm`. It should let a fresh agent resume without relying on the chat transcript.
 
 ## Latest Handoff Update
+
+2026-06-22 post-Workflow reassessment:
+
+- The Claude Workflow handoff has been implemented on `main` and pushed. Recent commits added schema-invalid result re-ask, shared driver result validation/persistence, lazy skeptic review in the live loop, lane-budget enforcement, bounded concurrent dependency-satisfied slice dispatch, deterministic overseer fast-paths, extracted hard run guards, ledger-derived settled facts in worker/revive prompts, structured focus/intervention packets, recovery `focus_consulted` events, and an opt-in content-addressed worker-result journal prototype.
+- H2 remains the right real-world smoke case: Customer Support Triage Board should still prove a fresh swarm can start from immutable multi-domain specs and end with a real working product. Do not reshape support-triage specs just to trigger every new engine-room branch.
+- The next clean run should use a two-layer proof: first run focused control-plane regressions for settled facts/interventions/focus packets plus H2 fake/live-runner regressions; then run H2 from scratch through the built CLI with the dashboard on `http://127.0.0.1:4319/`.
+- Clean preflight sequence:
+
+```powershell
+npm run build
+node --test tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js
+node --test tests\support-triage-fake.e2e.test.js tests\support-triage-live-runner.e2e.test.js
+git diff --check
+```
+
+- Deterministic H2 confidence run:
+
+```powershell
+npm run demo:live-agent:h2:fake
+```
+
+- Standard clean observability server for the next real H2 run:
+
+```powershell
+node dist\cli.js smoke live-agent reset --scenario live-agent-smoke-h2
+node dist\cli.js serve --workspace .swarm-demo\live-agent-smoke-h2 --host 127.0.0.1 --port 4319
+```
+
+- Real run command after the reset/serve step:
+
+```powershell
+node dist\cli.js smoke live-agent full --scenario live-agent-smoke-h2
+```
+
+- During that run, observe that outcome, product readiness, global coverage, active concerns, human actions, focus interventions, settled-facts artifacts, and skill-isolation warnings remain separate visible truths. Use `full --reset` only when no same-workspace UI server needs to stay up, or trigger reset through Command Bridge so the server can exclude itself from reset cleanup.
+- Reassessment verification passed:
+
+```text
+npm run build -> passed
+node --test tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js -> 13/13 passing
+node --test tests\support-triage-fake.e2e.test.js tests\support-triage-live-runner.e2e.test.js -> 9/9 passing
+git diff --check -> clean
+npm run demo:live-agent:h2:fake -> passed after support-ui review server cleanup fix
+```
+
+- The first direct H2 fake wrapper attempt exposed a real reset-first issue: a relative `node -e "import('./src/server.js')..."` support-ui review probe stayed alive after tests and pinned `.swarm-demo/live-agent-smoke-h2`. Root cause was `createReviewServer()` closing the UI server but not its companion support-api server. `fixtures/templates/support-ui/src/server.js` now closes the companion API server when the returned review server closes; after the fix, the H2 fake wrapper reset and ran cleanly, and no H2/support-ui probe processes or relevant ports remained.
 
 2026-06-20 human-verification rework/control update:
 

@@ -1,6 +1,6 @@
 # Live Agent Smoke Harness 2
 
-Status: Phase 11D first real-agent run completed; H2 full-coverage continuation and backend-first queue hardening implemented; next step is a fresh real-agent confirmation run.
+Status: Phase 11D first real-agent run completed; H2 full-coverage continuation, backend-first queue hardening, repair-loop hardening, and the post-Workflow control-plane hardenings are implemented. Next step is a clean from-scratch H2 run after focused control-plane preflight.
 
 ## Purpose
 
@@ -160,6 +160,89 @@ Harness 2 should include these scenarios over time:
 7. Warning history versus active concern: accepted final state separates resolved warning history from active blockers/human actions.
 8. Configured product probes: readiness uses scenario-declared UI/API/workflow probes instead of runner hardcoding.
 
+## Post-Workflow Reassessment
+
+Date: 2026-06-22.
+
+The Claude Workflow implementation pass added or hardened several generic control-plane mechanisms:
+
+- schema-invalid child results get a bounded in-turn re-ask before the run falls back to failure handling
+- all driver result validation/persistence goes through one shared core path
+- independent skeptic review can run lazily in the live loop
+- the planner enforces `maxActiveLanes`
+- the live runner can dispatch bounded concurrent dependency-satisfied slices
+- deterministic overseer fast-paths can execute precomputed mechanical work before asking an agent
+- hard run guards are extracted into reusable source modules
+- worker prompts and revive prompts receive ledger-derived settled facts from durable state, never chat memory
+- run/slice focus packets expose structured intervention recommendations
+- recovery records that focus/intervention context was consulted before revive/restart
+- an opt-in content-addressed worker-result journal exists as a contested prototype
+
+These are not support-triage-specific product facts. The H2 product case should remain spec-agnostic and should not be reshaped just to trigger every failure branch. Instead, the next clean run should use a two-layer proof:
+
+1. focused control-plane regression pack proves the new generic mechanisms directly and cheaply
+2. H2 full live run proves those mechanisms do not regress the real agentic product loop
+
+### Clean From-Scratch Run Sequence
+
+Run from the repo root after confirming the worktree is clean or intentionally dirty:
+
+```powershell
+npm run build
+node --test tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js
+node --test tests\support-triage-fake.e2e.test.js tests\support-triage-live-runner.e2e.test.js
+git diff --check
+```
+
+Then reset and run the deterministic H2 fake path:
+
+```powershell
+npm run demo:live-agent:h2:fake
+```
+
+Start observability for the clean H2 workspace on the standard local port:
+
+```powershell
+node dist\cli.js smoke live-agent reset --scenario live-agent-smoke-h2
+node dist\cli.js serve --workspace .swarm-demo\live-agent-smoke-h2 --host 127.0.0.1 --port 4319
+```
+
+Finally run the real H2 full smoke through the built CLI boundary without resetting again:
+
+```powershell
+node dist\cli.js smoke live-agent full --scenario live-agent-smoke-h2
+```
+
+The UI should observe `http://127.0.0.1:4319/`. If the UI server was already running against an older rerun workspace, restart it against `.swarm-demo/live-agent-smoke-h2` before the clean run so the dashboard is not showing stale state. A direct `full --reset` command is still valid when no UI is attached, but it may stop a same-workspace `swarm serve` process during reset; use reset-then-serve-then-full for interactive observation, or launch the reset run through the Command Bridge control API so it can exclude its own server process.
+
+### Run Acceptance Signals
+
+The next clean H2 run is useful only if it reports the following distinctly:
+
+- selected run outcome, product readiness, and global requirement coverage as separate truths
+- backend/API work served before dashboard/UI work unless an explicit protocol override exists
+- every accepted ref has worker evidence, reviewer acceptance, deterministic verification, and human verification where required
+- human verification actions include exact immutable FR/AC context, expected outcome, runnable review target information, and pass/fail/needs-rework controls
+- failed or needs-rework human verification leaves the human-action queue and becomes targeted repair input
+- no final accepted state has active blocker, human-required, or critical escalations
+- warning history is visible but not counted as an active concern after it is cleared or superseded
+- focus packets for stale/failed/high-retry runs include `intervention.classification`, `recommendedAction`, `reason`, `risk`, and evidence
+- recovery paths emit `recovery.focus_consulted` before revive or restart
+- worker/revive prompt artifacts show the harness-authored settled-facts/no-redo context when prior accepted sibling refs exist
+- any user-global skill access by child agents surfaces as `global_skill_leak` observability instead of silent drift
+
+### Reset/Server Cleanup Lesson
+
+During the 2026-06-22 reassessment, the first direct `npm run demo:live-agent:h2:fake` wrapper attempt failed at reset with `EPERM` on `.swarm-demo/live-agent-smoke-h2`. The focused tests had passed, but a relative `node -e "import('./src/server.js')..."` support-ui probe was still alive. Because the command line did not contain the workspace path, the reset process matcher did not identify it as related work.
+
+Root cause: the support-ui fixture review server starts a companion support-api server in `createReviewServer()`. Probe callers closed the returned review server, but the companion API server stayed alive and kept the workspace directory pinned.
+
+Fix: `fixtures/templates/support-ui/src/server.js` now closes and clears the companion API server when the returned review server closes. The wrapper was rerun successfully afterward, and no `createReviewServer`/support-ui/H2 probe process or relevant local port remained.
+
+### Known Coverage Boundary
+
+The focused tests are allowed to exercise fault classes that a happy H2 run may not naturally hit, including schema re-ask, valid-artifact hung-child recovery, intervention classification, and settled-facts prompt scope isolation. H2 itself is the real-world product smoke: after reset there should be no target product, and after a successful full run there should be a working Customer Support Triage Board with all indexed FR/ACs either verified, human-verified, or explicitly blocked with evidence.
+
 ## Implementation Phases
 
 ### Phase 11A: Scenario Source Package
@@ -293,7 +376,7 @@ H2 backend-enabler confirmation run on 2026-06-19:
 
 Next H2 acceptance target:
 
-- run a fresh real H2 pass and confirm real agents start with backend-enabler work, then continue into coverage-completion slices after product readiness
+- run the clean from-scratch sequence above, then confirm real agents start with backend-enabler work and continue into coverage-completion slices after product readiness
 - add skill-isolation hardening so child agents use only harness-bound skills unless a project explicitly opts into global/user skills
 - keep `blocked` as the correct final state whenever bounds stop the run before every indexed FR/AC is verified, human-verified, or explicitly blocked with evidence
 - confirm the dashboard separates run outcome, global coverage, active concerns, and product readiness during that pass
