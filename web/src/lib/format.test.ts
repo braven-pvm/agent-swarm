@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity, groupAgentsByRole, roleGroupLabel, cleanSliceTitle, type RosterGroupRow } from "~/lib/format";
+import { normalizeEscalationMessage, groupEscalations, formatAge, prettifyTarget, activityVerb, tokenizeCommand, formatDuration, extractFrAcRefs, summarizeCommand, describeActivity, livenessLevel, livenessLabel, shortAge, fmtClock, groupRunActivity, groupAgentsByRole, roleGroupLabel, cleanSliceTitle, isWorkerRepairProofMessage, WORKER_REPAIR_PROOF_BLOCKER_MESSAGE, type RosterGroupRow } from "~/lib/format";
 import type { EscalationRecord } from "~/lib/types";
 
 const esc = (id: string, message: string, entityId = "scenario:live"): EscalationRecord => ({
@@ -26,6 +26,37 @@ describe("groupEscalations", () => {
     const big = groups.find((g) => g.count === 2);
     expect(big).toBeTruthy();
     expect(big!.instances.length).toBe(2);
+  });
+});
+
+describe("isWorkerRepairProofMessage", () => {
+  it("matches the exact worker repair-proof blocker message", () => {
+    expect(isWorkerRepairProofMessage(WORKER_REPAIR_PROOF_BLOCKER_MESSAGE)).toBe(true);
+    expect(isWorkerRepairProofMessage("Worker result did not address targeted repair context.")).toBe(true);
+  });
+  it("does not match a generic blocker or undefined", () => {
+    expect(isWorkerRepairProofMessage("Some other blocker")).toBe(false);
+    expect(isWorkerRepairProofMessage(undefined)).toBe(false);
+    expect(isWorkerRepairProofMessage("")).toBe(false);
+  });
+});
+
+describe("groupEscalations — agent-resolvable repair-proof concern", () => {
+  const blocker = (id: string, message: string, reason?: string): EscalationRecord => ({
+    id, level: "blocker", status: "active", entityType: "slice", entityId: "SLICE-1", message, reason,
+    createdBy: "x", createdAt: "2026-06-14T08:00:00.000Z", updatedAt: "2026-06-14T08:00:00.000Z",
+  });
+  it("flags the worker repair-proof blocker agentResolvable and carries its reason", () => {
+    const groups = groupEscalations([
+      blocker("E1", WORKER_REPAIR_PROOF_BLOCKER_MESSAGE, "Missing FR-API-001 repair evidence"),
+      blocker("E2", "Generic unresolved blocker", "needs a human"),
+    ]);
+    const rp = groups.find((g) => g.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE);
+    const generic = groups.find((g) => g.message === "Generic unresolved blocker");
+    expect(rp?.agentResolvable).toBe(true);
+    expect(rp?.reason).toBe("Missing FR-API-001 repair evidence");
+    // A normal blocker stays a danger (not agent-resolvable).
+    expect(generic?.agentResolvable).toBe(false);
   });
 });
 

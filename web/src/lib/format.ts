@@ -157,9 +157,23 @@ export interface EscalationGroup {
   entityType: string;
   entityId: string;
   message: string;       // latest representative message
+  reason?: string;       // latest representative reason (the gate reason for repair-proof concerns)
   latest: string;        // latest updatedAt
   count: number;
   instances: EscalationRecord[];
+  agentResolvable: boolean; // true for the worker repair-proof concern — the agent retries, no human resolve
+}
+
+// The exact worker repair-proof blocker message. Mirrors the backend source-of-truth
+// (src/human-actions.ts WORKER_REPAIR_PROOF_BLOCKER_MESSAGE, itself in sync with src/cli.ts:117).
+// This blocker is AGENT-RESOLVABLE: it auto-clears when a later worker result passes the repair-proof
+// gate, so it is surfaced as a calm concern (it stays in activeEscalations) but the backend keeps it
+// OUT of the human-action queue. Keep this literal in sync with the backend constant.
+export const WORKER_REPAIR_PROOF_BLOCKER_MESSAGE = "Worker result did not address targeted repair context.";
+
+/** True when an escalation message is the worker repair-proof concern (agent-resolvable, not a human action). */
+export function isWorkerRepairProofMessage(message: string | undefined): boolean {
+  return message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE;
 }
 
 export function normalizeEscalationMessage(message: string): string {
@@ -179,11 +193,11 @@ export function groupEscalations(list: EscalationRecord[]): EscalationGroup[] {
     const key = `${esc.entityType}:${esc.entityId}:${esc.level}:${normalizeEscalationMessage(esc.message)}`;
     const existing = map.get(key);
     if (!existing) {
-      map.set(key, { key, level: esc.level, entityType: esc.entityType, entityId: esc.entityId, message: esc.message, latest: esc.updatedAt, count: 1, instances: [esc] });
+      map.set(key, { key, level: esc.level, entityType: esc.entityType, entityId: esc.entityId, message: esc.message, reason: esc.reason, latest: esc.updatedAt, count: 1, instances: [esc], agentResolvable: isWorkerRepairProofMessage(esc.message) });
     } else {
       existing.count += 1;
       existing.instances.push(esc);
-      if (esc.updatedAt > existing.latest) { existing.latest = esc.updatedAt; existing.message = esc.message; }
+      if (esc.updatedAt > existing.latest) { existing.latest = esc.updatedAt; existing.message = esc.message; existing.reason = esc.reason; }
     }
   }
   // most severe + most recent first

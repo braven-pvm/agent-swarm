@@ -146,6 +146,22 @@
     return undefined;
   })());
 
+  // A tolerant view of the worker repair-proof gate (RepairProofGate, src/cli.ts:232). All fields are
+  // optional because the payload shape is server-owned + additive; we only render what is present.
+  interface RepairProofGateView { passed?: boolean; reason?: string; requiredCount?: number; missing?: string[]; unresolved?: string[]; }
+  function asRepairProofGate(v: unknown): RepairProofGateView | undefined {
+    if (!v || typeof v !== "object") return undefined;
+    const o = v as Record<string, unknown>;
+    const strArr2 = (x: unknown) => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : undefined);
+    return {
+      passed: typeof o.passed === "boolean" ? o.passed : undefined,
+      reason: typeof o.reason === "string" ? o.reason : undefined,
+      requiredCount: typeof o.requiredCount === "number" ? o.requiredCount : undefined,
+      missing: strArr2(o.missing),
+      unresolved: strArr2(o.unresolved),
+    };
+  }
+
   // Resolve the review_result THIS run produced (match by resultPath), else the slice's latest review.
   function reviewForRun(run: AgentRunRecord, slc: SliceWithDetail): ReviewResult | undefined {
     if (run.resultPath) {
@@ -158,6 +174,23 @@
     return slc.reviewResult;
   }
 
+  // The repair-proof gate this WORKER run produced. The gate rides the worker_result evidence
+  // payload (src/cli.ts:2937). Match by resultPath; fall back to the slice's latest worker_result
+  // that carries a gate. Returned only when present — a calm note, not a human-action affordance.
+  // The shape is server-owned + additive, so it is read tolerantly (no shared type dependency).
+  function repairProofGateForRun(run: AgentRunRecord, slc: SliceWithDetail): RepairProofGateView | undefined {
+    let fallback: RepairProofGateView | undefined;
+    for (const ev of slc.evidence) {
+      if (ev.kind !== "worker_result") continue;
+      const p = ev.payload as { path?: string; repairProofGate?: unknown } | undefined;
+      const gate = asRepairProofGate(p?.repairProofGate);
+      if (!gate) continue;
+      if (run.resultPath && p?.path === run.resultPath) return gate; // exact run match wins
+      fallback = gate; // latest gate-bearing worker_result (evidence is appended in order)
+    }
+    return run.resultPath ? fallback : fallback;
+  }
+
   // A resolved run: the run + its slice + verdict + the structured result it produced.
   interface ResolvedRun {
     run: AgentRunRecord;
@@ -166,6 +199,7 @@
     verdict: string;                                        // review status OR slice status
     review?: ReviewResult;                                  // reviewer runs
     fracResults?: SliceWithDetail["frAcResults"];           // worker/verifier runs
+    repairProofGate?: RepairProofGateView;                  // worker runs: targeted-repair proof gate (when present)
     challenges?: ChallengedVerdict[];                       // skeptic runs: per-finding verdicts
     replay?: JournalReplay;                                 // set ONLY when this run was journal-replayed
     activity: ActivityGroup[];                              // run-scoped, grouped
@@ -180,6 +214,8 @@
     "review.escalation_raised": "raised escalation",
     "review.finding_downgraded": "downgraded blocking concern",
     "worker.completed": "completed work",
+    "worker.repair_proof_failed": "worker result missed targeted repair",
+    "worker.repair_proof_cleared": "targeted repair confirmed",
     "verification.completed": "completed verification",
     "skeptic.started": "started challenge",
     "skeptic.completed": "completed challenge",
@@ -223,6 +259,7 @@
       let verdict: string;
       let review: ReviewResult | undefined;
       let fracResults: SliceWithDetail["frAcResults"] | undefined;
+      let repairProofGate: RepairProofGateView | undefined;
       let challenges: ChallengedVerdict[] | undefined;
       if (run.role === "reviewer" && slc) {
         review = reviewForRun(run, slc);
@@ -235,6 +272,8 @@
       } else {
         verdict = slc?.status ?? run.status;
         fracResults = slc?.frAcResults;
+        // Surface the targeted-repair proof gate this worker run produced (when present).
+        if (slc) repairProofGate = repairProofGateForRun(run, slc);
       }
       // Window: [startedAt, updatedAt]. Gather this run's activity + markers from history.
       const startMs = Date.parse(run.startedAt);
@@ -253,7 +292,7 @@
       const replay =
         journalReplayForRun(agentHistory, run.id) ??
         journalReplayForRun(store.snapshot?.recentEvents ?? [], run.id);
-      return { run, slice: slc, op: opLabel(run.role), verdict, review, fracResults, challenges, replay, activity, markers, actionCount: entries.length };
+      return { run, slice: slc, op: opLabel(run.role), verdict, review, fracResults, repairProofGate, challenges, replay, activity, markers, actionCount: entries.length };
     });
   })());
 
@@ -786,6 +825,19 @@
                         {/if}
                       </div>
                     {/each}
+                  {/if}
+
+                  <!-- Targeted-repair proof gate (worker runs) — a CALM note, not a human action.
+                       Shown only when the gate is present AND failed: the worker's result did not yet
+                       address the targeted repair context, so the agent will retry. It auto-clears on a
+                       later passing repair proof. Muted reason line; never a danger/clear affordance. -->
+                  {#if r.repairProofGate && r.repairProofGate.passed === false}
+                    <div class="run-subhead repair-proof-head">
+                      <span class="repair-proof-glyph" aria-hidden="true">↻</span>Targeted repair pending
+                    </div>
+                    {#if r.repairProofGate.reason}
+                      <div class="run-testnote muted">{r.repairProofGate.reason}</div>
+                    {/if}
                   {/if}
 
                   <!-- Run-scoped, grouped activity (collapsed by default). -->

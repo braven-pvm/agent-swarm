@@ -10,6 +10,15 @@ import type { EntityType, EscalationRecord, FrAcVerificationResult, SliceRecord 
 
 export type HumanVerificationDecision = "human_verified" | "failed" | "needs_rework";
 
+// Source-of-truth lives at src/cli.ts:117 (module-local, unexported there). The
+// worker repair-proof blocker is AGENT-RESOLVABLE: it auto-clears when a later
+// worker result passes the repair-proof gate (clearResolvedWorkerRepairProofEscalations,
+// src/cli.ts:5746). It must therefore be surfaced as a concern (it stays in
+// activeEscalations) but NEVER enter the human-action queue. We match the exact
+// literal here rather than importing from cli.ts to keep this module free of the
+// CLI's heavy dependency graph; keep this string in sync with cli.ts:117.
+export const WORKER_REPAIR_PROOF_BLOCKER_MESSAGE = "Worker result did not address targeted repair context.";
+
 export interface HumanActionLink {
   label: string;
   href: string;
@@ -114,6 +123,10 @@ export function buildHumanActionQueue(store: SwarmStore, workspace?: string): Hu
 
   for (const escalation of activeEscalations) {
     if (!["blocker", "human_required", "critical"].includes(escalation.level)) continue;
+    // The worker repair-proof blocker is agent-resolvable (auto-clears on a passing
+    // repair proof), so it is a concern — not a human action. Skip it here so it is
+    // absent from both the queue and totals.blockers; it remains in activeEscalations.
+    if (escalation.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE) continue;
     actions.push(humanEscalationAction(escalation));
   }
 

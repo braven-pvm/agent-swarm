@@ -270,6 +270,14 @@ body.cb-resizing { cursor: col-resize; user-select: none; }
 .esc-warning .esc-glyph { color: var(--amber); }
 .esc-blocker .esc-glyph, .esc-critical .esc-glyph, .esc-human_required .esc-glyph { color: var(--red); }
 .esc-count { color: var(--amber); font-weight: 600; margin-left: auto; }
+/* Agent-resolvable concern (worker repair-proof): a CALM concern, not a danger. Even though it is a
+   blocker-level escalation it auto-clears when the agent passes a passing repair proof, so it gets the
+   amber concern border (overriding the red blocker border) + a calm ↻ glyph + an explicit "agent will
+   retry" tag (glyph+text, never colour-alone). Distinct from human_required + generic blockers. */
+.esc-agent-resolvable { border-left-color: var(--amber); }
+.esc-agent-resolvable .esc-glyph { color: var(--amber); }
+.esc-tag { display: inline-flex; align-items: center; font-size: var(--fs-eyebrow); border-radius: 8px; padding: 0 5px; background: rgba(214,161,60,.14); color: var(--amber); white-space: nowrap; }
+.esc-reason { margin-top: 3px; font-size: var(--fs-eyebrow); line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .inspector { position: absolute; top: 0; right: 0; height: 100%; width: 380px; background: var(--surface-2); border-left: 1px solid var(--line-2); padding: var(--s3); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
 .inspector-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .close { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 4px 8px; background: none; border: 1px solid var(--line-3); color: var(--ink); border-radius: 6px; cursor: pointer; }
@@ -819,6 +827,12 @@ mark.find-hit { background: rgba(214,161,60,.28); color: var(--ink); border-radi
 .downgrade-who { font-size: var(--fs-eyebrow); }
 .downgrade-actor { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); }
 .downgrade-why { font-size: var(--fs-eyebrow); line-height: 1.45; color: var(--muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+/* ── Worker targeted-repair proof (calm) ───────────────────────────────────
+   A worker run whose result did not address the targeted repair context. This is a CONCERN, not a
+   danger: the agent retries and it auto-clears on a passing repair proof. Calm amber ↻ glyph + label
+   (glyph+text), reusing the muted .run-testnote for the reason — NOT a clear/resolve affordance. */
+.repair-proof-head { display: flex; align-items: center; gap: 6px; color: var(--amber); }
+.repair-proof-glyph { font-size: .95em; }
 /* ── Skeptic per-finding verdict chips ────────────────────────────────────
    real = the reviewer's concern STANDS (red ✕); refuted = the challenge OVERTURNED it (green ✓);
    uncertain/unknown = neutral amber (?). Glyph + label so meaning never rides on colour alone. */

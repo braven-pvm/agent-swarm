@@ -119,4 +119,46 @@ describe("InspectorDrawer", () => {
     const { container } = render(InspectorDrawer, { props: { store } });
     expect(container.querySelector(".run-replayed")).toBeNull();
   });
+
+  it("surfaces a calm targeted-repair note on a worker run whose repair-proof gate failed", () => {
+    const store = createConsoleStore();
+    store.hydrate({
+      workspace: "/w", runMode: "live-agent-smoke", generatedAt: "", targets: [], sources: [], domains: [], lanes: [], dependencies: [], heartbeats: [], activeEscalations: [], checkpoints: [], recentEvents: [],
+      slices: [{
+        id: "SLICE-1", laneId: "L", targetId: "T", title: "Inv", status: "repairing", sourceRefs: [], frAcRefs: ["AC-1"], deliveryQuestion: "", leases: [], frAcResults: [], agentRuns: [], createdAt: "", updatedAt: "",
+        // The repair-proof gate rides the worker_result evidence payload; matched by resultPath.
+        evidence: [{
+          id: "ev1", sliceId: "SLICE-1", kind: "worker_result", summary: "worker result", createdAt: "",
+          payload: { path: "/w/result-RUN-1.json", repairProofGate: { passed: false, requiredCount: 1, requirements: ["AC-1"], missing: ["AC-1"], unresolved: [], reason: "Result did not cite the targeted repair for AC-1." } },
+        }],
+      }],
+      agentRuns: [{ id: "RUN-1", sliceId: "SLICE-1", role: "worker", actor: "worker-1", driver: "fixture", status: "completed", attempt: 1, resultPath: "/w/result-RUN-1.json", startedAt: "2026-06-14T08:00:00.000Z", updatedAt: "2026-06-14T08:01:00.000Z" }],
+    } as any);
+    store.select({ kind: "agent", actor: "worker-1" });
+    const { container, getByText } = render(InspectorDrawer, { props: { store } });
+    // Calm concern note (NOT a danger callout, NOT a clear/resolve affordance).
+    expect(container.querySelector(".repair-proof-head")).toBeTruthy();
+    expect(getByText(/Targeted repair pending/)).toBeTruthy();
+    expect(getByText(/did not cite the targeted repair for AC-1/)).toBeTruthy();
+    // It is a concern, not a human-action: no clear-escalation affordance is rendered here.
+    expect(container.querySelector(".downgrade-callout")).toBeNull();
+  });
+
+  it("renders NO targeted-repair note on a worker run whose repair-proof gate passed", () => {
+    const store = createConsoleStore();
+    store.hydrate({
+      workspace: "/w", runMode: "live-agent-smoke", generatedAt: "", targets: [], sources: [], domains: [], lanes: [], dependencies: [], heartbeats: [], activeEscalations: [], checkpoints: [], recentEvents: [],
+      slices: [{
+        id: "SLICE-1", laneId: "L", targetId: "T", title: "Inv", status: "accepted", sourceRefs: [], frAcRefs: ["AC-1"], deliveryQuestion: "", leases: [], frAcResults: [], agentRuns: [], createdAt: "", updatedAt: "",
+        evidence: [{
+          id: "ev1", sliceId: "SLICE-1", kind: "worker_result", summary: "worker result", createdAt: "",
+          payload: { path: "/w/result-RUN-1.json", repairProofGate: { passed: true, requiredCount: 1, requirements: ["AC-1"], missing: [], unresolved: [], reason: "All targeted repairs addressed." } },
+        }],
+      }],
+      agentRuns: [{ id: "RUN-1", sliceId: "SLICE-1", role: "worker", actor: "worker-1", driver: "fixture", status: "completed", attempt: 1, resultPath: "/w/result-RUN-1.json", startedAt: "2026-06-14T08:00:00.000Z", updatedAt: "2026-06-14T08:01:00.000Z" }],
+    } as any);
+    store.select({ kind: "agent", actor: "worker-1" });
+    const { container } = render(InspectorDrawer, { props: { store } });
+    expect(container.querySelector(".repair-proof-head")).toBeNull();
+  });
 });
