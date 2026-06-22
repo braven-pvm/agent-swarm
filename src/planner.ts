@@ -2,6 +2,7 @@ import path from "node:path";
 import { refreshCheckpoint } from "./checkpoints.js";
 import { createEvent } from "./events.js";
 import { makeId } from "./ids.js";
+import { loadProtocol, type ProtocolConfig } from "./protocol.js";
 import { readSourceText } from "./source-adapter.js";
 import {
   extractFrAcRefs,
@@ -40,6 +41,7 @@ export interface PullSliceOptions {
   laneLabels?: string[];
   orchestrator?: string;
   batchSize?: number;
+  protocol?: ProtocolConfig;
 }
 
 export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {}): PullSliceResult {
@@ -130,7 +132,64 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
   }
 
   const now = new Date().toISOString();
-  const existingLane = options.newLane ? undefined : store.firstActiveLaneForTarget(target.id);
+  const oldestActiveLane = store.firstActiveLaneForTarget(target.id);
+  // Reuse the oldest active lane unless the caller explicitly demands a fresh one.
+  let existingLane = options.newLane ? undefined : oldestActiveLane;
+
+  // Enforce the per-target active-lane budget. A new lane would be created when the
+  // caller requested one, or when there is no reusable active lane to fall back to.
+  if (!existingLane) {
+    const protocol = options.protocol ?? loadProtocol(target.path);
+    const maxActiveLanes = resolveMaxActiveLanes(protocol, target.name);
+    const activeLaneCount = store.countActiveLanesForTarget(target.id);
+    if (activeLaneCount >= maxActiveLanes) {
+      if (oldestActiveLane) {
+        // At/over cap: defer the new lane and reuse the oldest active lane instead.
+        existingLane = oldestActiveLane;
+        store.addEvent(
+          createEvent({
+            actor: options.orchestrator ?? "planning-agent",
+            type: "scheduling.budget_applied",
+            entityType: "lane",
+            entityId: oldestActiveLane.id,
+            payload: {
+              targetId: target.id,
+              targetName: target.name,
+              requestedNewLane: Boolean(options.newLane),
+              activeLaneCount,
+              maxActiveLanes,
+              reusedLaneId: oldestActiveLane.id,
+              reason:
+                "Active-lane budget reached; deferred new lane and reused the oldest active lane for the target to keep work flowing.",
+            },
+          }),
+        );
+      } else {
+        // Guard: at cap but no active lane to reuse (cannot normally happen when
+        // count >= max >= 1). Fall back to creating the lane and record that the
+        // cap could not be honored so the decision stays visible.
+        store.addEvent(
+          createEvent({
+            actor: options.orchestrator ?? "planning-agent",
+            type: "scheduling.budget_applied",
+            entityType: "target",
+            entityId: target.id,
+            payload: {
+              targetId: target.id,
+              targetName: target.name,
+              requestedNewLane: Boolean(options.newLane),
+              activeLaneCount,
+              maxActiveLanes,
+              reusedLaneId: null,
+              reason:
+                "Active-lane budget reached but no active lane was available to reuse; created a new lane because there was no safe lane to defer to.",
+            },
+          }),
+        );
+      }
+    }
+  }
+
   const lane =
     existingLane ??
     createLane({
@@ -255,6 +314,26 @@ export function pullNextSlice(store: SwarmStore, options: PullSliceOptions = {})
     dependencies,
     reusedExistingLane: Boolean(existingLane),
   };
+}
+
+const DEFAULT_MAX_ACTIVE_LANES = 3;
+
+/**
+ * Resolve the active-lane budget for a target: a per-target
+ * `lanes.projectOverrides.<targetName>.maxActiveLanes` wins over the protocol-wide
+ * `lanes.maxActiveLanes`, falling back to {@link DEFAULT_MAX_ACTIVE_LANES}.
+ */
+function resolveMaxActiveLanes(protocol: ProtocolConfig, targetName: string): number {
+  const lanes = protocol.protocol.lanes;
+  const overrides = lanes?.projectOverrides;
+  const override =
+    overrides && typeof overrides === "object"
+      ? (overrides as Record<string, { maxActiveLanes?: unknown } | undefined>)[targetName]
+      : undefined;
+  const candidate = override?.maxActiveLanes ?? lanes?.maxActiveLanes;
+  return typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 1
+    ? candidate
+    : DEFAULT_MAX_ACTIVE_LANES;
 }
 
 function createLane(input: {

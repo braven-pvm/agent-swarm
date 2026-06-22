@@ -332,6 +332,13 @@ export class SwarmStore {
     return row ? mapLane(row) : undefined;
   }
 
+  countActiveLanesForTarget(targetId: string): number {
+    const row = this.db
+      .prepare("select count(*) as count from lanes where target_id = ? and state = 'active'")
+      .get(targetId) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
   updateLaneState(id: string, state: LaneRecord["state"]): void {
     this.db
       .prepare("update lanes set state = ?, updated_at = ? where id = ?")

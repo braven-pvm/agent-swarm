@@ -837,6 +837,7 @@ slices
         laneLabels: parseCsv(options.laneLabels),
         orchestrator: options.orchestrator,
         batchSize: options.batchSize,
+        protocol: loadProtocol(resolveWorkspace()),
       });
       console.log(`Created slice ${result.slice.id}`);
       console.log(`  title: ${result.slice.title}`);
