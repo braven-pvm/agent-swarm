@@ -46,6 +46,7 @@ import {
   workerDriverIds,
   type WorkerRunSpec,
   type WorkerFinalization,
+  type WorkerDriverAdapter,
 } from "./worker-driver.js";
 import { recordHumanVerification } from "./human-actions.js";
 import { buildResumePacket, buildCheckpointPayload, refreshCheckpoint } from "./checkpoints.js";
@@ -1837,6 +1838,9 @@ recovery
           isReady: () => validateResultArtifact(spec).ok,
         },
       });
+      // The revive path is itself a session resume (recovery); it intentionally does NOT layer an SO-2
+      // in-turn re-ask on top — a near-miss structured result during a revive falls through to the
+      // existing block / restart-fallback recovery rather than triggering another resume.
       const finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
       const stderrPath = result.stderr ? path.join(artifactPath, `worker-revive-${revivedRunId}-stderr.log`) : undefined;
       if (stderrPath && result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
@@ -1889,6 +1893,7 @@ recovery
             driver: previousRun.driver,
             ok: finalization.ok,
             failureReason: finalization.failureReason,
+            failureClass: finalization.failureClass,
             costUsd: finalization.costUsd,
             resultArtifactRecovered: finalization.resultArtifactRecovered,
             recoveryReason: finalization.recoveryReason,
@@ -2308,6 +2313,38 @@ async function executeOverseerRun(input: {
       },
     });
     overseerFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
+    // SO-2: bounded in-turn re-ask if the structured result was produced but failed schema validation.
+    // readOverseerDecisionFile re-validates with the same overseerDecisionSchema, so a recovered artifact passes the gate.
+    const sessionIdForReask =
+      result.workerEvents?.sessionId ??
+      ingestWorkerJsonl({
+        store: input.store,
+        actor: input.actor,
+        sliceId: entityId,
+        entityType: "harness",
+        entityId,
+        driver: input.driver,
+        jsonl: result.stdout ?? "",
+        eventPrefix: "overseer",
+      }).sessionId;
+    const reask = await reAskStructuredResult({
+      adapter,
+      spec,
+      sessionId: sessionIdForReask,
+      finalization: overseerFinalization,
+      store: input.store,
+      actor: input.actor,
+      entityType: "harness",
+      entityId,
+      jsonlPath,
+      runId,
+      driver: input.driver,
+      classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      eventType: "overseer.structured_result_reask",
+    });
+    overseerFinalization = reask.finalization;
+    if (reask.result) result = reask.result;
   }
 
   if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
@@ -2592,6 +2629,33 @@ async function executeWorkerRun(input: {
       },
     });
     finalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
+    // SO-2: bounded in-turn re-ask if the structured result was produced but failed schema validation.
+    const sessionIdForReask =
+      result.workerEvents?.sessionId ??
+      ingestWorkerJsonl({
+        store: input.store,
+        actor: input.actor,
+        sliceId: slice.id,
+        driver: driverId,
+        jsonl: result.stdout ?? "",
+      }).sessionId;
+    const reask = await reAskStructuredResult({
+      adapter,
+      spec,
+      sessionId: sessionIdForReask,
+      finalization,
+      store: input.store,
+      actor: input.actor,
+      entityType: "slice",
+      entityId: slice.id,
+      jsonlPath,
+      runId,
+      driver: driverId,
+      classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+    });
+    finalization = reask.finalization;
+    if (reask.result) result = reask.result;
   }
 
   if (driverId === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
@@ -2645,6 +2709,7 @@ async function executeWorkerRun(input: {
         ok: finalization.ok,
         structuredResultWritten: finalization.structuredResultWritten,
         failureReason: finalization.failureReason,
+        failureClass: finalization.failureClass,
         costUsd: finalization.costUsd,
         resultArtifactRecovered: finalization.resultArtifactRecovered,
         recoveryReason: finalization.recoveryReason,
@@ -2853,6 +2918,36 @@ async function executeReviewRun(input: {
       },
     });
     reviewFinalization = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec });
+    // SO-2: bounded in-turn re-ask if the structured result was produced but failed schema validation.
+    // readReviewResultFile re-validates with the same reviewResultSchema, so a recovered artifact passes the gate below.
+    const sessionIdForReask =
+      result.workerEvents?.sessionId ??
+      ingestWorkerJsonl({
+        store: input.store,
+        actor: input.actor,
+        sliceId: slice.id,
+        driver: input.driver,
+        jsonl: result.stdout ?? "",
+        eventPrefix: "reviewer",
+      }).sessionId;
+    const reask = await reAskStructuredResult({
+      adapter,
+      spec,
+      sessionId: sessionIdForReask,
+      finalization: reviewFinalization,
+      store: input.store,
+      actor: input.actor,
+      entityType: "slice",
+      entityId: slice.id,
+      jsonlPath,
+      runId,
+      driver: input.driver,
+      classify: adapter.classifyHeartbeat?.bind(adapter),
+      idleTimeoutMs: agentIdleTimeoutMsForProtocol(protocol),
+      eventType: "reviewer.structured_result_reask",
+    });
+    reviewFinalization = reask.finalization;
+    if (reask.result) result = reask.result;
   }
 
   if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
@@ -2925,6 +3020,7 @@ async function executeReviewRun(input: {
           ok: reviewFinalization.ok,
           structuredResultWritten: reviewFinalization.structuredResultWritten,
           failureReason: reviewFinalization.failureReason,
+          failureClass: reviewFinalization.failureClass,
           costUsd: reviewFinalization.costUsd,
           resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
           recoveryReason: reviewFinalization.recoveryReason,
@@ -2969,6 +3065,7 @@ async function executeReviewRun(input: {
           exitCode: result.status,
           driver: input.driver,
           failureReason: reviewFinalization.failureReason,
+          failureClass: reviewFinalization.failureClass,
           resultArtifactRecovered: reviewFinalization.resultArtifactRecovered,
           recoveryReason: reviewFinalization.recoveryReason,
           resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
@@ -3602,6 +3699,137 @@ function spawnWorkerStreaming(input: {
       resolveOnce(status, stderrChunks.join(""));
     });
   });
+}
+
+function reAskMaxAttempts(): number {
+  const raw = process.env.SWARM_STRUCTURED_RESULT_REASK_MAX;
+  if (raw === undefined || raw.trim() === "") return 2;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  return parsed;
+}
+
+function reAskPrompt(reason: string): string {
+  return [
+    `Your previous structured result failed validation: ${reason}`,
+    "",
+    "Do NOT change any files or re-run work. Re-emit ONLY the structured result conforming to the provided schema, with no prose, explanation, or tool calls.",
+  ].join("\n");
+}
+
+/**
+ * SO-2: bounded in-turn re-ask of a structured result that was PRODUCED but failed
+ * schema/parse validation (failureClass === "schema_invalid"). Resumes the SAME driver
+ * session up to N times (SWARM_STRUCTURED_RESULT_REASK_MAX, default 2) asking the agent to
+ * re-emit only the structured result. Every attempt is a VISIBLE harness event.
+ *
+ * Guard: returns the original failed finalization unchanged when not applicable — non
+ * schema_invalid failures (missing_result/run_error) keep the existing block path
+ * (anti-drift: never re-ask a real run failure), and when the driver cannot resume or no
+ * session id was captured. On success: the corrected artifact is on disk and the caller
+ * proceeds exactly as a normal completion.
+ */
+async function reAskStructuredResult(input: {
+  adapter: WorkerDriverAdapter;
+  spec: WorkerRunSpec;
+  sessionId: string | undefined;
+  finalization: WorkerFinalization;
+  store: SwarmStore;
+  actor: string;
+  entityType: EntityType;
+  entityId: string;
+  jsonlPath: string;
+  runId: string;
+  driver: string;
+  classify?: (event: Record<string, unknown>) => HeartbeatState | undefined;
+  idleTimeoutMs?: number;
+  eventType?: string;
+}): Promise<{ finalization: WorkerFinalization; result?: WorkerStreamingResult; sessionId: string | undefined }> {
+  const { adapter, spec, finalization } = input;
+  if (finalization.ok) return { finalization, sessionId: input.sessionId };
+  // Anti-drift: only re-ask a near-miss SERIALIZATION failure. missing_result / run_error block as today.
+  if (finalization.failureClass !== "schema_invalid") return { finalization, sessionId: input.sessionId };
+  if (!adapter.capabilities.resume || !input.sessionId) return { finalization, sessionId: input.sessionId };
+
+  const maxAttempts = reAskMaxAttempts();
+  if (maxAttempts <= 0) return { finalization, sessionId: input.sessionId };
+
+  const eventType = input.eventType ?? "worker.structured_result_reask";
+  let lastFinalization = finalization;
+  let lastResult: WorkerStreamingResult | undefined;
+  let sessionId = input.sessionId;
+  let lastFailureReason = finalization.failureReason ?? "structured result failed validation";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const followUpSpec: WorkerRunSpec = {
+      ...spec,
+      resumeSessionId: sessionId,
+      prompt: reAskPrompt(lastFailureReason),
+    };
+    // Belt-and-suspenders: remove the prior (invalid) artifact so a resume that produces
+    // nothing reads as missing_result and stops the loop instead of re-validating stale data.
+    fs.rmSync(followUpSpec.resultPath, { force: true });
+    const invocation = adapter.buildInvocation(followUpSpec);
+    const result = await spawnWorkerStreaming({
+      command: invocation.command,
+      args: invocation.args,
+      stdin: invocation.stdin,
+      cwd: followUpSpec.targetPath,
+      jsonlPath: input.jsonlPath,
+      actor: input.actor,
+      sliceId: input.entityId,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      store: input.store,
+      driver: input.driver,
+      runId: input.runId,
+      classify: input.classify,
+      idleTimeoutMs: input.idleTimeoutMs,
+      resultArtifact: {
+        path: followUpSpec.resultPath,
+        isReady: () => validateResultArtifact(followUpSpec).ok,
+      },
+    });
+    const next = adapter.finalize({ exitCode: result.status, stdout: result.stdout ?? "", spec: followUpSpec });
+    const newSessionId = result.workerEvents?.sessionId ?? sessionId;
+
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: eventType,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        payload: {
+          attempt,
+          maxAttempts,
+          failureReason: lastFailureReason,
+          failureClass: "schema_invalid",
+          recovered: next.ok,
+          nextFailureReason: next.ok ? undefined : next.failureReason,
+          nextFailureClass: next.ok ? undefined : next.failureClass,
+          runId: input.runId,
+          driver: input.driver,
+          resultPath: followUpSpec.resultPath,
+          sessionId: newSessionId,
+        },
+      }),
+    );
+
+    lastFinalization = next;
+    lastResult = result;
+    sessionId = newSessionId;
+
+    if (next.ok) {
+      return { finalization: next, result, sessionId };
+    }
+    if (next.failureClass !== "schema_invalid") {
+      // A resume that degraded to missing_result/run_error: stop and let the caller block as today.
+      return { finalization: next, result, sessionId };
+    }
+    lastFailureReason = next.failureReason ?? lastFailureReason;
+  }
+
+  return { finalization: lastFinalization, result: lastResult, sessionId };
 }
 
 function terminateChildProcessTree(child: ChildProcess): void {

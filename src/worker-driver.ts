@@ -21,10 +21,13 @@ export interface WorkerInvocation {
   stdin?: string;
 }
 
+export type WorkerFailureClass = "schema_invalid" | "missing_result" | "run_error";
+
 export interface WorkerFinalization {
   ok: boolean;
   structuredResultWritten: boolean;
   failureReason?: string;
+  failureClass?: WorkerFailureClass;
   costUsd?: number;
   resultArtifactRecovered?: boolean;
   recoveryReason?: string;
@@ -105,17 +108,20 @@ const codexDriver: WorkerDriverAdapter = {
       ok: artifact.ok,
       structuredResultWritten: artifact.ok,
       failureReason: artifact.ok ? undefined : artifact.reason,
+      failureClass: artifact.ok ? undefined : artifact.failureClass,
       resultArtifactRecovered: recoveryReason !== undefined,
       recoveryReason,
     };
   },
 };
 
-export type ResultArtifactValidation = { ok: true } | { ok: false; reason: string };
+export type ResultArtifactValidation =
+  | { ok: true }
+  | { ok: false; reason: string; failureClass: "schema_invalid" | "missing_result" };
 
 export function validateResultArtifact(spec: Pick<WorkerRunSpec, "resultPath" | "resultSchema">): ResultArtifactValidation {
   if (!fs.existsSync(spec.resultPath)) {
-    return { ok: false, reason: `structured result artifact missing: ${spec.resultPath}` };
+    return { ok: false, reason: `structured result artifact missing: ${spec.resultPath}`, failureClass: "missing_result" };
   }
   let parsed: unknown;
   try {
@@ -127,13 +133,18 @@ export function validateResultArtifact(spec: Pick<WorkerRunSpec, "resultPath" | 
         0,
         1000,
       ),
+      failureClass: "schema_invalid",
     };
   }
   const schema = spec.resultSchema ?? workerResultSchema;
   const result = schema.safeParse(parsed);
   if (!result.success) {
     const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
-    return { ok: false, reason: `structured result artifact failed ${schemaLabel} validation: ${result.error.message}`.slice(0, 1000) };
+    return {
+      ok: false,
+      reason: `structured result artifact failed ${schemaLabel} validation: ${result.error.message}`.slice(0, 1000),
+      failureClass: "schema_invalid",
+    };
   }
   return { ok: true };
 }
@@ -220,6 +231,7 @@ const claudeDriver: WorkerDriverAdapter = {
     const resultEvent = lastResultEvent(stdout);
     let structuredResultWritten = false;
     let failureReason: string | undefined;
+    let failureClass: WorkerFailureClass | undefined;
     if (resultEvent && resultEvent.structured_output !== undefined && resultEvent.structured_output !== null) {
       const schema = spec.resultSchema ?? workerResultSchema;
       const parsed = schema.safeParse(resultEvent.structured_output);
@@ -229,13 +241,17 @@ const claudeDriver: WorkerDriverAdapter = {
       } else {
         const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
         failureReason = `structured_output failed ${schemaLabel} validation: ${parsed.error.message}`.slice(0, 1000);
+        failureClass = "schema_invalid";
       }
     } else if (!resultEvent) {
       failureReason = "no result event found in claude stream output";
+      failureClass = "missing_result";
     } else if (resultEvent.is_error === true) {
       failureReason = `claude reported an error result: ${String(resultEvent.result ?? "")}`.slice(0, 1000);
+      failureClass = "run_error";
     } else {
       failureReason = "claude result event did not include structured_output";
+      failureClass = "missing_result";
     }
     const ok = resultEvent !== undefined && resultEvent.is_error !== true && structuredResultWritten;
     const costUsd = typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined;
@@ -244,6 +260,7 @@ const claudeDriver: WorkerDriverAdapter = {
       ok,
       structuredResultWritten,
       failureReason: ok ? undefined : failureReason,
+      failureClass: ok ? undefined : failureClass,
       costUsd,
       resultArtifactRecovered: recoveryReason !== undefined,
       recoveryReason,
