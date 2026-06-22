@@ -4,7 +4,11 @@ Date: 2026-06-22
 
 ## TL;DR
 
-`tests/overseer-runner.e2e.test.js`: **9 tests, 6 pass, 3 fail.** All three are **pre-existing** —
+> **RESOLVED 2026-06-22 (fix commit follows this doc):** all three are now fixed; the file is **9/9** and
+> regression is green (live-agent-runner 15/15, H2 support-triage 9/9, focused 62/62). See **Resolution**
+> at the bottom. The diagnosis below is retained as the record.
+
+`tests/overseer-runner.e2e.test.js`: was **9 tests, 6 pass, 3 fail.** All three were **pre-existing** —
 bisect-confirmed below — and predate every source change made in this session (control-plane slice,
 triage fix, SO-1, RE-1, RE-2). They are **not** a regression from that work. All three concern the
 **overseer prompt / planner state packet**. None are environmental (they reproduce deterministically).
@@ -67,6 +71,25 @@ overseer-runner file is run individually and isn't in the routine green set).
 3. **F1 (likely stale test)** — confirm intended actor derivation + which turn's prompt the assertion
    should read; fix the test or the derivation accordingly.
 
-These touch core overseer/planner behavior and the live-loop's spawn path, so they warrant a focused,
-separately-verified change (each has its own E2E already). They are intentionally **not** changed here
-— this is a triage record; implementing the fixes is a clean follow-up slice.
+These touch core overseer/planner behavior and the live-loop's spawn path, so each was implemented as a
+focused, separately-verified change.
+
+## Resolution (2026-06-22)
+
+All three fixed in `src/cli.ts`; afterward **overseer-runner 9/9**, plus regression green
+(**live-agent-runner 15/15**, **H2 support-triage 9/9**, **focused 62/62**).
+
+- **F2** — `buildOverseerSourcePullQueues` now sorts **prerequisite-unblocker / upstream sources first**
+  (a source producing a ref some other source is still blocked on leads; then dependency-free before
+  dependent), so a backend capability source precedes the dashboard/product source. Backend-before-frontend.
+- **F3** — the overseer launch prompt is back under the 22,000-char compact budget via three trims, none
+  of which any test reads: drop the per-slice `agentRuns` array (keep `agentRunCount`); drop the scenario
+  manifest's absolute paths (keep names/roles/ids/titles/domains); replace the inlined skill packet with a
+  compact behavior-only `compactOverseerSkillReference` (role + skill id/title/description + the isolation
+  rule). The compact skill reference also removes a contradiction — the full packet told the overseer to
+  "read every required skill file" while its own decision discipline forbids reading files.
+- **F1** — `isFrontendTargetOrSlice` was a **real bug** (not a stale test): it keyword-matched
+  `dashboard`/`ui` in the **backend** spec's prose ("drive a dashboard lane", "summary values for
+  dashboard cards", "before any UI lane is ready"), misclassifying backend slices as frontend and giving
+  them a `dashboard-worker`/`dashboard-reviewer` actor. It now classifies by **structured identity**
+  (target name, slice title, FR/AC refs, source domains) — never prose nor the absolute target path.
