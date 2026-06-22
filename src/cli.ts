@@ -43,11 +43,19 @@ import type { SkillIsolationFinding } from "./skill-isolation.js";
 import {
   getWorkerDriver,
   validateResultArtifact,
+  validateResultValue,
+  persistResult,
   workerDriverIds,
   type WorkerRunSpec,
   type WorkerFinalization,
   type WorkerDriverAdapter,
 } from "./worker-driver.js";
+import {
+  computeEnvelopeKey,
+  lookup as resultJournalLookup,
+  store as resultJournalStore,
+  resultJournalEnabled,
+} from "./result-journal.js";
 import { recordHumanVerification } from "./human-actions.js";
 import { buildResumePacket, buildCheckpointPayload, refreshCheckpoint } from "./checkpoints.js";
 import { buildDomainDetail, buildDomainSummaries } from "./domains.js";
@@ -2583,6 +2591,51 @@ async function executeWorkerRun(input: {
     settledFacts,
   });
   fs.writeFileSync(promptPath, prompt, "utf8");
+
+  // OCF-3 (CONTESTED, opt-in prototype, DEFAULT OFF): content-addressed worker-RESULT journal.
+  // When the journal is disabled (the default), `journalEnabled` is false and NOTHING below changes —
+  // no key is computed, no lookup, no store, no event — so this path stays byte-identical to today.
+  // When enabled, we key on the FULLY-ENUMERATED envelope (prompt + driver + model + result-schema JSON +
+  // the registered immutable source hashes for this slice). Any change to any of those => different key =>
+  // a MISS => a real re-spawn. The journal is a RESULT cache only; it NEVER caches reviewer/skeptic/verify/
+  // overseer judgements, and only ever stores/replays a schema-VALIDATED worker result.
+  const journalEnabled = resultJournalEnabled(protocol.protocol.workers.resultJournal);
+  // The rendered worker prompt embeds per-run, runId-bearing skill-artifact PATHS (binding/packet/bound
+  // file paths) that change every spawn but do NOT change the worker's task. Keying on the raw prompt would
+  // therefore MISS on every run. Instead we key on a CANONICAL prompt rebuilt with the volatile skill packet
+  // replaced by a STABLE skill-identity placeholder, and we carry the skill identities (id + requirement +
+  // CONTENT hash) explicitly in the envelope. The skill content hash is what determines worker behavior, so
+  // a real change to a skill file changes its hash -> different key -> MISS, while a mere new runId does not.
+  const skillIdentities = journalEnabled
+    ? [...skillBinding.skills]
+        .map((skill) => ({ id: skill.id, requirement: skill.requirement, hash: skill.hash }))
+        .sort((a, b) => (a.id === b.id ? a.requirement.localeCompare(b.requirement) : a.id.localeCompare(b.id)))
+    : [];
+  const journalKey = journalEnabled
+    ? computeEnvelopeKey({
+        // Canonical prompt: same slice/ledger/repair/settled-facts content, with a stable skill placeholder
+        // in place of the runId-bearing skill packet section.
+        prompt: buildWorkerPrompt({
+          slice,
+          targetPath: target.path,
+          laneName: lane?.name,
+          skillPacket: "<<SKILL-IDENTITIES-CANONICALIZED-IN-ENVELOPE>>",
+          repairContext,
+          settledFacts,
+        }),
+        driver: driverId,
+        model: input.model,
+        // Canonical JSON of the on-disk result-schema (same artifact handed to every driver). A schema
+        // change rewrites this file and therefore changes the key.
+        resultSchemaJson: JSON.stringify(JSON.parse(fs.readFileSync(schemaPath, "utf8")) as unknown),
+        // Registered IMMUTABLE source hashes for the slice scope — carried explicitly (not just via the
+        // prompt, which renders only title+uri) so a source-spec MUTATION -> new hash -> MISS.
+        sourceHashes: slice.sourceRefs.map((source) => ({ uri: source.uri, title: source.title, hash: source.hash })),
+        // Stable skill identities (content hashes) that determine worker behavior.
+        skillIdentities,
+      })
+    : undefined;
+
   const now = new Date().toISOString();
   const attempt = input.store.listAgentRuns().filter((run) => run.sliceId === slice.id && run.actor === input.actor).length + 1;
 
@@ -2643,7 +2696,46 @@ async function executeWorkerRun(input: {
     resultArtifactRecoveryTriggered?: boolean;
   };
   let finalization: WorkerFinalization;
-  if (driverId === "fixture") {
+  // OCF-3 HIT: with the journal ON, look up the content key. A HIT replays ONLY a schema-VALIDATED stored
+  // result, written to resultPath via the SAME shared persist core a fresh validated result uses, and
+  // SKIPS spawnWorkerStreaming entirely (no worker process is launched). We re-validate the stored result
+  // against the current result-schema before trusting it, so a corrupt/incompatible entry falls through to
+  // a real spawn instead of replaying an invalid result.
+  const journalHit =
+    journalEnabled && journalKey ? resultJournalLookup(input.workspace, journalKey) : null;
+  const journalHitValid =
+    journalHit && validateResultValue({ resultSchema: workerResultSchema }, journalHit.result).ok
+      ? journalHit
+      : null;
+  if (journalHitValid) {
+    persistResult(lastMessagePath, journalHitValid.result);
+    result = {
+      status: 0,
+      stdout: `${JSON.stringify({ type: "worker.journal_hit", sliceId: slice.id, actor: input.actor, journalKey })}\n`,
+    };
+    finalization = { ok: true, structuredResultWritten: true };
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "worker.journal_hit",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          runId,
+          driver: driverId,
+          model: input.model,
+          journalKey,
+          resultPath: lastMessagePath,
+          storedAt: journalHitValid.meta.storedAt,
+          storedDriver: journalHitValid.meta.driver,
+          // Honest soundness boundary: a result replay re-applies the RESULT artifact only, not any
+          // workspace mutation a real code-mutating worker would have made.
+          soundnessNote:
+            "Replayed a previously validated worker RESULT artifact without re-spawning. Sound for fixture/evidence workers or when paired with workspace restoration; for code-mutating workers the workspace effect is NOT re-applied (OCF-3 contested boundary).",
+        },
+      }),
+    );
+  } else if (driverId === "fixture") {
     const workerResult = runFixtureWorker({ slice, targetPath: target.path });
     fs.writeFileSync(lastMessagePath, `${JSON.stringify(workerResult)}\n`, "utf8");
     result = {
@@ -2708,6 +2800,46 @@ async function executeWorkerRun(input: {
     });
     finalization = reask.finalization;
     if (reask.result) result = reask.result;
+  }
+
+  // OCF-3 STORE (MISS path only): with the journal ON, after a freshly spawned worker produced a
+  // schema-VALIDATED result, store that exact validated value under the content key so an identical future
+  // envelope is a HIT. We re-read + re-validate the on-disk artifact via the shared validate core so we
+  // store ONLY a value that passes the worker result-schema (VALIDATED-ONLY). A replay (journalHitValid)
+  // never re-stores; a failed/blocked run never stores.
+  if (journalEnabled && journalKey && !journalHitValid && finalization.ok && finalization.structuredResultWritten) {
+    const artifactValidation = validateResultArtifact({ resultPath: lastMessagePath });
+    if (artifactValidation.ok) {
+      const storedValue = validateResultValue(
+        { resultSchema: workerResultSchema },
+        JSON.parse(fs.readFileSync(lastMessagePath, "utf8")) as unknown,
+      );
+      if (storedValue.ok) {
+        const journalFilePath = resultJournalStore(input.workspace, journalKey, storedValue.data, {
+          driver: driverId,
+          model: input.model,
+          sliceId: slice.id,
+          storedAt: new Date().toISOString(),
+          note: `Validated ${driverId} worker result for slice ${slice.id}.`,
+        });
+        input.store.addEvent(
+          createEvent({
+            actor: input.actor,
+            type: "worker.journal_store",
+            entityType: "slice",
+            entityId: slice.id,
+            payload: {
+              runId,
+              driver: driverId,
+              model: input.model,
+              journalKey,
+              journalPath: journalFilePath,
+              resultPath: lastMessagePath,
+            },
+          }),
+        );
+      }
+    }
   }
 
   if (driverId === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");

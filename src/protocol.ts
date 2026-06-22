@@ -25,6 +25,11 @@ export interface ProtocolConfig {
     workers: {
       defaultDriver: string;
       drivers: Record<string, Record<string, unknown>>;
+      // OCF-3 (CONTESTED, opt-in prototype): when true, opt this workspace's worker leaf into the
+      // content-addressed worker-RESULT journal. DEFAULT OFF (absent/false). The env SWARM_RESULT_JOURNAL
+      // can also enable it, and an explicit env disable wins. With it off, the worker hot path is
+      // byte-identical to today (no key, no lookup, no store, no event).
+      resultJournal?: boolean;
       [key: string]: unknown;
     };
     skills: {
