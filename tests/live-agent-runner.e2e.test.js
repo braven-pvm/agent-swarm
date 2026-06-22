@@ -1451,7 +1451,9 @@ console.log(JSON.stringify({
     ? "fake-live-overseer-thread"
     : schemaPath.includes("review-result")
       ? "fake-live-review-thread"
-      : "fake-live-worker-thread"
+      : schemaPath.includes("skeptic-result")
+        ? "fake-live-skeptic-thread"
+        : "fake-live-worker-thread"
 }));
 
 if (schemaPath.includes("overseer-decision")) {
@@ -1529,6 +1531,45 @@ if (schemaPath.includes("overseer-decision")) {
         requiredFixes: [],
         escalations: [],
         recommendation: "Proceed to deterministic verification."
+      }) + "\\n", "utf8");
+    }
+  }
+} else if (schemaPath.includes("skeptic-result")) {
+  // FAKE SKEPTIC: emitted only when the runner actually auto-dispatched a skeptic (its --output-schema is
+  // skeptic-result.schema.json). DEFAULT = all-uncertain (mirrors runFixtureSkeptic): never downgrades, never
+  // blocks, so every existing fake-codex test stays green. The SWARM_FAKE_SKEPTIC_REFUTE_DIM seam emits ONE
+  // refuted quality_dimension verdict so a focused test can prove the end-to-end RE-2 downgrade through the
+  // REAL skeptic command (real independence guard + real finding_challenge recording).
+  console.log(JSON.stringify({ type: "skeptic.analysis", status: "challenging review" }));
+  const refuteDim = process.env.SWARM_FAKE_SKEPTIC_REFUTE_DIM;
+  if (outputPath) {
+    if (refuteDim) {
+      fs.writeFileSync(outputPath, JSON.stringify({
+        status: "partially_refuted",
+        summary: "Fake live skeptic independently disproved one quality dimension; all other findings uncertain.",
+        challengedReviewStatus: "accepted",
+        findingVerdicts: [{
+          source: "quality_dimension",
+          dimension: refuteDim,
+          verdict: "refuted",
+          severity: "minor",
+          reasoning: "Fake skeptic independently disproved this dimension."
+        }],
+        recommendation: "Downgrade the refuted dimension and proceed to deterministic verification."
+      }) + "\\n", "utf8");
+    } else {
+      fs.writeFileSync(outputPath, JSON.stringify({
+        status: "uncertain",
+        summary: "Fake live skeptic challenged the review without provider spend; defaulted every finding to uncertain.",
+        challengedReviewStatus: "accepted",
+        findingVerdicts: refs.map((ref) => ({
+          ref,
+          source: "fr_ac_finding",
+          verdict: "uncertain",
+          severity: "minor",
+          reasoning: "Fake skeptic could not independently confirm; uncertain."
+        })),
+        recommendation: "Run a real skeptic for an independent challenge."
       }) + "\\n", "utf8");
     }
   }

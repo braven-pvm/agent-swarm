@@ -9,6 +9,7 @@ import { createEvent } from "../dist/events.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
 import { SwarmStore } from "../dist/storage.js";
+import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -215,6 +216,7 @@ const lowSignal = {
 const startedAt = Date.now();
 const turns = [];
 const verifyRuns = [];
+const autoSkepticRuns = [];
 const repairClearances = [];
 const staleRecoveryClearances = [];
 const dependencyWarningClearances = [];
@@ -340,6 +342,37 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       staleRecoveryClearances.push(...clearedRecoveryEscalations);
     }
     const allClearedEscalations = [...clearedEscalations, ...clearedRecoveryEscalations];
+
+    // LAZY AUTO-SKEPTIC (RE-1 dispatch / RE-2 gate left unchanged): before the deterministic verify, if the
+    // accepted review still carries a downgradable BLOCKING quality concern and has not been challenged yet,
+    // dispatch an INDEPENDENT skeptic via the run's own driver. The actor is structurally distinct from every
+    // worker/reviewer/verifier name the runner uses (the CLI's independence guard is the real backstop). The
+    // new finding_challenge becomes the LATEST one so the verify gate consults it within this same turn.
+    const skepticDecision = shouldDispatchSkeptic(readyForVerify);
+    if (skepticDecision.dispatch) {
+      const skepticActor = `live-skeptic-${turn}`;
+      const skepticTurn = {
+        turn,
+        kind: "auto-skeptic",
+        sliceId: readyForVerify.id,
+        actor: skepticActor,
+        driver,
+        reasons: skepticDecision.reasons,
+      };
+      try {
+        const skepticOutput = runSwarm(["skeptic", readyForVerify.id, "--actor", skepticActor, "--driver", driver]);
+        const skepticOutputPath = path.join(artifactsPath, `turn-${turn}-skeptic-output.txt`);
+        fs.writeFileSync(skepticOutputPath, skepticOutput, "utf8");
+        skepticTurn.outputPath = skepticOutputPath;
+        skepticTurn.dispatched = true;
+      } catch (error) {
+        skepticTurn.dispatched = false;
+        skepticTurn.error = error?.stderr?.toString?.() || error?.message || String(error);
+      }
+      autoSkepticRuns.push(skepticTurn);
+      turns.push(skepticTurn);
+    }
+
     const output = runSwarm(["verify", readyForVerify.id, "--actor", `live-deterministic-verifier-${turn}`, "--force"]);
     const outputPath = path.join(artifactsPath, `turn-${turn}-verify-output.txt`);
     fs.writeFileSync(outputPath, output, "utf8");
@@ -672,6 +705,7 @@ const summary = {
   escalationSummary: finalEscalationSummary,
   turns,
   verifyRuns,
+  autoSkepticRuns,
   repairClearances,
   staleRecoveryClearances,
   dependencyWarningClearances,

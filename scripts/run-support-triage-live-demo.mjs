@@ -9,6 +9,7 @@ import { buildHumanActionQueue } from "../dist/human-actions.js";
 import { makeId } from "../dist/ids.js";
 import { buildCoverage } from "../dist/observability.js";
 import { SwarmStore } from "../dist/storage.js";
+import { shouldDispatchSkeptic } from "./skeptic-auto-dispatch.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -75,6 +76,7 @@ updateManifest({
 const startedAt = Date.now();
 const turns = [];
 const verifyRuns = [];
+const autoSkepticRuns = [];
 let finalOutcome;
 let finalReason;
 let productReadiness;
@@ -157,6 +159,35 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
 
   const readyForVerify = before.slices.find(isReadyForDeterministicVerify);
   if (readyForVerify) {
+    // LAZY AUTO-SKEPTIC (RE-1 dispatch / RE-2 gate unchanged): dispatch an INDEPENDENT skeptic via the run's
+    // driver before verify when the accepted review still carries a downgradable BLOCKING quality concern and
+    // has not been challenged yet. Actor `h2-skeptic-${turn}` is distinct from every H2 worker/reviewer/
+    // verifier name; the CLI independence guard is the backstop.
+    const skepticDecision = shouldDispatchSkeptic(readyForVerify);
+    if (skepticDecision.dispatch) {
+      const skepticActor = `h2-skeptic-${turn}`;
+      const skepticTurn = {
+        turn,
+        kind: "auto-skeptic",
+        sliceId: readyForVerify.id,
+        actor: skepticActor,
+        driver,
+        reasons: skepticDecision.reasons,
+      };
+      try {
+        const skepticOutput = runSwarm(["skeptic", readyForVerify.id, "--actor", skepticActor, "--driver", driver]);
+        const skepticOutputPath = path.join(artifactDir, `turn-${turn}-skeptic-output.txt`);
+        fs.writeFileSync(skepticOutputPath, skepticOutput, "utf8");
+        skepticTurn.outputPath = skepticOutputPath;
+        skepticTurn.dispatched = true;
+      } catch (error) {
+        skepticTurn.dispatched = false;
+        skepticTurn.error = error?.stderr?.toString?.() || error?.message || String(error);
+      }
+      autoSkepticRuns.push(skepticTurn);
+      turns.push(skepticTurn);
+    }
+
     const output = runSwarm(["verify", readyForVerify.id, "--actor", `h2-deterministic-verifier-${turn}`, "--force"]);
     const outputPath = path.join(artifactDir, `turn-${turn}-verify-output.txt`);
     fs.writeFileSync(outputPath, output, "utf8");
@@ -297,6 +328,7 @@ const summary = {
   },
   turns,
   verifyRuns,
+  autoSkepticRuns,
   coverage: {
     done: coverage.totals.done,
     total: coverage.totals.total,

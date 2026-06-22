@@ -840,6 +840,8 @@ if (schemaPath.includes("overseer-decision")) {
   result = overseerDecision(prompt);
 } else if (schemaPath.includes("review-result")) {
   result = reviewResult(refs);
+} else if (schemaPath.includes("skeptic-result")) {
+  result = skepticResult(refs);
 } else {
   result = workerResult(refs);
 }
@@ -939,6 +941,43 @@ function reviewResult(refs) {
     requiredFixes: repairRequired ? ["Repair runtime path evidence and rerun review."] : [],
     escalations: repairRequired ? [{ level: "blocker", message: "Fake reviewer requested runtime path repair." }] : [],
     recommendation: repairRequired ? "Repair implementation before acceptance." : "Proceed to deterministic verification."
+  };
+}
+
+function skepticResult(refs) {
+  // FAKE H2 SKEPTIC: emitted only when the H2 runner auto-dispatched a skeptic (--output-schema is
+  // skeptic-result.schema.json). DEFAULT = all-uncertain (never downgrades, never blocks) so existing H2
+  // tests stay green. SWARM_FAKE_SKEPTIC_REFUTE_DIM seam emits ONE refuted quality_dimension verdict to prove
+  // the end-to-end RE-2 downgrade through the real skeptic command.
+  const selectedRefs = refs.length ? refs : ["AC-SUP-API-001.1"];
+  const refuteDim = process.env.SWARM_FAKE_SKEPTIC_REFUTE_DIM;
+  if (refuteDim) {
+    return {
+      status: "partially_refuted",
+      summary: "Fake H2 skeptic independently disproved one quality dimension; all other findings uncertain.",
+      challengedReviewStatus: "accepted",
+      findingVerdicts: [{
+        source: "quality_dimension",
+        dimension: refuteDim,
+        verdict: "refuted",
+        severity: "minor",
+        reasoning: "Fake skeptic independently disproved this dimension."
+      }],
+      recommendation: "Downgrade the refuted dimension and proceed to deterministic verification."
+    };
+  }
+  return {
+    status: "uncertain",
+    summary: "Fake H2 skeptic challenged the review without provider spend; defaulted every finding to uncertain.",
+    challengedReviewStatus: "accepted",
+    findingVerdicts: selectedRefs.map((ref) => ({
+      ref,
+      source: "fr_ac_finding",
+      verdict: "uncertain",
+      severity: "minor",
+      reasoning: "Fake skeptic could not independently confirm; uncertain."
+    })),
+    recommendation: "Run a real skeptic for an independent challenge."
   };
 }
 
