@@ -119,6 +119,32 @@ export type ResultArtifactValidation =
   | { ok: true }
   | { ok: false; reason: string; failureClass: "schema_invalid" | "missing_result" };
 
+// SO-3: shared schema-validation core used by BOTH driver result paths — codex's on-disk artifact
+// (validateResultArtifact) and claude's structured_output field (claude finalize) — so the schema label,
+// failure reason, and failureClass are identical across drivers (model-agnostic; held-to == judged-by).
+// Returns the canonical parsed data on success for the caller to persist.
+export function validateResultValue(
+  spec: Pick<WorkerRunSpec, "resultSchema">,
+  value: unknown,
+): { ok: true; data: unknown } | { ok: false; reason: string; failureClass: "schema_invalid" } {
+  const schema = spec.resultSchema ?? workerResultSchema;
+  const result = schema.safeParse(value);
+  if (result.success) return { ok: true, data: result.data };
+  const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
+  return {
+    ok: false,
+    reason: `structured result failed ${schemaLabel} validation: ${result.error.message}`.slice(0, 1000),
+    failureClass: "schema_invalid",
+  };
+}
+
+// SO-3: shared canonical persist (2-space + trailing newline) — the single place a validated result is
+// written to resultPath, so "a schema-valid result was persisted to resultPath" is one invariant for all
+// drivers that must hand a result across a process boundary.
+export function persistResult(resultPath: string, data: unknown): void {
+  fs.writeFileSync(resultPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
 export function validateResultArtifact(spec: Pick<WorkerRunSpec, "resultPath" | "resultSchema">): ResultArtifactValidation {
   if (!fs.existsSync(spec.resultPath)) {
     return { ok: false, reason: `structured result artifact missing: ${spec.resultPath}`, failureClass: "missing_result" };
@@ -136,17 +162,9 @@ export function validateResultArtifact(spec: Pick<WorkerRunSpec, "resultPath" | 
       failureClass: "schema_invalid",
     };
   }
-  const schema = spec.resultSchema ?? workerResultSchema;
-  const result = schema.safeParse(parsed);
-  if (!result.success) {
-    const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
-    return {
-      ok: false,
-      reason: `structured result artifact failed ${schemaLabel} validation: ${result.error.message}`.slice(0, 1000),
-      failureClass: "schema_invalid",
-    };
-  }
-  return { ok: true };
+  // codex already wrote the artifact; validate it in place (no re-persist) via the shared core.
+  const validated = validateResultValue(spec, parsed);
+  return validated.ok ? { ok: true } : { ok: false, reason: validated.reason, failureClass: validated.failureClass };
 }
 
 function resultArtifactRecoveryReason(exitCode: number | null): string | undefined {
@@ -233,15 +251,15 @@ const claudeDriver: WorkerDriverAdapter = {
     let failureReason: string | undefined;
     let failureClass: WorkerFailureClass | undefined;
     if (resultEvent && resultEvent.structured_output !== undefined && resultEvent.structured_output !== null) {
-      const schema = spec.resultSchema ?? workerResultSchema;
-      const parsed = schema.safeParse(resultEvent.structured_output);
-      if (parsed.success) {
-        fs.writeFileSync(spec.resultPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
+      // claude hands the result back as a structured_output field; the harness persists it. Same shared
+      // validate/persist core as the codex on-disk path (SO-3).
+      const validated = validateResultValue(spec, resultEvent.structured_output);
+      if (validated.ok) {
+        persistResult(spec.resultPath, validated.data);
         structuredResultWritten = true;
       } else {
-        const schemaLabel = spec.resultSchema ? "result-schema" : "worker-result";
-        failureReason = `structured_output failed ${schemaLabel} validation: ${parsed.error.message}`.slice(0, 1000);
-        failureClass = "schema_invalid";
+        failureReason = validated.reason;
+        failureClass = validated.failureClass;
       }
     } else if (!resultEvent) {
       failureReason = "no result event found in claude stream output";
