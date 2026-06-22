@@ -2270,7 +2270,57 @@ async function executeOverseerRun(input: {
     idleTimedOut?: boolean;
     resultArtifactRecoveryTriggered?: boolean;
   };
-  if (input.driver === "fixture") {
+  // OCF-1 deterministic fast-path: when the precomputed queue head is an unambiguous mechanical
+  // worker-run / reviewer-dispatch with no blockers/focus/human-required state, synthesize that exact
+  // decision in code and skip the LLM. The decision still flows through the unchanged downstream
+  // (parse -> applyOverseerDecision -> executeOverseerRecommendedCommands), so validateOverseerCommand
+  // and the child-dispatch contract apply verbatim. Otherwise we fall back to the LLM/fixture path.
+  const fastPath = evaluateOverseerFastPath({
+    workspace: input.workspace,
+    store: input.store,
+    scenario: input.scenario,
+    snapshot,
+    execute: Boolean(input.execute),
+    driver: input.driver,
+  });
+  if (fastPath.eligible) {
+    fs.writeFileSync(resultPath, `${JSON.stringify(fastPath.decision)}\n`, "utf8");
+    const fastPathEvent = {
+      type: "overseer.fast_path",
+      scenario: input.scenario,
+      actor: input.actor,
+      decisionSource: "deterministic",
+      sliceId: fastPath.head.sliceId,
+      sliceStatus: fastPath.head.status,
+      commandKey: fastPath.head.commandKey,
+      command: fastPath.head.command,
+    };
+    result = { status: 0, stdout: `${JSON.stringify(fastPathEvent)}\n` };
+    overseerFinalization = { ok: true, structuredResultWritten: true };
+    // Visible plan: the deterministic decision is recorded with the SAME observability as an LLM
+    // decision (an overseer agentRun completes below + overseer.decision_recorded/completed events
+    // fire via applyOverseerDecision), distinguished only by this decisionSource marker so the human
+    // and the web timeline see that code, not the LLM, produced this turn.
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "overseer.fast_path",
+        entityType: "harness",
+        entityId,
+        payload: {
+          runId,
+          scenario: input.scenario,
+          decisionSource: "deterministic",
+          sliceId: fastPath.head.sliceId,
+          sliceStatus: fastPath.head.status,
+          commandKey: fastPath.head.commandKey,
+          command: fastPath.head.command,
+          purpose: fastPath.head.purpose,
+          reason: "Precomputed mechanical queue head equals the deterministic nextCommand; LLM invocation skipped.",
+        },
+      }),
+    );
+  } else if (input.driver === "fixture") {
     const decision = runFixtureOverseerDecision({ scenario: input.scenario, snapshot });
     fs.writeFileSync(resultPath, `${JSON.stringify(decision)}\n`, "utf8");
     result = {
@@ -2347,7 +2397,9 @@ async function executeOverseerRun(input: {
     if (reask.result) result = reask.result;
   }
 
-  if (input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
+  // Fast-path and fixture both produce their decision in-process (no streamed child stdout file), so
+  // persist the synthetic JSONL line to disk for parity (eventsPath must exist for inspect/observe).
+  if (fastPath.eligible || input.driver === "fixture") fs.writeFileSync(jsonlPath, result.stdout ?? "", "utf8");
   if (result.stderr) fs.writeFileSync(stderrPath, result.stderr, "utf8");
   const overseerEvents =
     result.workerEvents ??
@@ -6231,6 +6283,111 @@ function loadScenarioManifest(workspace: string, scenario: string): ScenarioMani
     };
   }
   return { path: manifestPath, exists: true, data };
+}
+
+// OCF-1: the overseer turn is "largely an echo of a deterministically-precomputed command"
+// (research/workflow/lessons-for-agent-swarm.md). buildOverseerStatePacket already computes a
+// per-slice nextCommand + a focusQueue + the blocker view. When --execute is requested AND the
+// precomputed queue head is an UNAMBIGUOUS mechanical worker-run / reviewer-dispatch with no
+// blockers, no focusQueue items, and no human-required state, the LLM's output is deterministically
+// known, so we synthesize that exact decision in code and skip the LLM. The synthesized decision is
+// then recorded with full observability and run through the SAME executeOverseerRecommendedCommands
+// path (validateOverseerCommand + the child-dispatch contract apply unchanged). Anything outside this
+// strict envelope falls back to the LLM/fixture path verbatim (the safe direction).
+type OverseerFastPathEvaluation =
+  | {
+      eligible: true;
+      decision: OverseerDecision;
+      head: { sliceId: string; status: string; command: string; purpose: string; commandKey: string };
+    }
+  | { eligible: false; reason: string };
+
+function evaluateOverseerFastPath(input: {
+  workspace: string;
+  store: SwarmStore;
+  scenario: string;
+  snapshot: ReturnType<typeof buildObservabilitySnapshot>;
+  execute: boolean;
+  driver: string;
+}): OverseerFastPathEvaluation {
+  // Only short-circuit when we will actually dispatch. Planning-only turns are cheap and stay on the
+  // LLM/fixture path so the human-facing decision narrative is unchanged.
+  if (!input.execute) return { eligible: false, reason: "execute_not_requested" };
+  // The fixture overseer is already deterministic; leave it on its own path verbatim.
+  if (input.driver === "fixture") return { eligible: false, reason: "fixture_driver" };
+
+  // Any real blocker (active escalation needing senior judgement) forces the LLM. Warnings do not
+  // block dispatch (the LLM path also proceeds through warnings), so they are not disqualifying.
+  const blockingEscalation = input.snapshot.activeEscalations.find((escalation) =>
+    ["blocker", "human_required", "critical"].includes(escalation.level),
+  );
+  if (blockingEscalation) {
+    return { eligible: false, reason: `active_${blockingEscalation.level}_escalation:${blockingEscalation.id}` };
+  }
+
+  // Reuse the exact precomputed packet head the prompt would carry.
+  const statePacket = buildOverseerStatePacket({
+    workspace: input.workspace,
+    store: input.store,
+    scenario: input.scenario,
+    snapshot: input.snapshot,
+    execute: input.execute,
+  });
+  const actionable = statePacket.actionableState;
+  // A non-empty focus queue is a required senior-developer zoom-in; never short-circuit past it.
+  if (actionable.focusQueue.length > 0) return { eligible: false, reason: "focus_queue_present" };
+  // Exactly one active slice must be the unambiguous head. Multiple active slices mean the selection
+  // itself is a judgement call; defer to the LLM.
+  if (actionable.activeSliceQueue.length !== 1) {
+    return { eligible: false, reason: `active_slice_count:${actionable.activeSliceQueue.length}` };
+  }
+  const head = actionable.activeSliceQueue[0];
+  if (!head.nextCommand) return { eligible: false, reason: "head_has_no_next_command" };
+  // CONSERVATIVE status envelope: only a fresh ready slice (mechanical worker run) or a
+  // worker-evidence-present slice (mechanical review dispatch). repairing/blocked slices carry repair
+  // context / senior judgement and are deliberately excluded (the live runner dispatches targeted
+  // repairs for those out-of-band, before the overseer turn).
+  const isMechanicalRun = head.status === "ready";
+  const isMechanicalReview = head.status === "implemented" || head.status === "ready_for_review";
+  if (!isMechanicalRun && !isMechanicalReview) {
+    return { eligible: false, reason: `non_mechanical_status:${head.status}` };
+  }
+  // Defensive re-validation: the synthesized command MUST pass the same validator that downstream
+  // dispatch uses. If it does not (e.g. an in-flight child run), fall back to the LLM rather than
+  // emit a command we know will be blocked.
+  const validation = validateOverseerCommand(head.nextCommand, input.workspace, input.store);
+  if (!validation.ok) return { eligible: false, reason: `head_failed_validation:${validation.reason}` };
+  if (validation.category !== "child_agent") {
+    return { eligible: false, reason: `head_not_child_dispatch:${validation.commandKey}` };
+  }
+
+  const purpose = head.nextCommandPurpose ?? "Dispatch the precomputed mechanical lifecycle command for the active slice.";
+  const decision: OverseerDecision = {
+    status: "recommend_commands",
+    summary: `Deterministic overseer fast-path: ${validation.commandKey} ${head.id} (${head.status}).`,
+    scenario: input.scenario,
+    currentPriority: purpose,
+    recommendedCommands: [
+      {
+        command: head.nextCommand,
+        purpose,
+        expectedStateChange:
+          isMechanicalRun
+            ? "The active slice gains worker evidence and advances toward review."
+            : "The active slice gains independent review evidence and advances toward deterministic verification.",
+        requiresHuman: false,
+      },
+    ],
+    lanePlan: [],
+    blockers: [],
+    stopCondition: "Stop after the precomputed mechanical command is recorded and executed.",
+    nextAction: `Execute the precomputed ${validation.commandKey} for ${head.id}, then re-observe.`,
+  };
+  return {
+    eligible: true,
+    decision,
+    head: { sliceId: head.id, status: head.status, command: head.nextCommand, purpose, commandKey: validation.commandKey },
+  };
 }
 
 function buildOverseerStatePacket(input: {

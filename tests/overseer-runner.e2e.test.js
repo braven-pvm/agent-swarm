@@ -230,7 +230,18 @@ test("codex overseer focus queue can execute bounded inspect commands", () => {
   assert.equal(sliceFocus.latestRunFocus.run.id, "RUN-overseer-focus");
 });
 
-test("codex overseer execute mode dispatches worker and reviewer child agents", () => {
+// OCF-1: this test previously fed the fake overseer a single 3-command turn (run/review/observe) and
+// asserted all three executed in one turn. With the deterministic fast-path, an --execute overseer
+// turn whose precomputed queue head is a mechanical run/review SYNTHESIZES exactly that one head
+// command in code and skips the LLM (see evaluateOverseerFastPath). The fast-path advances state one
+// mechanical step per turn, so we now drive two turns: turn 1 fast-paths the worker `run` (ready ->
+// ready_for_review), turn 2 fast-paths the independent `review`. Meaning is preserved and strengthened
+// — the SAME child-dispatch contract (validateOverseerCommand + spawnSync) runs both dispatches, the
+// end-state is identical (worker_result + review_result evidence, both child runs completed), and the
+// turns are explicitly marked decisionSource:"deterministic". The dispatched actors are the harness
+// defaults (backend-worker/backend-reviewer) from the precomputed nextCommand rather than the fake's
+// chosen names, which is the documented OCF-1 behaviour.
+test("codex overseer execute mode dispatches worker and reviewer child agents via the deterministic fast-path", () => {
   const workspace = setupWorkspace("test-overseer-child-dispatch");
   const pullOutput = runSwarm(workspace, [
     "slices",
@@ -254,59 +265,79 @@ test("codex overseer execute mode dispatches worker and reviewer child agents", 
   const sliceId = pullOutput.match(/Created slice (SLICE-[a-z0-9]+)/)?.[1];
   assert.ok(sliceId);
 
-  const runCommand = `node "${cli}" run ${sliceId} --actor live-backend-worker --driver codex`;
-  const reviewCommand = `node "${cli}" review ${sliceId} --actor live-reviewer --driver codex`;
-  const observeCommand = `node "${cli}" observe --events 160`;
-  const fakeCodexScript = writeFakeOverseerCodex([
-    {
-      command: runCommand,
-      purpose: "Dispatch the backend worker through the harness against the active slice.",
-      expectedStateChange: "Worker agent run, heartbeat, JSONL events, and worker_result evidence appear.",
-      requiresHuman: false,
-    },
-    {
-      command: reviewCommand,
-      purpose: "Dispatch the independent reviewer after worker evidence exists.",
-      expectedStateChange: "Reviewer agent run, reviewer JSONL events, and review_result evidence appear.",
-      requiresHuman: false,
-    },
-    {
-      command: observeCommand,
-      purpose: "Confirm child-agent state and evidence are visible after dispatch.",
-      expectedStateChange: "Snapshot shows implemented/reviewed backend slice with child-agent artifacts.",
-      requiresHuman: false,
-    },
-  ]);
+  // The fake codex is still needed for the dispatched child worker/reviewer runs (they spawn
+  // `run`/`review --driver codex`, inheriting SWARM_CODEX_* from this env). Its recommendedCommands
+  // are intentionally unused for the overseer turn itself, which is now produced in code.
+  const fakeCodexScript = writeFakeOverseerCodex();
+  const orchestrateEnv = {
+    SWARM_CODEX_COMMAND: process.execPath,
+    SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+  };
 
-  const output = runSwarm(
+  // Turn 1: slice is `ready` -> deterministic fast-path dispatches the worker `run` head only.
+  const turnOne = runSwarm(
     workspace,
     ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke", "--execute", "--execute-limit", "3"],
-    {
-      SWARM_CODEX_COMMAND: process.execPath,
-      SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
-    },
+    orchestrateEnv,
+  );
+  assert.match(turnOne, /command execution: executed 1, blocked 0, failed 0/);
+  const promptOne = readLatestOverseerPrompt(workspace);
+  assert.match(promptOne, new RegExp(sliceId));
+  assert.match(promptOne, /"activeSliceQueue"/);
+  assert.match(promptOne, new RegExp(`"nextCommand": "node .* run ${sliceId} --actor backend-worker --driver codex"`));
+
+  const afterWorker = JSON.parse(runSwarm(workspace, ["observe", "--events", "180"]));
+  const workerSlice = afterWorker.slices.find((item) => item.id === sliceId);
+  assert.ok(workerSlice);
+  // Worker completion lands the slice in `implemented` (worker-evidence-present, review-eligible).
+  assert.equal(workerSlice.status, "implemented");
+  assert.ok(workerSlice.evidence.some((item) => item.kind === "worker_result"));
+  // The overseer turn was produced deterministically (no LLM), recorded as a visible fast_path event.
+  assert.ok(
+    afterWorker.recentEvents.some(
+      (event) =>
+        event.type === "overseer.fast_path" &&
+        event.payload.decisionSource === "deterministic" &&
+        event.payload.commandKey === "run" &&
+        event.payload.sliceId === sliceId,
+    ),
   );
 
-  assert.match(output, /command execution: executed 3, blocked 0, failed 0/);
-  const prompt = readLatestOverseerPrompt(workspace);
-  assert.match(prompt, new RegExp(sliceId));
-  assert.match(prompt, /"activeSliceQueue"/);
-  assert.match(prompt, new RegExp(`"nextCommand": "node .* run ${sliceId} --actor backend-worker --driver codex"`));
+  // Turn 2: slice now has worker evidence (ready_for_review) -> fast-path dispatches the `review` head.
+  const turnTwo = runSwarm(
+    workspace,
+    ["orchestrate", "--actor", "live-overseer", "--driver", "codex", "--scenario", "live-agent-smoke", "--execute", "--execute-limit", "3"],
+    orchestrateEnv,
+  );
+  assert.match(turnTwo, /command execution: executed 1, blocked 0, failed 0/);
+  const promptTwo = readLatestOverseerPrompt(workspace);
+  assert.match(promptTwo, new RegExp(`"nextCommand": "node .* review ${sliceId} --actor backend-reviewer --driver codex"`));
 
   const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "180"]));
+  assert.ok(
+    snapshot.recentEvents.some(
+      (event) =>
+        event.type === "overseer.fast_path" &&
+        event.payload.decisionSource === "deterministic" &&
+        event.payload.commandKey === "review" &&
+        event.payload.sliceId === sliceId,
+    ),
+  );
   const slice = snapshot.slices.find((item) => item.id === sliceId);
   assert.ok(slice);
   assert.equal(slice.status, "ready_for_review");
   assert.ok(slice.evidence.some((item) => item.kind === "worker_result"));
   assert.ok(slice.evidence.some((item) => item.kind === "review_result"));
+  // Actors are the harness-default backend-worker/backend-reviewer carried by the precomputed
+  // nextCommand (the fast-path synthesizes that exact command verbatim).
   assert.ok(
     snapshot.agentRuns.some(
-      (run) => run.actor === "live-backend-worker" && run.role === "worker" && run.driver === "codex" && run.status === "completed",
+      (run) => run.actor === "backend-worker" && run.role === "worker" && run.driver === "codex" && run.status === "completed",
     ),
   );
   assert.ok(
     snapshot.agentRuns.some(
-      (run) => run.actor === "live-reviewer" && run.role === "reviewer" && run.driver === "codex" && run.status === "completed",
+      (run) => run.actor === "backend-reviewer" && run.role === "reviewer" && run.driver === "codex" && run.status === "completed",
     ),
   );
   assert.ok(snapshot.recentEvents.some((event) => event.type === "worker.agent_event"));
