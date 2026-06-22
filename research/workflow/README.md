@@ -15,6 +15,7 @@ with every candidate improvement run through an independent skeptic that re-read
 | [lessons-for-agent-swarm.md](lessons-for-agent-swarm.md) | The **12 source-confirmed recommendations** (+ what got dropped) |
 | [meta-run-analysis.md](meta-run-analysis.md) | Analysis of the **two Workflow runs** used to produce this study |
 | [claude-workflow-implementation-handoff.md](claude-workflow-implementation-handoff.md) | Actionable handoff for a Claude Workflow implementation run: no-redo context, peek-in/intervention packets, and required meta-analysis artifacts |
+| [overseer-runner-triage.md](overseer-runner-triage.md) | Triage of 3 **pre-existing** `overseer-runner` test failures (bisect-proven older than this session): root cause + fix recommendations |
 
 ## Artifacts (reproducible)
 
@@ -24,6 +25,8 @@ with every candidate improvement run through an independent skeptic that re-read
 | [artifacts/journal.jsonl](artifacts/journal.jsonl) · [artifacts/agent-anatomy.tsv](artifacts/agent-anatomy.tsv) · [artifacts/findings-output.json](artifacts/findings-output.json) | run 1 journal / per-agent stats / result |
 | [artifacts/forensic-run/forensics.script.js](artifacts/forensic-run/forensics.script.js) | run 2 script (this analysis) |
 | [artifacts/forensic-run/journal.jsonl](artifacts/forensic-run/journal.jsonl) · [agent-anatomy.tsv](artifacts/forensic-run/agent-anatomy.tsv) · [forensics-output.json](artifacts/forensic-run/forensics-output.json) · [ground-truth-by-lens.txt](artifacts/forensic-run/ground-truth-by-lens.txt) | run 2 journal / stats / 147 KB result / per-lens ground truth |
+| [artifacts/20260621-control-plane-handoff/](artifacts/20260621-control-plane-handoff/) | dogfood run that implemented Slice A/B (settled-facts + intervention packets) |
+| [artifacts/20260622-control-plane-followups/](artifacts/20260622-control-plane-followups/) | dogfood runs that implemented SO-1, RE-1, RE-2 (script/journal/output/anatomy + index) |
 
 > Full per-subagent transcripts (`agent-*.jsonl`) stay in the session dir:
 > `~/.claude/projects/x--repositories-agent-swarm/<session>/subagents/workflows/<runId>/`.

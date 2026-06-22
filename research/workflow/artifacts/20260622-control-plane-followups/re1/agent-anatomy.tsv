@@ -1,0 +1,11 @@
+agentId	phase/role	msgs	tools	out_tok	tools
+a0df1929bd	skeptic	54	19	2914	Grep:11+Read:7+StructuredOutput:1
+a1bddb923e	baseline	91	37	15889	Read:18+Grep:9+Glob:6+Bash:2+StructuredOutput:2
+a28ac7dea8	impl	222	81	24650	Read:29+Edit:15+Grep:12+PowerShell:10+Bash:9+ToolSearch:2+Write:1+Monitor:1+Glob:1+StructuredOutput:1
+a4631501da	design	47	18	10460	Read:15+Grep:1+Glob:1+StructuredOutput:1
+a56974fb45	skeptic	46	16	4584	Bash:12+Grep:3+StructuredOutput:1
+a72a01d13f	verify	27	9	3180	PowerShell:3+Bash:2+Glob:1+Read:1+Grep:1+StructuredOutput:1
+a93f560c5f	skeptic	46	16	5438	Grep:7+Read:7+Glob:1+StructuredOutput:1
+ae1dea08ae	skeptic	45	16	4811	Grep:10+Read:5+StructuredOutput:1
+af88ba8bc3	test	40	14	4444	Read:5+PowerShell:4+Bash:2+Grep:1+Glob:1+StructuredOutput:1
+TOTAL	9 agents			76370	
