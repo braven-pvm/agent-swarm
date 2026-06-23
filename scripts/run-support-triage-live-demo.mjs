@@ -1014,13 +1014,25 @@ function buildH2RepairContext(store, slice) {
       createdAt: item.createdAt,
     }));
   const requiredFixes = Array.isArray(review?.requiredFixes) ? review.requiredFixes.filter(Boolean) : [];
+  const activeEscalations = store
+    .listEscalations("active")
+    .filter((item) => item.entityType === "slice" && item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level))
+    .slice(-6)
+    .map((item) => ({
+      id: item.id,
+      level: item.level,
+      message: item.message,
+      reason: item.reason,
+      createdAt: item.createdAt,
+    }));
   const repairTimes = [
     reviewNeedsRepair ? reviewEvidence?.createdAt : undefined,
     ...humanFeedback.map((item) => item.createdAt),
+    ...activeEscalations.map((item) => item.createdAt),
   ].filter(Boolean);
   const latestRepairAt = repairTimes.sort().at(-1);
   return {
-    hasRepairContext: Boolean(reviewNeedsRepair || humanFeedback.length > 0),
+    hasRepairContext: Boolean(reviewNeedsRepair || humanFeedback.length > 0 || activeEscalations.length > 0),
     latestRepairAt,
     review: reviewNeedsRepair
       ? {
@@ -1033,6 +1045,7 @@ function buildH2RepairContext(store, slice) {
         }
       : undefined,
     humanFeedback,
+    activeEscalations,
   };
 }
 

@@ -8,6 +8,14 @@ If you are a fresh Codex instance, start here before editing code.
 
 ## Latest State
 
+2026-06-22 repair-proof hardening:
+
+- Targeted repair is now an explicit worker gate. If a slice has prior review failure, failed/needs-rework human feedback, or an active scoped blocker, the worker prompt lists exact repair-proof requirements and the worker result must include matching `repairProof[]` entries.
+- A schema-valid generic `passed` result is no longer enough for a repair run. The harness keeps the slice `repairing`, emits `worker.repair_proof_failed`, records `repairProofGate` on the worker evidence/event, and raises the active blocker `Worker result did not address targeted repair context.`
+- That worker-proof blocker is agent-resolvable: a later worker result for the same slice that passes `repairProofGate` automatically clears it and emits `worker.repair_proof_cleared`. Review blockers remain reviewer-owned and human/spec blockers remain human/spec-owned.
+- The result journal stores only worker results that pass the repair-proof gate, and deterministic verification refuses persisted worker evidence with `repairProofGate.passed === false`.
+- Focused verification: `npm run build`, `node --test tests\support-triage-live-runner.e2e.test.js`, `node --test tests\web-server.e2e.test.js tests\coverage.test.js tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js`, and `git diff --check` passed after this change. Full `npm test` hit the known long `tests/live-agent-runner.e2e.test.js` timeout and should not be counted as passed.
+
 2026-06-22 post-Workflow reassessment:
 
 - The Claude Workflow handoff implementation is now on `main`: schema-invalid result re-ask, shared driver result persistence, lazy skeptic review, lane-budget enforcement, bounded concurrent dependency-satisfied slice dispatch, deterministic overseer fast-paths, reusable run guards, ledger-derived settled facts in worker/revive prompts, structured focus/intervention packets, recovery `focus_consulted` events, and the opt-in content-addressed worker-result journal prototype.

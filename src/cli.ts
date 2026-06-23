@@ -30,6 +30,7 @@ import {
   type OverseerDecision,
   type ReviewResult,
   type SkepticResult,
+  type WorkerResult,
 } from "./schemas.js";
 import { writeSchemaFromZod } from "./schema-json.js";
 import { registerFileSource } from "./source-adapter.js";
@@ -113,6 +114,7 @@ const cliRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 // executes (avoids a temporal-dead-zone error on the worker-dispatch path).
 const SETTLED_LEDGER_STATUSES = new Set(["accepted", "verified", "human_verified", "review_passed"]);
 const BLOCKED_LEDGER_STATUSES = new Set(["blocked", "human_input_required", "failed", "awaiting_human_verification"]);
+const WORKER_REPAIR_PROOF_BLOCKER_MESSAGE = "Worker result did not address targeted repair context.";
 
 type WorkerRunResult = {
   sliceId: string;
@@ -123,6 +125,7 @@ type WorkerRunResult = {
   eventsPath: string;
   resultPath: string;
   workerEvents: ReturnType<typeof ingestWorkerJsonl>;
+  repairProofGate?: RepairProofGate;
   stderr?: string;
 };
 
@@ -214,6 +217,25 @@ type SliceRepairContext = {
     message: string;
     reason?: string;
   }>;
+};
+
+type RepairProofSource = "required_fix" | "non_passing_ref" | "human_feedback" | "active_blocker";
+
+type RepairProofRequirement = {
+  source: RepairProofSource;
+  ref?: string;
+  item: string;
+  evidenceId?: string;
+  escalationId?: string;
+};
+
+type RepairProofGate = {
+  passed: boolean;
+  requiredCount: number;
+  requirements: RepairProofRequirement[];
+  missing: RepairProofRequirement[];
+  unresolved: Array<{ requirement: RepairProofRequirement; status?: string; reason: string }>;
+  reason: string;
 };
 
 type SettledFact = {
@@ -2802,12 +2824,47 @@ async function executeWorkerRun(input: {
     if (reask.result) result = reask.result;
   }
 
+  let repairProofGate: RepairProofGate | undefined;
+  const repairProofRequirements = buildRepairProofRequirements(repairContext);
+  if (finalization.ok && fs.existsSync(lastMessagePath) && repairProofRequirements.length > 0) {
+    try {
+      const parsedWorkerResult = workerResultSchema.safeParse(JSON.parse(fs.readFileSync(lastMessagePath, "utf8")) as unknown);
+      if (parsedWorkerResult.success) {
+        repairProofGate = validateWorkerRepairProof(parsedWorkerResult.data, repairContext);
+      } else {
+        repairProofGate = {
+          passed: false,
+          requiredCount: repairProofRequirements.length,
+          requirements: repairProofRequirements,
+          missing: repairProofRequirements,
+          unresolved: [],
+          reason: `worker_result schema failed while checking targeted repair proof: ${parsedWorkerResult.error.message}`,
+        };
+      }
+    } catch (error) {
+      repairProofGate = {
+        passed: false,
+        requiredCount: repairProofRequirements.length,
+        requirements: repairProofRequirements,
+        missing: repairProofRequirements,
+        unresolved: [],
+        reason: `worker_result JSON parse failed while checking targeted repair proof: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+  if (repairProofGate && !repairProofGate.passed) {
+    recordWorkerRepairProofFailure({ store: input.store, slice, actor: input.actor, runId, gate: repairProofGate });
+  } else if (repairProofGate?.passed) {
+    clearResolvedWorkerRepairProofEscalations({ store: input.store, slice, actor: input.actor, runId, gate: repairProofGate });
+  }
+  const workerAcceptedForReview = finalization.ok && (repairProofGate?.passed ?? true);
+
   // OCF-3 STORE (MISS path only): with the journal ON, after a freshly spawned worker produced a
   // schema-VALIDATED result, store that exact validated value under the content key so an identical future
   // envelope is a HIT. We re-read + re-validate the on-disk artifact via the shared validate core so we
   // store ONLY a value that passes the worker result-schema (VALIDATED-ONLY). A replay (journalHitValid)
   // never re-stores; a failed/blocked run never stores.
-  if (journalEnabled && journalKey && !journalHitValid && finalization.ok && finalization.structuredResultWritten) {
+  if (journalEnabled && journalKey && !journalHitValid && finalization.ok && finalization.structuredResultWritten && workerAcceptedForReview) {
     const artifactValidation = validateResultArtifact({ resultPath: lastMessagePath });
     if (artifactValidation.ok) {
       const storedValue = validateResultValue(
@@ -2877,7 +2934,7 @@ async function executeWorkerRun(input: {
       kind: "worker_result",
       summary: input.reason === "restart" ? "Structured worker restart result" : "Structured worker result",
       ref: lastMessagePath,
-      payload: { path: lastMessagePath, previousRunId: input.previousRunId },
+      payload: { path: lastMessagePath, previousRunId: input.previousRunId, repairProofGate },
       createdAt: new Date().toISOString(),
     });
   }
@@ -2899,6 +2956,7 @@ async function executeWorkerRun(input: {
         recoveryReason: finalization.recoveryReason,
         idleTimedOut: result.idleTimedOut,
         resultArtifactRecoveryTriggered: result.resultArtifactRecoveryTriggered,
+        repairProofGate,
         runId,
         previousRunId: input.previousRunId,
         promptPath,
@@ -2913,12 +2971,16 @@ async function executeWorkerRun(input: {
       },
     }),
   );
-  input.store.updateSliceStatus(slice.id, finalization.ok ? "implemented" : "blocked");
+  input.store.updateSliceStatus(slice.id, workerAcceptedForReview ? "implemented" : finalization.ok ? "repairing" : "blocked");
   input.store.upsertHeartbeat({
     id: `heartbeat:${input.actor}`,
     actor: input.actor,
-    state: finalization.ok ? "idle" : "blocked",
-    detail: finalization.ok ? `${driverId} worker completed` : `${driverId} worker failed`,
+    state: workerAcceptedForReview ? "idle" : "blocked",
+    detail: workerAcceptedForReview
+      ? `${driverId} worker completed`
+      : finalization.ok && repairProofGate && !repairProofGate.passed
+        ? `${driverId} worker result failed targeted repair proof gate`
+        : `${driverId} worker failed`,
     entityType: "slice",
     entityId: slice.id,
   });
@@ -2941,12 +3003,13 @@ async function executeWorkerRun(input: {
   return {
     sliceId: slice.id,
     runId,
-    ok: finalization.ok,
+    ok: workerAcceptedForReview,
     exitCode: result.status,
     promptPath,
     eventsPath: jsonlPath,
     resultPath: lastMessagePath,
     workerEvents,
+    repairProofGate,
     stderr: result.stderr,
   };
 }
@@ -4076,6 +4139,9 @@ function printWorkerRunResult(result: WorkerRunResult): void {
   if (result.workerEvents.sessionId) console.log(`  session: ${result.workerEvents.sessionId}`);
   if (result.workerEvents.parseErrorCount > 0) console.log(`  event parse errors: ${result.workerEvents.parseErrorCount}`);
   console.log(`  result: ${result.resultPath}`);
+  if (result.repairProofGate && !result.repairProofGate.passed) {
+    console.log(`  repair proof gate: failed - ${result.repairProofGate.reason}`);
+  }
   if (result.stderr?.trim()) console.error(result.stderr.trim());
 }
 
@@ -5485,6 +5551,249 @@ function buildSliceRepairContext(store: SwarmStore, slice: SliceRecord): SliceRe
   return { review, humanFeedback, activeEscalations };
 }
 
+function buildRepairProofRequirements(context: SliceRepairContext | undefined): RepairProofRequirement[] {
+  if (!context) return [];
+  const requirements: RepairProofRequirement[] = [];
+  if (context.review) {
+    for (const fix of context.review.requiredFixes) {
+      const item = fix.trim();
+      if (item) {
+        requirements.push({
+          source: "required_fix",
+          item,
+          evidenceId: context.review.evidenceId,
+        });
+      }
+    }
+    for (const ref of context.review.nonPassingRefs) {
+      const item = `Independent review finding for ${ref} did not pass.`;
+      requirements.push({
+        source: "non_passing_ref",
+        ref,
+        item,
+        evidenceId: context.review.evidenceId,
+      });
+    }
+  }
+  for (const feedback of context.humanFeedback) {
+    const status = feedback.status ?? "failed";
+    const notes = feedback.notes?.trim();
+    const packet = feedback.packetId ? ` packet ${feedback.packetId}` : "";
+    requirements.push({
+      source: "human_feedback",
+      ref: feedback.ref,
+      item: notes ? `${status}${packet}: ${notes}` : `${status}${packet}: Human verification requires repair.`,
+      evidenceId: feedback.evidenceId,
+    });
+  }
+  for (const escalation of context.activeEscalations) {
+    const reason = escalation.reason?.trim() ? ` Reason: ${escalation.reason.trim()}` : "";
+    requirements.push({
+      source: "active_blocker",
+      item: `${escalation.level}: ${escalation.message}${reason}`,
+      escalationId: escalation.id,
+    });
+  }
+  const seen = new Set<string>();
+  return requirements.filter((requirement) => {
+    const key = `${requirement.source}|${requirement.ref ?? ""}|${normalizeRepairProofText(requirement.item)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function validateWorkerRepairProof(result: WorkerResult, context: SliceRepairContext | undefined): RepairProofGate {
+  const requirements = buildRepairProofRequirements(context);
+  if (requirements.length === 0) {
+    return {
+      passed: true,
+      requiredCount: 0,
+      requirements,
+      missing: [],
+      unresolved: [],
+      reason: "no targeted repair proof required",
+    };
+  }
+  const proof = result.repairProof ?? [];
+  const missing: RepairProofRequirement[] = [];
+  const unresolved: RepairProofGate["unresolved"] = [];
+  for (const requirement of requirements) {
+    const candidates = proof.filter((entry) => repairProofEntryMatchesRequirement(entry, requirement));
+    if (candidates.length === 0) {
+      missing.push(requirement);
+      continue;
+    }
+    const resolved = candidates.find((entry) => entry.status === "resolved" && entry.evidence.some((item) => item.trim()));
+    if (!resolved) {
+      const candidate = candidates[0];
+      unresolved.push({
+        requirement,
+        status: candidate?.status,
+        reason:
+          candidate?.status === "resolved"
+            ? "repair proof entry was resolved but did not include evidence"
+            : `repair proof entry status was ${candidate?.status ?? "unknown"}`,
+      });
+    }
+  }
+  const passed = missing.length === 0 && unresolved.length === 0;
+  return {
+    passed,
+    requiredCount: requirements.length,
+    requirements,
+    missing,
+    unresolved,
+    reason: passed
+      ? `worker_result resolved ${requirements.length} targeted repair item(s)`
+      : summarizeRepairProofFailure(missing, unresolved),
+  };
+}
+
+function repairProofEntryMatchesRequirement(
+  entry: NonNullable<WorkerResult["repairProof"]>[number],
+  requirement: RepairProofRequirement,
+): boolean {
+  if (entry.source !== requirement.source) return false;
+  if (requirement.ref && entry.ref !== requirement.ref) return false;
+  if (requirement.source === "non_passing_ref" && requirement.ref) return true;
+  const entryItem = normalizeRepairProofText(entry.item);
+  const requirementItem = normalizeRepairProofText(requirement.item);
+  if (!entryItem || !requirementItem) return false;
+  return entryItem === requirementItem || entryItem.includes(requirementItem) || requirementItem.includes(entryItem);
+}
+
+function summarizeRepairProofFailure(
+  missing: RepairProofRequirement[],
+  unresolved: RepairProofGate["unresolved"],
+): string {
+  const parts: string[] = [];
+  if (missing.length > 0) {
+    parts.push(`missing proof for ${missing.map(formatRepairProofRequirementShort).slice(0, 4).join("; ")}`);
+  }
+  if (unresolved.length > 0) {
+    parts.push(
+      `unresolved proof for ${unresolved
+        .map((item) => `${formatRepairProofRequirementShort(item.requirement)} (${item.reason})`)
+        .slice(0, 4)
+        .join("; ")}`,
+    );
+  }
+  return `worker_result did not prove targeted repair completion: ${parts.join("; ")}`;
+}
+
+function formatRepairProofRequirementShort(requirement: RepairProofRequirement): string {
+  const ref = requirement.ref ? `${requirement.ref} ` : "";
+  return `${requirement.source} ${ref}${requirement.item}`.trim();
+}
+
+function formatRepairProofRequirementForPrompt(requirement: RepairProofRequirement): string {
+  const ref = requirement.ref ?? "-";
+  const evidenceId = requirement.evidenceId ?? requirement.escalationId ?? "-";
+  return `  - source=${requirement.source}; ref=${ref}; evidenceId=${evidenceId}; item="${escapeRepairProofPromptField(requirement.item)}"`;
+}
+
+function escapeRepairProofPromptField(value: string): string {
+  return value.replace(/"/g, "'").replace(/\s+/g, " ").trim();
+}
+
+function normalizeRepairProofText(value: string | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function recordWorkerRepairProofFailure(input: {
+  store: SwarmStore;
+  slice: SliceRecord;
+  actor: string;
+  runId: string;
+  gate: RepairProofGate;
+}): void {
+  const activeExists = input.store
+    .listEscalations("active")
+    .some((item) => item.entityType === "slice" && item.entityId === input.slice.id && item.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE);
+  let escalationId: string | undefined;
+  if (!activeExists) {
+    const now = new Date().toISOString();
+    escalationId = makeId("escalation");
+    input.store.insertEscalation({
+      id: escalationId,
+      level: "blocker",
+      status: "active",
+      entityType: "slice",
+      entityId: input.slice.id,
+      message: WORKER_REPAIR_PROOF_BLOCKER_MESSAGE,
+      reason: input.gate.reason.slice(0, 1000),
+      createdBy: input.actor,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "worker.repair_proof_failed",
+      entityType: "slice",
+      entityId: input.slice.id,
+      payload: {
+        runId: input.runId,
+        escalationId,
+        repairProofGate: input.gate,
+      },
+    }),
+  );
+}
+
+function clearResolvedWorkerRepairProofEscalations(input: {
+  store: SwarmStore;
+  slice: SliceRecord;
+  actor: string;
+  runId: string;
+  gate: RepairProofGate;
+}): void {
+  const clearable = input.store
+    .listEscalations("active")
+    .filter(
+      (item) =>
+        item.entityType === "slice" &&
+        item.entityId === input.slice.id &&
+        item.level === "blocker" &&
+        item.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE,
+    );
+  if (clearable.length === 0) return;
+  const reason = `Later worker run ${input.runId} passed targeted repair proof gate: ${input.gate.reason}`;
+  for (const escalation of clearable) {
+    input.store.clearEscalation(escalation.id, { reason, clearedBy: input.actor });
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason,
+          sliceId: input.slice.id,
+          workerRunId: input.runId,
+          repairProofGate: input.gate,
+          clearedAfterWorkerRepairProofPassed: true,
+        },
+      }),
+    );
+  }
+  input.store.addEvent(
+    createEvent({
+      actor: input.actor,
+      type: "worker.repair_proof_cleared",
+      entityType: "slice",
+      entityId: input.slice.id,
+      payload: {
+        runId: input.runId,
+        clearedEscalationIds: clearable.map((item) => item.id),
+        repairProofGate: input.gate,
+      },
+    }),
+  );
+}
+
 // FR-CP-001 / FR-CP-003: derive settled facts from DURABLE ledger state (never from
 // worker_result claims). Accepted SIBLING refs (entry.sliceId !== slice.id and a
 // terminal/passed ledger status) become settled context; the current slice's own refs
@@ -5891,6 +6200,30 @@ function readAndValidateWorkerResult(
         status: result.data.frAcCoverage.some((item) => item.ref === ref) ? "failed" : "missing_evidence",
         evidenceIds: [workerEvidence.id],
         proof: `Worker result status is ${result.data.status}.`,
+        verifiedBy: verifier,
+      })),
+    };
+  }
+  const persistedRepairProofGate = workerEvidence.payload.repairProofGate;
+  if (
+    persistedRepairProofGate &&
+    typeof persistedRepairProofGate === "object" &&
+    "passed" in persistedRepairProofGate &&
+    persistedRepairProofGate.passed === false
+  ) {
+    const reason =
+      "reason" in persistedRepairProofGate && typeof persistedRepairProofGate.reason === "string"
+        ? persistedRepairProofGate.reason
+        : "worker_result failed targeted repair proof gate";
+    return {
+      passed: false,
+      reason,
+      coveredRefs: result.data.frAcCoverage.filter((item) => item.status === "covered").map((item) => item.ref),
+      frAcResults: slice.frAcRefs.map((ref) => ({
+        ref,
+        status: result.data.frAcCoverage.some((item) => item.ref === ref) ? "failed" : "missing_evidence",
+        evidenceIds: [workerEvidence.id],
+        proof: reason,
         verifiedBy: verifier,
       })),
     };
@@ -8066,6 +8399,7 @@ Instructions:
 - If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Provide frAcCoverage for every in-scope FR/AC ref.
 - Map frAcCoverage evidence to the read-only verification obligations above.
+- If Targeted repair context is present, include repairProof entries for every listed repair-proof requirement. A generic "passed" result is not sufficient for a repair run.
 - Return status "passed" when your implementation work and worker evidence are complete, even though the harness will still run independent review and deterministic verification after you.
 - Do not return "needs_human" merely because independent review, deterministic verification, or final acceptance is still pending; those are normal harness phases.
 - Return "needs_human" only when a true human decision, clarification, or human verification is required by the source/obligations before the affected scope can safely proceed.
@@ -8075,6 +8409,7 @@ Instructions:
 
 function formatRepairContextForPrompt(context: SliceRepairContext | undefined): string {
   if (!context) return "";
+  const proofRequirements = buildRepairProofRequirements(context);
   const lines = [
     "Targeted repair context:",
     "- This section is prior review/human feedback for the current slice. It does not modify the immutable source refs or verification obligations.",
@@ -8112,6 +8447,13 @@ function formatRepairContextForPrompt(context: SliceRepairContext | undefined): 
       const reason = item.reason?.trim() ? ` Reason: ${item.reason.trim()}` : "";
       lines.push(`  - ${item.level}: ${item.message}${reason}`);
     }
+  }
+  if (proofRequirements.length > 0) {
+    lines.push(
+      "- Repair proof required in structured worker result:",
+      "  Include one repairProof[] entry for every line below. Use the exact source/ref/item values, set status to resolved only when you fixed or proved it, and include concrete evidence.",
+    );
+    for (const requirement of proofRequirements) lines.push(formatRepairProofRequirementForPrompt(requirement));
   }
   return `${lines.join("\n")}\n`;
 }

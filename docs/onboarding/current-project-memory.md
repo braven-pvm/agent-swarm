@@ -6,6 +6,27 @@ This file is the durable handoff memory for the current state of `agent-swarm`. 
 
 ## Latest Handoff Update
 
+2026-06-22 repair-proof hardening:
+
+- Latest H2 real run exposed a real repair-loop failure class: agents received concrete reviewer/human repair context, returned schema-valid `passed` worker results, but did not prove that they addressed the specific blockers. The harness now treats targeted repair proof as a generic engine invariant, not an H2-specific convention.
+- `workerResultSchema` now supports optional `repairProof[]` entries with `source` (`required_fix`, `non_passing_ref`, `human_feedback`, `active_blocker`), `ref`, `item`, `status`, evidence, changed files, and commands.
+- When a slice has targeted repair context, the worker prompt lists exact repair-proof requirements. `executeWorkerRun` validates the structured worker result against those requirements before marking the slice `implemented` or storing it in the result journal.
+- A generic repair result is now rejected before review: the slice stays `repairing`, the worker heartbeat is blocked, `worker.repair_proof_failed` is emitted, the worker-result evidence carries `repairProofGate`, and an active slice blocker says `Worker result did not address targeted repair context.`
+- Deterministic verification also refuses worker evidence whose persisted `repairProofGate.passed === false`.
+- H2 targeted repair dispatch now treats active scoped blockers as repair context, so a failed repair-proof gate becomes a fresh repair signal instead of a dead-end blocked slice.
+- Worker repair-proof blockers are agent-resolvable. A later worker result for the same slice that passes `repairProofGate` automatically clears the active blocker `Worker result did not address targeted repair context.`, emits `escalation.cleared` with `clearedAfterWorkerRepairProofPassed: true`, and emits `worker.repair_proof_cleared`. Review blockers still require independent review acceptance.
+- UI/API contract note is documented in `docs/architecture/local-control-api.md` under "Agent-Resolvable Repair Proof Blockers".
+- Focused verification passed:
+
+```text
+npm run build -> passed
+node --test tests\support-triage-live-runner.e2e.test.js -> 8/8 passing
+node --test tests\web-server.e2e.test.js tests\coverage.test.js tests\fr-focused.e2e.test.js tests\settled-facts.e2e.test.js tests\focus-packet.e2e.test.js -> 19/19 passing
+git diff --check -> clean
+```
+
+- A full `npm test` attempt hit the 10-minute wrapper timeout in the known long `tests/live-agent-runner.e2e.test.js` path; the leftover npm/node test processes were stopped. Do not count the full suite as passed for this slice until the long-runner timeout issue is addressed separately.
+
 2026-06-22 post-Workflow reassessment:
 
 - The Claude Workflow handoff has been implemented on `main` and pushed. Recent commits added schema-invalid result re-ask, shared driver result validation/persistence, lazy skeptic review in the live loop, lane-budget enforcement, bounded concurrent dependency-satisfied slice dispatch, deterministic overseer fast-paths, extracted hard run guards, ledger-derived settled facts in worker/revive prompts, structured focus/intervention packets, recovery `focus_consulted` events, and an opt-in content-addressed worker-result journal prototype.

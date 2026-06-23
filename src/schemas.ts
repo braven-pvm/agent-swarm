@@ -48,6 +48,20 @@ export const workerResultSchema = z.object({
       evidence: z.string(),
     }),
   ),
+  repairProof: z
+    .array(
+      z.object({
+        source: z.enum(["required_fix", "non_passing_ref", "human_feedback", "active_blocker"]),
+        ref: z.string().optional(),
+        item: z.string(),
+        status: z.enum(["resolved", "not_resolved", "not_applicable"]),
+        evidence: z.array(z.string()),
+        filesChanged: z.array(z.string()).optional(),
+        commandsRun: z.array(z.string()).optional(),
+        notes: z.string().optional(),
+      }),
+    )
+    .optional(),
   risks: z.array(z.string()),
   nextRecommendation: z.string(),
 });

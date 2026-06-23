@@ -189,6 +189,39 @@ Returns active and historical dev-server records.
 
 Stops the spawned process tree.
 
+## Agent-Resolvable Repair Proof Blockers
+
+Targeted repair workers must now prove that they addressed the exact prior repair context. This is exposed through existing snapshot/focus/event APIs; there is no separate UI write endpoint for clearing it.
+
+When a worker receives review/human/blocker repair context and returns a generic `passed` result without matching `repairProof[]`, the harness:
+
+- keeps the slice in `repairing`
+- creates an active slice escalation:
+  - `level`: `blocker`
+  - `message`: `Worker result did not address targeted repair context.`
+- records `repairProofGate` on the latest worker-result evidence payload
+- emits `worker.repair_proof_failed`
+
+The UI can observe this through:
+
+- `GET /api/snapshot` -> `activeEscalations[]`
+- `GET /api/snapshot` -> slice evidence with `kind === "worker_result"` and `payload.repairProofGate`
+- `GET /api/focus/slice/:sliceId`
+- `GET /api/stream` events
+
+When a later worker result for the same slice passes the repair-proof gate, the harness automatically clears only that worker-proof blocker and emits:
+
+- `escalation.cleared` with `payload.clearedAfterWorkerRepairProofPassed === true`
+- `worker.repair_proof_cleared`
+
+UI guidance:
+
+- Treat this blocker as agent-resolvable, not a human-action item.
+- Do not show it in the human verification queue unless a separate `human_required` action exists.
+- Show the blocker under active concerns/focus with the repair proof reason and latest worker evidence link.
+- The normal action is to continue the run or dispatch/allow the next targeted repair worker; the UI does not need a "resolve" button for this blocker.
+- If the blocker persists across retry budget exhaustion, show the retry-budget blocker/human escalation separately. That later escalation may require human intervention.
+
 ## Intended UI Flow
 
 1. Show human actions from `GET /api/human-actions`.

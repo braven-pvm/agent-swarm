@@ -293,6 +293,96 @@ test("support triage full smoke treats failed human verification as autonomous r
   assert.match(prompt, /Dropdowns and text inputs close or clear/);
 });
 
+test("support triage repair proof blocker clears after later worker passes proof gate", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-support-triage-repair-proof-${process.pid}-${Date.now()}`);
+  const fakeCodex = writeFakeCodexScript(path.join(repoRoot, ".swarm-demo", `test-h2-repair-proof-fake-codex-${process.pid}-${Date.now()}.mjs`));
+
+  execFileSync(
+    process.execPath,
+    [cli, "smoke", "live-agent", "reset", "--scenario", "live-agent-smoke-h2", "--workspace", workspace],
+    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const seeded = seedFailedHumanVerification(workspace);
+
+  const output = execFileSync(process.execPath, [cli, "run", seeded.sliceId, "--actor", "dashboard-worker", "--driver", "codex"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodex]),
+      FAKE_SWARM_CLI: cli,
+      FAKE_H2_OMIT_REPAIR_PROOF: "1",
+    },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 50 * 1024 * 1024,
+  });
+  assert.match(output, /repair proof gate: failed/);
+
+  let blockerId;
+  const store = new SwarmStore(workspace);
+  try {
+    const slice = store.listSlices().find((item) => item.id === seeded.sliceId);
+    assert.equal(slice?.status, "repairing");
+    const workerEvidence = store.listEvidence(seeded.sliceId).filter((item) => item.kind === "worker_result").at(-1);
+    assert.equal(workerEvidence?.payload.repairProofGate?.passed, false);
+    assert.match(String(workerEvidence?.payload.repairProofGate?.reason), /did not prove targeted repair completion/);
+    const blocker = store
+      .listEscalations("active")
+      .find((item) => item.entityType === "slice" && item.entityId === seeded.sliceId && item.message === "Worker result did not address targeted repair context.");
+    assert.ok(blocker);
+    blockerId = blocker.id;
+    assert.ok(store.listEvents().some((event) => event.type === "worker.repair_proof_failed" && event.entityId === seeded.sliceId));
+  } finally {
+    store.close();
+  }
+
+  const promptPath = fs
+    .readdirSync(path.join(workspace, ".swarm", "artifacts", seeded.sliceId))
+    .filter((name) => /^worker-prompt-.*\.md$/.test(name))
+    .map((name) => path.join(workspace, ".swarm", "artifacts", seeded.sliceId, name))
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0];
+  const prompt = fs.readFileSync(promptPath, "utf8");
+  assert.match(prompt, /Repair proof required in structured worker result/);
+  assert.match(prompt, /source=human_feedback/);
+
+  const repairOutput = execFileSync(process.execPath, [cli, "run", seeded.sliceId, "--actor", "dashboard-worker", "--driver", "codex"], {
+    cwd: workspace,
+    env: {
+      ...process.env,
+      SWARM_CODEX_COMMAND: process.execPath,
+      SWARM_CODEX_ARGS: JSON.stringify([fakeCodex]),
+      FAKE_SWARM_CLI: cli,
+    },
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 50 * 1024 * 1024,
+  });
+  assert.match(repairOutput, /Worker completed/);
+
+  const repairedStore = new SwarmStore(workspace);
+  try {
+    const slice = repairedStore.listSlices().find((item) => item.id === seeded.sliceId);
+    assert.equal(slice?.status, "implemented");
+    const latestWorkerEvidence = repairedStore.listEvidence(seeded.sliceId).filter((item) => item.kind === "worker_result").at(-1);
+    assert.equal(latestWorkerEvidence?.payload.repairProofGate?.passed, true);
+    assert.equal(
+      repairedStore
+        .listEscalations("active")
+        .some((item) => item.id === blockerId || (item.entityId === seeded.sliceId && item.message === "Worker result did not address targeted repair context.")),
+      false,
+    );
+    assert.ok(
+      repairedStore
+        .listEvents()
+        .some((event) => event.type === "escalation.cleared" && event.entityId === blockerId && event.payload?.clearedAfterWorkerRepairProofPassed === true),
+    );
+    assert.ok(repairedStore.listEvents().some((event) => event.type === "worker.repair_proof_cleared" && event.entityId === seeded.sliceId));
+  } finally {
+    repairedStore.close();
+  }
+});
+
 test("support triage full smoke stops high-retry repair loops with a visible blocker", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-support-triage-retry-budget-${process.pid}-${Date.now()}`);
   const summaryPath = path.join(workspace, "h2-live-summary.json");
@@ -893,6 +983,17 @@ function overseerDecision(prompt) {
 
 function workerResult(refs) {
   const selectedRefs = refs.length ? refs : ["AC-SUP-API-001.1"];
+  const repairProof = process.env.FAKE_H2_OMIT_REPAIR_PROOF
+    ? []
+    : extractRepairProofRequirements(prompt).map((requirement) => ({
+        source: requirement.source,
+        ref: requirement.ref === "-" ? undefined : requirement.ref,
+        item: requirement.item,
+        status: "resolved",
+        evidence: ["fake worker resolved targeted repair requirement"],
+        filesChanged: ["src/support-api.js", "test/support-api.test.js"],
+        commandsRun: ["node --test"]
+      }));
   return {
     status: "passed",
     summary: "Fake worker completed H2 backend slice evidence for live-run wiring.",
@@ -900,9 +1001,19 @@ function workerResult(refs) {
     commandsRun: ["node --test"],
     testsRun: ["node --test"],
     frAcCoverage: selectedRefs.map((ref) => ({ ref, status: "covered", evidence: "Fake worker evidence for bounded H2 live-run wiring." })),
+    ...(repairProof.length > 0 ? { repairProof } : {}),
     risks: [],
     nextRecommendation: "Run independent review."
   };
+}
+
+function extractRepairProofRequirements(prompt) {
+  return [...prompt.matchAll(/source=([^;]+); ref=([^;]+); evidenceId=([^;]+); item="([^"]+)"/g)].map((match) => ({
+    source: match[1].trim(),
+    ref: match[2].trim(),
+    evidenceId: match[3].trim(),
+    item: match[4].trim()
+  }));
 }
 
 function reviewResult(refs) {
