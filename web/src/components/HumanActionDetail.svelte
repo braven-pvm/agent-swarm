@@ -32,12 +32,15 @@
     action.sliceId ? store.snapshot?.slices.find((s) => s.id === action.sliceId) : undefined,
   );
   const review = $derived(slice?.reviewResult);
+  const reviewTarget = $derived(action.reviewTarget);
+  const reviewExpectedOutcomes = $derived(reviewTarget?.expectedOutcomes ?? []);
+  const reviewInstructions = $derived(reviewTarget?.instructions ?? []);
 
   // The registered target this action's slice belongs to → its NAME, which the dev-server start
   // endpoint accepts. Resolved from the snapshot (slice.targetId → targets[].name). Undefined when
   // there's no slice or no matching target; the verify affordance degrades gracefully then.
   const verifyTargetName = $derived(
-    slice ? store.snapshot?.targets.find((t) => t.id === slice.targetId)?.name : undefined,
+    reviewTarget?.targetName ?? (slice ? store.snapshot?.targets.find((t) => t.id === slice.targetId)?.name : undefined),
   );
 
   // Blocker reasons: the active escalations whose entity is THIS action's entity or its slice. These
@@ -105,7 +108,10 @@
       requiredFixes.length > 0 ||
       recommendation != null ||
       openFindings.length > 0 ||
-      interventions.length > 0,
+      interventions.length > 0 ||
+      reviewTarget != null ||
+      reviewExpectedOutcomes.length > 0 ||
+      reviewInstructions.length > 0,
   );
 
   // ── Form state (per the action currently open). Reset whenever the action id changes. ──
@@ -240,6 +246,37 @@
         {#if recommendation}<p class="ha-recommendation">{recommendation}</p>{/if}
       {/if}
 
+      {#if reviewTarget}
+        <div class="run-subhead">Verification target</div>
+        <div class="kv-list">
+          {#if reviewTarget.targetName}<div class="kv"><b>target</b><code>{reviewTarget.targetName}</code></div>{/if}
+          {#if reviewTarget.targetPathRelative}<div class="kv"><b>path</b><code>{reviewTarget.targetPathRelative}</code></div>{/if}
+          {#if reviewTarget.startCommand}<div class="kv"><b>command</b><code>{reviewTarget.startCommand}</code></div>{/if}
+          {#if reviewTarget.commandSource}<div class="kv"><b>source</b>{reviewTarget.commandSource}</div>{/if}
+          {#if reviewTarget.responsibleParty}<div class="kv"><b>owner</b>{reviewTarget.responsibleParty}</div>{/if}
+        </div>
+
+        {#if reviewTarget.requirementText}
+          <div class="run-subhead">Requirement text</div>
+          <p class="ha-recommendation">{reviewTarget.requirementText}</p>
+        {/if}
+
+        {#if reviewTarget.requirementContext}
+          <div class="run-subhead">Source context</div>
+          <p class="ha-recommendation">{truncate(reviewTarget.requirementContext, 420)}</p>
+        {/if}
+      {/if}
+
+      {#if reviewExpectedOutcomes.length > 0}
+        <div class="run-subhead">Verification checklist</div>
+        <ul class="ha-interventions">{#each reviewExpectedOutcomes as outcome}<li>{outcome}</li>{/each}</ul>
+      {/if}
+
+      {#if reviewInstructions.length > 0}
+        <div class="run-subhead">Review instructions</div>
+        <ul class="ha-interventions">{#each reviewInstructions as instruction}<li>{instruction}</li>{/each}</ul>
+      {/if}
+
       {#if review}
         <div class="run-subhead">Review verdict</div>
         <div class="ha-verdict-row">
@@ -294,7 +331,15 @@
     {:else if cmd.kind === "record_human_verification"}
       <!-- Visual-verification affordance: start the review dev server + open its URL before sign-off.
            Self-contained (own in-flight + error state); a failed start does NOT block the form below. -->
-      {#if verifyTargetName}<DevServerVerify targetName={verifyTargetName} />{/if}
+      {#if reviewTarget || verifyTargetName}
+        <DevServerVerify
+          targetName={verifyTargetName}
+          commandName={reviewTarget?.commandName}
+          startAvailable={reviewTarget?.startAvailable ?? true}
+          unavailableReason={reviewTarget?.startUnavailableReason}
+          startCommand={reviewTarget?.startCommand}
+        />
+      {/if}
       {#if isReworkAction}
         <p class="ha-notice ha-notice-warn" role="note">
           This item already has a failed human verification. Recording another result updates the defect note; current servers should move it out of the human queue and hand it back to agent repair.

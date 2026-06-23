@@ -84,15 +84,15 @@ describe("control lib — request assembly", () => {
     expect(f2.body).toEqual({ runId: "RUN-3", actor: "human-ui" });
   });
 
-  it("postDevServerStart sends targetName, with port only when provided", async () => {
+  it("postDevServerStart sends targetName, with commandName/port only when provided", async () => {
     const f = stubFetch({ ok: true, server: {} });
     await postDevServerStart({ targetName: "support-ui" });
     expect(f.path).toBe("/api/control/dev-server/start");
     expect(f.body).toEqual({ targetName: "support-ui" });
 
     const f2 = stubFetch({ ok: true });
-    await postDevServerStart({ targetName: "support-ui", port: 4322 });
-    expect(f2.body).toEqual({ targetName: "support-ui", port: 4322 });
+    await postDevServerStart({ targetName: "support-ui", commandName: "review", port: 4322 });
+    expect(f2.body).toEqual({ targetName: "support-ui", commandName: "review", port: 4322 });
   });
 
   it("postDevServerStop posts to the id-scoped stop path with an empty body", async () => {

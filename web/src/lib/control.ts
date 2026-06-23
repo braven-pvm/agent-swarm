@@ -172,9 +172,10 @@ export function postRecoveryRestart(opts: {
   return postJson("/api/control/recovery/restart", body);
 }
 
-/** POST /api/control/dev-server/start — start `npm run start` for a registered target. */
-export function postDevServerStart(opts: { targetName: string; port?: number }): Promise<ControlResult> {
+/** POST /api/control/dev-server/start — start the registered review command for a target. */
+export function postDevServerStart(opts: { targetName: string; commandName?: string; port?: number }): Promise<ControlResult> {
   const body: Record<string, unknown> = { targetName: opts.targetName };
+  if (opts.commandName) body.commandName = opts.commandName;
   if (opts.port != null) body.port = opts.port;
   return postJson("/api/control/dev-server/start", body);
 }

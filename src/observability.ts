@@ -903,9 +903,10 @@ function inferredParentFrRef(ref: string): string | undefined {
 }
 
 function directLedgerStatus(row: CoverageRef): RequirementLedgerStatus {
-  if (row.verification === "human_input_required" || hasHumanRequiredEscalation(row)) return "human_input_required";
+  if (row.verification === "human_input_required") return "human_input_required";
   if (row.verification === "human_verified") return row.sliceStatus === "accepted" || row.sliceStatus === "closed" ? "accepted" : "human_verified";
   if (row.verification === "awaiting_human_verification") return "awaiting_human_verification";
+  if (hasHumanRequiredEscalation(row)) return "human_input_required";
   if (row.verification === "failed" || row.reviewStatus === "failed" || row.status === "failed") return "failed";
   if (row.status === "blocked") return "blocked";
   if (row.status === "not_started") return "not_started";

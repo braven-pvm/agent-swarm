@@ -63,6 +63,18 @@ const validWorker = {
   commandsRun: ["npm test"],
   testsRun: ["npm test"],
   frAcCoverage: [{ ref: "AC-1", status: "covered", evidence: "test output" }],
+  repairProof: [
+    {
+      source: "required_fix",
+      ref: "",
+      item: "Repair the targeted issue.",
+      status: "resolved",
+      evidence: ["test output"],
+      filesChanged: ["src/app.ts"],
+      commandsRun: ["npm test"],
+      notes: "",
+    },
+  ],
   risks: [],
   nextRecommendation: "ship it",
 };
@@ -93,7 +105,7 @@ const validSkeptic = {
   summary: "challenged the review findings independently",
   challengedReviewStatus: "accepted",
   findingVerdicts: [
-    { ref: "AC-1", source: "fr_ac_finding", verdict: "real", severity: "major", reasoning: "confirmed by independent inspection" },
+    { ref: "AC-1", dimension: "", source: "fr_ac_finding", verdict: "real", severity: "major", reasoning: "confirmed by independent inspection" },
   ],
   recommendation: "no change needed",
 };
@@ -121,7 +133,7 @@ const roles = [
     // held to. The generated schema must match this exactly.
     expectedRequired: [
       "status", "summary", "changedFiles", "commandsRun", "testsRun",
-      "frAcCoverage", "risks", "nextRecommendation",
+      "frAcCoverage", "repairProof", "risks", "nextRecommendation",
     ],
     // Malformed inputs both Zod safeParse AND the JSON Schema must reject.
     zodRejects: [
@@ -136,6 +148,15 @@ const roles = [
     stricterThanZod: [
       { label: "extra unknown top-level field", make: (v) => ({ ...structuredClone(v), bogus: true }) },
       { label: "extra unknown nested field", make: (v) => { const c = structuredClone(v); c.frAcCoverage[0].bogus = 1; return c; } },
+      {
+        label: "missing defaulted repairProof nested fields",
+        make: (v) => {
+          const c = structuredClone(v);
+          c.repairProof = [{ source: "required_fix", item: "Repair the targeted issue.", status: "resolved", evidence: ["x"] }];
+          return c;
+        },
+      },
+      { label: "missing defaulted repairProof", make: (v) => { const c = structuredClone(v); delete c.repairProof; return c; } },
     ],
   },
   {
@@ -176,6 +197,15 @@ const roles = [
     stricterThanZod: [
       { label: "extra unknown top-level field", make: (v) => ({ ...structuredClone(v), bogus: true }) },
       { label: "extra unknown nested findingVerdicts field", make: (v) => { const c = structuredClone(v); c.findingVerdicts[0].bogus = 1; return c; } },
+      {
+        label: "missing defaulted skeptic verdict ref/dimension",
+        make: (v) => {
+          const c = structuredClone(v);
+          delete c.findingVerdicts[0].ref;
+          delete c.findingVerdicts[0].dimension;
+          return c;
+        },
+      },
     ],
   },
   {
@@ -255,6 +285,7 @@ for (const role of roles) {
 
     // Every nested object must also forbid additional properties (strictness invariant).
     assertNoOpenObjects(json);
+    assertNestedObjectsRequireEveryProperty(json);
   });
 
   test(`${role.name}: generation is deterministic`, () => {
@@ -277,5 +308,24 @@ function assertNoOpenObjects(node) {
       assert.equal(node.additionalProperties, false, "every object node must forbid additional properties");
     }
     for (const value of Object.values(node)) assertNoOpenObjects(value);
+  }
+}
+
+/** Codex/OpenAI strict response schemas reject nested object properties that are
+ * present in properties but absent from required. Root role objects keep the
+ * proven harness contract, but every nested object must be fully required. */
+function assertNestedObjectsRequireEveryProperty(node, isRoot = true, path = "$") {
+  if (Array.isArray(node)) {
+    node.forEach((item, index) => assertNestedObjectsRequireEveryProperty(item, false, `${path}[${index}]`));
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  if (node.type === "object" && !isRoot) {
+    const props = Object.keys(node.properties ?? {}).sort();
+    const required = [...(node.required ?? [])].sort();
+    assert.deepEqual(required, props, `${path}: nested object required[] must include every property for strict driver schemas`);
+  }
+  for (const [key, value] of Object.entries(node)) {
+    assertNestedObjectsRequireEveryProperty(value, false, `${path}.${key}`);
   }
 }

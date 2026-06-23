@@ -6,18 +6,30 @@
   // which stays available either way (per docs/architecture/local-control-api.md, "intended UI flow").
   import { postDevServerStart } from "~/lib/control";
 
-  let { targetName }: { targetName: string | undefined } = $props();
+  let {
+    targetName,
+    commandName,
+    startAvailable = true,
+    unavailableReason,
+    startCommand,
+  }: {
+    targetName: string | undefined;
+    commandName?: string;
+    startAvailable?: boolean;
+    unavailableReason?: string;
+    startCommand?: string;
+  } = $props();
 
   let starting = $state(false);
   let error = $state<string | undefined>(undefined);
   let result = $state<{ targetName?: string; url?: string; status?: string; stderrHref?: string } | null>(null);
 
   async function start() {
-    if (starting || !targetName) return; // no double-submit; need a resolvable target
+    if (starting || !targetName || !startAvailable) return; // no double-submit; need a runnable target
     starting = true;
     error = undefined;
     result = null;
-    const res = await postDevServerStart({ targetName });
+    const res = await postDevServerStart({ targetName, commandName });
     if (res.ok) {
       const s = (res.data?.server ?? res.data ?? {}) as Record<string, unknown>;
       result = {
@@ -43,12 +55,15 @@
   <div class="run-subhead">Verify visually</div>
   <p class="ha-verify-lede muted">
     Start the review dev server{#if targetName} for <code class="mono">{targetName}</code>{/if} and open it in a new tab to check the product before recording sign-off.
+    {#if startCommand}<br /><span>Command: <code class="mono">{startCommand}</code></span>{/if}
   </p>
-  <button class="ctl-btn ha-verify-btn" type="button" disabled={starting || !targetName} onclick={start}>
+  <button class="ctl-btn ha-verify-btn" type="button" disabled={starting || !targetName || !startAvailable} onclick={start}>
     {starting ? "Starting…" : "Start dev server to verify"}
   </button>
   {#if !targetName}
     <p class="empty ha-verify-hint">No resolvable target for this action — verify against the running product directly.</p>
+  {:else if !startAvailable}
+    <p class="empty ha-verify-hint">{unavailableReason ?? "This target does not expose a runnable review command."}</p>
   {/if}
 
   {#if error}<p class="error ha-error ha-verify-err" role="alert">{error}</p>{/if}

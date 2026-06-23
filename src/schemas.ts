@@ -52,16 +52,16 @@ export const workerResultSchema = z.object({
     .array(
       z.object({
         source: z.enum(["required_fix", "non_passing_ref", "human_feedback", "active_blocker"]),
-        ref: z.string().optional(),
+        ref: z.string().default(""),
         item: z.string(),
         status: z.enum(["resolved", "not_resolved", "not_applicable"]),
         evidence: z.array(z.string()),
-        filesChanged: z.array(z.string()).optional(),
-        commandsRun: z.array(z.string()).optional(),
-        notes: z.string().optional(),
+        filesChanged: z.array(z.string()).default([]),
+        commandsRun: z.array(z.string()).default([]),
+        notes: z.string().default(""),
       }),
     )
-    .optional(),
+    .default([]),
   risks: z.array(z.string()),
   nextRecommendation: z.string(),
 });
@@ -126,8 +126,8 @@ export const reviewResultSchema = z.object({
 export type ReviewResult = z.infer<typeof reviewResultSchema>;
 
 export const skepticFindingVerdictSchema = z.object({
-  ref: z.string().optional(), // FR/AC ref when challenging a frAcFinding (e.g. "AC-INV-001.1")
-  dimension: z.string().optional(), // sleuth dimension when challenging a qualityGate dimension (e.g. "runtime_path")
+  ref: z.string().default(""), // FR/AC ref when challenging a frAcFinding (e.g. "AC-INV-001.1")
+  dimension: z.string().default(""), // sleuth dimension when challenging a qualityGate dimension (e.g. "runtime_path")
   source: z.enum(["fr_ac_finding", "quality_dimension", "required_fix", "escalation"]),
   verdict: z.enum(["real", "refuted", "uncertain"]),
   severity: z.enum(["blocker", "major", "minor", "nit"]),

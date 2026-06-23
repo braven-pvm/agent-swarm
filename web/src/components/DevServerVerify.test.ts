@@ -57,6 +57,27 @@ describe("DevServerVerify", () => {
     expect(f.fetchMock).not.toHaveBeenCalled();
   });
 
+  it("uses the action-specific review command when one is provided", async () => {
+    const f = stubFetch({ ok: true, server: { targetName: "support-ui", status: "running", url: "http://127.0.0.1:4322/" } });
+    const { getByText } = render(DevServerVerify, {
+      props: { targetName: "support-ui", commandName: "review", startCommand: "npm run review" },
+    });
+    expect(getByText(/Command:/).textContent).toContain("npm run review");
+    await fireEvent.click(getByText("Start dev server to verify"));
+    await waitFor(() => expect(f.fetchMock).toHaveBeenCalledTimes(1));
+    expect(f.body).toEqual({ targetName: "support-ui", commandName: "review" });
+  });
+
+  it("disables start when the review target has no runnable command", () => {
+    const f = stubFetch({ ok: true });
+    const { getByText } = render(DevServerVerify, {
+      props: { targetName: "support-ui", startAvailable: false, unavailableReason: "No review command." },
+    });
+    expect((getByText("Start dev server to verify") as HTMLButtonElement).disabled).toBe(true);
+    expect(getByText("No review command.")).toBeTruthy();
+    expect(f.fetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not double-submit while a start is in flight", async () => {
     // Hang the first request so the in-flight guard (`starting`) is still set on the second click.
     let resolve!: (v: unknown) => void;

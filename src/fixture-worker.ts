@@ -55,6 +55,7 @@ function implementInvoiceSlice(input: {
       status: "covered",
       evidence: coverageEvidence(ref),
     })),
+    repairProof: [],
     risks: [],
     nextRecommendation: "Run harness verification.",
   };
@@ -242,6 +243,7 @@ test("returns dashboard model composed from accepted invoice capabilities", () =
       status: "covered",
       evidence: "Dashboard model behavior is covered by dashboard tests.",
     })),
+    repairProof: [],
     risks: [],
     nextRecommendation: "Run harness verification.",
   };
@@ -270,6 +272,7 @@ function implementSupportApiSlice(input: {
       status: "covered",
       evidence: supportEvidence(ref),
     })),
+    repairProof: [],
     risks: [],
     nextRecommendation: "Run independent review and deterministic verification.",
   };
@@ -302,6 +305,7 @@ function implementSupportUiSlice(input: {
       status: "covered",
       evidence: supportEvidence(ref),
     })),
+    repairProof: [],
     risks: [],
     nextRecommendation: "Run independent review, deterministic verification, and human verification where required.",
   };

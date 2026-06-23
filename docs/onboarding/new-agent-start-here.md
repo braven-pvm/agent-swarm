@@ -1,12 +1,28 @@
 # New Agent Start Here
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 This repository is an agentic development harness prototype. It exists to coordinate autonomous implementation agents against approved immutable requirements at scale, while keeping planning, work, verification, evidence, recovery, and progress visible.
 
 If you are a fresh Codex instance, start here before editing code.
 
 ## Latest State
+
+2026-06-23 repair-budget reset hardening:
+
+- Repair retry exhaustion is now an audit-visible safety stop with an explicit reset path, not a permanent dead end. To approve another focused repair attempt:
+
+```powershell
+node dist\cli.js recovery reset-repair-budget SLICE-... --reason "human approved another focused repair attempt" --actor human-ui
+```
+
+- The command emits `repair.retry_budget_reset`, clears only active `Repair retry budget exhausted.` blockers for that slice, and preserves all historical agent runs.
+- H2 repair-budget checks count only worker/reviewer runs in the latest retry epoch. A reset lets the next `smoke live-agent full` continuation dispatch repair again instead of immediately stopping on old retry pressure.
+- Worker-proof, retry-budget, and stale-run blockers are excluded from `repairProof[]` requirements. They remain visible signals, but workers must prove the real underlying repair cause from review findings, non-passing refs, failed human feedback, or other canonical operational blockers.
+- Live restart after this change exposed a strict structured-output schema issue: Codex/OpenAI requires every root and nested object property in `required`. `repairProof` is now required with default `[]`, repair-proof and skeptic optional-looking fields are required-with-defaults, and worker prompts say to emit an empty proof array when no targeted repair context exists.
+- Direct worker restarts also exposed a stale-artifact recovery bug: a pre-existing fixed `worker-result.json` could be validated after a child produced no fresh result, and an interrupted later worker could erase prior valid proof. Worker result/event/stderr artifacts are now run-scoped (`worker-result-RUN-....json`, `worker-events-RUN-....jsonl`, `worker-stderr-RUN-....log`); artifact recovery validates only the current run's unique result path.
+- Verification now clears stale-run blockers when a later successful same-role run supersedes the stale run, emitting `escalation.cleared` with `clearedAfterVerificationSupersededRun: true`. Old recovery state should not permanently block a repaired and reviewed slice.
+- Focused verification: `npm run build`, `node --test tests\invoice-demo.e2e.test.js` (`12/12`), `node --test tests\result-journal.e2e.test.js` (`6/6`), `node --test tests\schema-parity.test.js` (`20/20`), `node --test tests\structured-result-reask.e2e.test.js` (`6/6`), and `node --test tests\support-triage-live-runner.e2e.test.js` (`9/9`) passed.
 
 2026-06-22 repair-proof hardening:
 
@@ -412,6 +428,7 @@ Run-mode boundary:
 - Phase 10C-2D derived-ledger UI contract: the requirement ledger stays derived for now, not persisted as a separate table. The Coverage UI consumes ledger status, direct status, rollup reason, obligation mode, human packet/result status, and ledger filtering from `/api/coverage`. Persisted ledger snapshots are deferred until real status-sink/history needs justify them.
 - Phase 10C-2E compact status-sink ledger contract: `src/status-sink.ts` defines `StatusSink`, `StatusUpdate`, and `buildStatusSinkLedgerSummary()`. Status sinks may receive an outbound derived ledger summary with completion, attention, human, rollup, bucket, and next-ref fields, but `/api/coverage` remains canonical full detail.
 - Phase 11D H2 repair-loop hardening: after a real support-triage run looped on failed human UI verification, worker prompts now receive targeted repair context from reviewer `requiredFixes`, failed/needs-rework human notes, and active blockers. H2 direct-runs one targeted repair worker when concrete repair context exists, then enforces `--max-repair-attempts` with a visible blocker instead of endless inspect/recommend churn. `/api/control/commands` now exposes live `activity` for long-running control commands.
+- Phase 11D human visual QA action hardening: reviewer `status: human_required` with FR/AC findings that are missing only the required human visual QA now becomes concrete `awaiting_human_verification` verifier results plus packet artifacts. `/api/human-actions` returns `human_verification` actions with `reviewTarget` details, expected outcomes, packet links, and `startAction.bodyTemplate`; the web drawer renders those details and starts the target review command with `commandName`. Generic slice-level human-required escalations are suppressed from the operator queue once actionable per-FR/AC visual QA packets exist.
 
 ## Next Coherent Slice
 

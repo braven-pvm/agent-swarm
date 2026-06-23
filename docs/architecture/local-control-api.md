@@ -222,6 +222,25 @@ UI guidance:
 - The normal action is to continue the run or dispatch/allow the next targeted repair worker; the UI does not need a "resolve" button for this blocker.
 - If the blocker persists across retry budget exhaustion, show the retry-budget blocker/human escalation separately. That later escalation may require human intervention.
 
+### Repair Retry Budget Reset
+
+Repair retry budget exhaustion is an audit-visible safety stop, not permanent state. A human/recovery actor can start a fresh repair epoch without deleting old agent runs:
+
+```powershell
+node dist\cli.js recovery reset-repair-budget SLICE-... --reason "human approved one more focused repair attempt" --actor human-ui
+```
+
+The command:
+
+- emits `repair.retry_budget_reset` on the slice
+- clears active `Repair retry budget exhausted.` blockers for that slice only
+- preserves all historical worker/reviewer runs for audit and focus packets
+- makes subsequent H2/full-product repair-budget checks count only worker/reviewer runs started after the latest reset event
+
+It does not clear review blockers, failed human feedback, worker-proof blockers, stale-run blockers, or source/spec blockers. Those remain visible recovery/repair context. Worker-proof, retry-budget, and stale-run blockers can act as visibility or dispatch signals, but are filtered out of `repairProof[]` requirements so workers prove the canonical review/human/operational repair cause rather than a self-referential harness blocker.
+
+Current UI/API note: this is CLI-backed in the engine. If the UI needs a button, expose a small trusted-local control endpoint that runs the same `recovery reset-repair-budget` action and then calls `POST /api/control/continue`.
+
 ## Intended UI Flow
 
 1. Show human actions from `GET /api/human-actions`.

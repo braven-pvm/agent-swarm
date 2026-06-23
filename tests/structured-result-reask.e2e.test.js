@@ -177,6 +177,52 @@ test("anti-drift: a crashed run (non-zero exit, no result event, no artifact) bl
   }
 });
 
+test("anti-drift: pre-existing legacy worker-result artifact is ignored by a fresh run", () => {
+  const { workspace, sliceId, fakeCodexScript } = setupRun("reask-stale-artifact", writeFakeCodexNoArtifact);
+  const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+  const staleResultPath = path.join(artifactDir, "worker-result.json");
+  fs.mkdirSync(artifactDir, { recursive: true });
+  fs.writeFileSync(
+    staleResultPath,
+    `${JSON.stringify({
+      status: "passed",
+      summary: "stale worker result that must not be reused",
+      changedFiles: [],
+      commandsRun: ["npm test"],
+      testsRun: ["npm test"],
+      frAcCoverage: [{ ref: "AC-INV-001.1", status: "covered", evidence: "stale evidence" }],
+      risks: [],
+      nextRecommendation: "continue",
+    })}\n`,
+    "utf8",
+  );
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "codex", "--actor", "stale-artifact-worker"], {
+    SWARM_CODEX_COMMAND: process.execPath,
+    SWARM_CODEX_ARGS: JSON.stringify([fakeCodexScript]),
+    SWARM_AGENT_IDLE_TIMEOUT_SECONDS: "30",
+  });
+
+  const store = new SwarmStore(workspace);
+  try {
+    const slice = store.listSlices().find((item) => item.id === sliceId);
+    assert.equal(slice?.status, "blocked");
+    const run = store.listAgentRuns().find((item) => item.actor === "stale-artifact-worker");
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.resultPath, undefined);
+    assert.equal(fs.existsSync(staleResultPath), true, "legacy worker-result.json is no longer the current-run artifact path");
+
+    const completed = store
+      .listEvents()
+      .find((item) => item.type === "worker.completed" && item.actor === "stale-artifact-worker");
+    assert.equal(completed?.payload.ok, false);
+    assert.equal(completed?.payload.failureClass, "missing_result");
+    assert.equal(completed?.payload.resultArtifactRecovered, false);
+  } finally {
+    store.close();
+  }
+});
+
 function setupRun(label, writeFake) {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-${label}-${process.pid}-${Date.now()}`);
   const target = path.join(workspace, "invoice-api");

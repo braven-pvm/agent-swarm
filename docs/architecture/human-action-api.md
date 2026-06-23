@@ -68,6 +68,8 @@ For `human_verification` and `human_verification_rework`, `reviewTarget` tells t
 
 If `startAvailable` is false, the UI should not present blind sign-off as the primary path. Show `startUnavailableReason`, packet/source/focus links, expected outcomes, and a disabled or warning state until the target has a runnable review command or another concrete artifact such as a screenshot/DOM proof is available.
 
+Verifier edge case: a reviewer may legitimately return `status: human_required` while its per-FR/AC findings are `missing_evidence` only because the missing evidence is the required human visual QA. When the slice obligations are `human_verification_required` and the quality gate has no blocking concerns/high-risk dimensions, the verifier converts that state into concrete `human_verification` actions and packet artifacts. The UI should treat those as actionable review work, not as generic clarification/decision work.
+
 ### `POST /api/escalations/:id/clear`
 
 Clears an active escalation.

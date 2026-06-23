@@ -53,6 +53,8 @@ const maxRepairAttempts = positiveInt(args["max-repair-attempts"], 8);
 const mode = args.mode ?? "full-product";
 const runStartedAt = new Date().toISOString();
 const runId = safeRunId(args["run-id"] ?? `H2-${compactTimestamp(runStartedAt)}-${process.pid}`);
+const WORKER_REPAIR_PROOF_BLOCKER_MESSAGE = "Worker result did not address targeted repair context.";
+const REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE = "Repair retry budget exhausted.";
 // SC-1 concurrency budget (SC-2's maxActiveLanes), read from the protocol with the same precedence as
 // planner.ts resolveMaxActiveLanes. No src change (Option B) — read protocol from dist.
 const concurrencyBudget = resolveConcurrencyBudget();
@@ -924,6 +926,34 @@ function isActiveSlice(slice) {
   return !["accepted", "closed"].includes(slice.status);
 }
 
+function repairBudgetView(store, sliceId, runs) {
+  const reset = latestRepairBudgetReset(store, sliceId);
+  if (!reset) {
+    return {
+      resetAt: undefined,
+      resetEventId: undefined,
+      runsInEpoch: runs,
+      retryCount: maxAttempt(runs),
+    };
+  }
+  const resetTime = Date.parse(reset.timestamp);
+  const runsInEpoch = runs.filter((run) => Date.parse(run.startedAt ?? run.updatedAt ?? "") > resetTime);
+  return {
+    resetAt: reset.timestamp,
+    resetEventId: reset.id,
+    runsInEpoch,
+    retryCount: runsInEpoch.length,
+  };
+}
+
+function latestRepairBudgetReset(store, sliceId) {
+  return store
+    .listEvents()
+    .filter((event) => event.type === "repair.retry_budget_reset" && event.entityType === "slice" && event.entityId === sliceId)
+    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp))
+    .at(-1);
+}
+
 function inspectRepairRetryBudget(snapshot) {
   return withStore((store) => {
     const activeSlices = store.listSlices().filter((slice) => isActiveSlice(slice));
@@ -931,9 +961,10 @@ function inspectRepairRetryBudget(snapshot) {
       const repairContext = buildH2RepairContext(store, slice);
       if (!repairContext.hasRepairContext) continue;
       const runs = store.listAgentRuns().filter((run) => run.sliceId === slice.id && (run.role === "worker" || run.role === "reviewer"));
-      const retryCount = maxAttempt(runs);
+      const budget = repairBudgetView(store, slice.id, runs);
+      const retryCount = budget.retryCount;
       if (retryCount < maxRepairAttempts) continue;
-      const latestRun = latestAgentRun(runs);
+      const latestRun = latestAgentRun(budget.runsInEpoch) ?? latestAgentRun(runs);
       const reason = `Repair retry budget exhausted for ${slice.id}: retryCount ${retryCount} >= ${maxRepairAttempts}. Latest ${latestRun?.role ?? "agent"} run ${latestRun?.id ?? "unknown"} is ${latestRun?.status ?? "unknown"}.`;
       return {
         exhausted: true,
@@ -942,6 +973,7 @@ function inspectRepairRetryBudget(snapshot) {
         status: slice.status,
         retryCount,
         maxRepairAttempts,
+        resetAt: budget.resetAt,
         latestRun: latestRun
           ? { id: latestRun.id, role: latestRun.role, actor: latestRun.actor, status: latestRun.status, attempt: latestRun.attempt }
           : undefined,
@@ -959,18 +991,19 @@ function findTargetedRepairDispatch(snapshot) {
     for (const slice of store.listSlices().filter((item) => ["repairing", "blocked"].includes(item.status))) {
       const runs = store.listAgentRuns().filter((run) => run.sliceId === slice.id && (run.role === "worker" || run.role === "reviewer"));
       if (runs.some((run) => run.status === "running")) continue;
-      const retryCount = maxAttempt(runs);
+      const budget = repairBudgetView(store, slice.id, runs);
+      const retryCount = budget.retryCount;
       if (retryCount >= maxRepairAttempts) continue;
       const repairContext = buildH2RepairContext(store, slice);
       if (!repairContext.hasRepairContext) continue;
       const latestRepairTime = Date.parse(repairContext.latestRepairAt ?? "");
       if (!Number.isFinite(latestRepairTime)) continue;
-      const latestWorkerAfterRepair = runs
+      const latestWorkerAfterRepair = budget.runsInEpoch
         .filter((run) => run.role === "worker" && Date.parse(run.startedAt) > latestRepairTime)
         .sort(compareAgentRunTime)
         .at(-1);
       if (latestWorkerAfterRepair) continue;
-      const latestRun = latestAgentRun(runs);
+      const latestRun = latestAgentRun(budget.runsInEpoch) ?? latestAgentRun(runs);
       if (latestRun?.role === "worker" && latestRun.status === "completed") continue;
       const target = targetById.get(slice.targetId);
       const actor = h2WorkerActorForTarget(target, slice);
@@ -980,6 +1013,7 @@ function findTargetedRepairDispatch(snapshot) {
         status: slice.status,
         retryCount,
         maxRepairAttempts,
+        resetAt: budget.resetAt,
         latestRepairAt: repairContext.latestRepairAt,
         latestRun: latestRun
           ? { id: latestRun.id, role: latestRun.role, actor: latestRun.actor, status: latestRun.status, attempt: latestRun.attempt }
@@ -1014,9 +1048,21 @@ function buildH2RepairContext(store, slice) {
       createdAt: item.createdAt,
     }));
   const requiredFixes = Array.isArray(review?.requiredFixes) ? review.requiredFixes.filter(Boolean) : [];
-  const activeEscalations = store
+  const scopedActiveEscalations = store
     .listEscalations("active")
-    .filter((item) => item.entityType === "slice" && item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level))
+    .filter((item) => item.entityType === "slice" && item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
+  const activeEscalations = scopedActiveEscalations
+    .filter(isRepairPromptEscalation)
+    .slice(-6)
+    .map((item) => ({
+      id: item.id,
+      level: item.level,
+      message: item.message,
+      reason: item.reason,
+      createdAt: item.createdAt,
+    }));
+  const repairSignalEscalations = scopedActiveEscalations
+    .filter(isRepairSignalEscalation)
     .slice(-6)
     .map((item) => ({
       id: item.id,
@@ -1029,10 +1075,16 @@ function buildH2RepairContext(store, slice) {
     reviewNeedsRepair ? reviewEvidence?.createdAt : undefined,
     ...humanFeedback.map((item) => item.createdAt),
     ...activeEscalations.map((item) => item.createdAt),
+    ...repairSignalEscalations.map((item) => item.createdAt),
   ].filter(Boolean);
   const latestRepairAt = repairTimes.sort().at(-1);
   return {
-    hasRepairContext: Boolean(reviewNeedsRepair || humanFeedback.length > 0 || activeEscalations.length > 0),
+    hasRepairContext: Boolean(
+      reviewNeedsRepair ||
+        humanFeedback.length > 0 ||
+        activeEscalations.length > 0 ||
+        repairSignalEscalations.length > 0
+    ),
     latestRepairAt,
     review: reviewNeedsRepair
       ? {
@@ -1046,7 +1098,45 @@ function buildH2RepairContext(store, slice) {
       : undefined,
     humanFeedback,
     activeEscalations,
+    repairSignalEscalations,
   };
+}
+
+function isRepairPromptEscalation(escalation) {
+  return (
+    !isWorkerRepairProofBlocker(escalation) &&
+    !isRepairRetryBudgetExhaustion(escalation) &&
+    !isStaleAgentRunEscalation(escalation) &&
+    !isReviewRepairEscalation(escalation)
+  );
+}
+
+function isRepairSignalEscalation(escalation) {
+  return !isRepairRetryBudgetExhaustion(escalation);
+}
+
+function isWorkerRepairProofBlocker(escalation) {
+  return escalation.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE;
+}
+
+function isRepairRetryBudgetExhaustion(escalation) {
+  return escalation.message === REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE;
+}
+
+function isStaleAgentRunEscalation(escalation) {
+  return /^Agent run RUN-[A-Za-z0-9-]+ is stale after /.test(escalation.message);
+}
+
+function isReviewRepairEscalation(escalation) {
+  const haystack = `${escalation.message} ${escalation.reason ?? ""}`.toLowerCase();
+  return (
+    haystack.includes("sleuth review gate blocked acceptance") ||
+    haystack.includes("independent review status is repair_required") ||
+    haystack.includes("review status is repair_required") ||
+    haystack.includes("latest review status is repair_required") ||
+    haystack.includes("latest review has non-passing") ||
+    haystack.includes("latest review quality gate failed")
+  );
 }
 
 function recordTargetedRepairDispatch(dispatch) {
@@ -1072,7 +1162,7 @@ function recordRepairRetryBudgetExhausted(result) {
     }
     const active = store
       .listEscalations("active")
-      .some((item) => item.entityType === "slice" && item.entityId === result.sliceId && item.message === "Repair retry budget exhausted.");
+      .some((item) => item.entityType === "slice" && item.entityId === result.sliceId && item.message === REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE);
     if (!active) {
       const now = new Date().toISOString();
       store.insertEscalation({
@@ -1081,7 +1171,7 @@ function recordRepairRetryBudgetExhausted(result) {
         status: "active",
         entityType: "slice",
         entityId: result.sliceId,
-        message: "Repair retry budget exhausted.",
+        message: REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE,
         reason: result.reason,
         createdBy: "h2-live-runner",
         createdAt: now,

@@ -115,6 +115,7 @@ const cliRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const SETTLED_LEDGER_STATUSES = new Set(["accepted", "verified", "human_verified", "review_passed"]);
 const BLOCKED_LEDGER_STATUSES = new Set(["blocked", "human_input_required", "failed", "awaiting_human_verification"]);
 const WORKER_REPAIR_PROOF_BLOCKER_MESSAGE = "Worker result did not address targeted repair context.";
+const REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE = "Repair retry budget exhausted.";
 
 type WorkerRunResult = {
   sliceId: string;
@@ -1116,9 +1117,7 @@ program
           }),
         );
       }
-      const activeAcceptanceBlockers = store
-        .listEscalations("active")
-        .filter((item) => item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
+      const activeAcceptanceBlockers = activeAcceptanceBlockersForVerification(store, slice, options.actor);
       const verificationEvidenceId = makeId("evidence");
       let frAcResults = buildFrAcResults({
         slice,
@@ -1716,6 +1715,32 @@ recovery
   });
 
 recovery
+  .command("reset-repair-budget")
+  .description("Start a new repair retry epoch for a blocked slice without deleting history")
+  .argument("<slice-id>", "slice whose repair retry budget should be reset")
+  .requiredOption("--reason <reason>", "why the repair retry budget is being reset")
+  .option("--actor <actor>", "reset actor", "recovery-agent")
+  .action((sliceId: string, options: { reason: string; actor: string }) => {
+    const workspace = resolveWorkspace();
+    ensureInitialized(workspace);
+    const store = new SwarmStore(workspace);
+    try {
+      const result = resetRepairRetryBudget({
+        store,
+        sliceId,
+        actor: options.actor,
+        reason: options.reason,
+      });
+      console.log(`Reset repair retry budget for ${result.sliceId}`);
+      console.log(`  event: ${result.eventId}`);
+      console.log(`  cleared budget blockers: ${result.clearedEscalationIds.length}`);
+      for (const id of result.clearedEscalationIds) console.log(`  - ${id}`);
+    } finally {
+      store.close();
+    }
+  });
+
+recovery
   .command("revive")
   .description("Resume a stale agent run by captured session id")
   .argument("<run-id>", "agent run identifier")
@@ -2088,6 +2113,89 @@ function clearSupersededRecoveryEscalations(input: {
       }),
     );
   }
+}
+
+function activeAcceptanceBlockersForVerification(store: SwarmStore, slice: SliceRecord, actor: string): EscalationRecord[] {
+  const active = store
+    .listEscalations("active")
+    .filter((item) => item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level));
+  const remaining: EscalationRecord[] = [];
+  for (const escalation of active) {
+    const superseded = supersededStaleRunEscalation(store, slice, escalation);
+    if (!superseded) {
+      remaining.push(escalation);
+      continue;
+    }
+    const reason = `Stale run blocker superseded by later successful ${superseded.role} run ${superseded.supersedingRunId} before verification.`;
+    store.clearEscalation(escalation.id, { reason, clearedBy: actor });
+    store.addEvent(
+      createEvent({
+        actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason,
+          staleRunId: superseded.staleRunId,
+          supersedingRunId: superseded.supersedingRunId,
+          role: superseded.role,
+          clearedAfterVerificationSupersededRun: true,
+        },
+      }),
+    );
+  }
+  return remaining;
+}
+
+function supersededStaleRunEscalation(
+  store: SwarmStore,
+  slice: SliceRecord,
+  escalation: Pick<EscalationRecord, "message" | "reason">,
+): { staleRunId: string; supersedingRunId: string; role: AgentRunRecord["role"] } | undefined {
+  if (!isStaleAgentRunEscalation(escalation)) return undefined;
+  const runId = /Agent run (RUN-[A-Za-z0-9-]+) is stale after /.exec(escalation.message)?.[1];
+  if (!runId) return undefined;
+  const runs = store.listAgentRuns();
+  const staleRun = runs.find((run) => run.id === runId);
+  if (!staleRun || staleRun.sliceId !== slice.id || staleRun.status !== "stale") return undefined;
+  const staleTime = Date.parse(staleRun.updatedAt || staleRun.startedAt);
+  const events = store.listEvents();
+  const supersedingRun = runs
+    .filter(
+      (run) =>
+        run.id !== staleRun.id &&
+        run.sliceId === slice.id &&
+        run.role === staleRun.role &&
+        run.status === "completed" &&
+        Date.parse(run.updatedAt || run.startedAt) > staleTime &&
+        successfulRunCompletionEvent(events, run),
+    )
+    .sort((left, right) => Date.parse(right.updatedAt || right.startedAt) - Date.parse(left.updatedAt || left.startedAt))[0];
+  return supersedingRun
+    ? { staleRunId: staleRun.id, supersedingRunId: supersedingRun.id, role: supersedingRun.role }
+    : undefined;
+}
+
+function successfulRunCompletionEvent(events: HarnessEvent[], run: AgentRunRecord): boolean {
+  if (run.role === "worker") {
+    return events.some(
+      (event) =>
+        event.type === "worker.completed" &&
+        event.payload?.runId === run.id &&
+        event.payload?.ok === true &&
+        !repairProofGateFailed(event.payload),
+    );
+  }
+  if (run.role === "reviewer") {
+    return events.some((event) => event.type === "review.completed" && event.payload?.runId === run.id && event.payload?.ok === true);
+  }
+  return false;
+}
+
+function repairProofGateFailed(payload: Record<string, unknown> | undefined): boolean {
+  const gate = payload?.repairProofGate;
+  if (!gate || typeof gate !== "object" || Array.isArray(gate)) return false;
+  return (gate as { passed?: unknown }).passed === false;
 }
 
 function sessionIdFromAgentRunEvents(run: AgentRunRecord): string | undefined {
@@ -2588,9 +2696,9 @@ async function executeWorkerRun(input: {
   const artifactPath = path.join(artifactsDir(input.workspace), slice.id);
   fs.mkdirSync(artifactPath, { recursive: true });
   const runId = makeId("agentRun");
-  const lastMessagePath = path.join(artifactPath, input.reason === "restart" ? `worker-result-${runId}.json` : "worker-result.json");
-  const jsonlPath = path.join(artifactPath, input.reason === "restart" ? `worker-events-${runId}.jsonl` : "worker-events.jsonl");
-  const stderrPath = path.join(artifactPath, input.reason === "restart" ? `worker-stderr-${runId}.log` : "worker-stderr.log");
+  const lastMessagePath = path.join(artifactPath, `worker-result-${runId}.json`);
+  const jsonlPath = path.join(artifactPath, `worker-events-${runId}.jsonl`);
+  const stderrPath = path.join(artifactPath, `worker-stderr-${runId}.log`);
   const promptPath = path.join(artifactPath, `worker-prompt-${runId}.md`);
   const schemaPath = path.join(input.workspace, "schemas", "worker-result.schema.json");
   writeWorkerResultSchema(schemaPath);
@@ -2708,6 +2816,26 @@ async function executeWorkerRun(input: {
       },
     }),
   );
+  const clearedPreRunArtifacts = [lastMessagePath, jsonlPath, stderrPath].filter((artifact) => fs.existsSync(artifact));
+  for (const artifact of clearedPreRunArtifacts) {
+    fs.rmSync(artifact, { force: true });
+  }
+  if (clearedPreRunArtifacts.length > 0) {
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "worker.stale_artifacts_cleared",
+        entityType: "slice",
+        entityId: slice.id,
+        payload: {
+          runId,
+          driver: driverId,
+          paths: clearedPreRunArtifacts,
+          reason: "Removed pre-existing worker artifacts before spawning this run so artifact recovery cannot accept stale results.",
+        },
+      }),
+    );
+  }
 
   let result: {
     status: number | null;
@@ -5008,12 +5136,14 @@ function runFixtureSkeptic(input: { challengedReview: ReviewResult }): SkepticRe
   const findingVerdicts: SkepticResult["findingVerdicts"] = [
     ...review.frAcFindings.map((finding) => ({
       ref: finding.ref,
+      dimension: "",
       source: "fr_ac_finding" as const,
       verdict: "uncertain" as const,
       severity: "minor" as const,
       reasoning: `Fixture skeptic could not independently confirm the FR/AC finding for ${finding.ref}; default-rejecting to uncertain.`,
     })),
     ...review.qualityGate.dimensions.map((dimension) => ({
+      ref: "",
       dimension: dimension.dimension,
       source: "quality_dimension" as const,
       verdict: "uncertain" as const,
@@ -5021,12 +5151,16 @@ function runFixtureSkeptic(input: { challengedReview: ReviewResult }): SkepticRe
       reasoning: `Fixture skeptic could not independently confirm the ${dimension.dimension} quality dimension; default-rejecting to uncertain.`,
     })),
     ...review.requiredFixes.map((fix) => ({
+      ref: "",
+      dimension: "",
       source: "required_fix" as const,
       verdict: "uncertain" as const,
       severity: "minor" as const,
       reasoning: `Fixture skeptic could not independently confirm the required fix "${fix}"; default-rejecting to uncertain.`,
     })),
     ...review.escalations.map((escalation) => ({
+      ref: "",
+      dimension: "",
       source: "escalation" as const,
       verdict: "uncertain" as const,
       severity: "minor" as const,
@@ -5457,7 +5591,14 @@ function readLatestReviewGate(
   store: SwarmStore,
   slice: SliceRecord,
   verifier: string,
-): { passed: boolean; reason: string; status?: ReviewResult["status"]; evidenceId?: string; downgrades?: GateDowngrade[] } {
+): {
+  passed: boolean;
+  reason: string;
+  status?: ReviewResult["status"];
+  evidenceId?: string;
+  downgrades?: GateDowngrade[];
+  humanVerificationReady?: boolean;
+} {
   const reviewEvidence = store
     .listEvidence(slice.id)
     .filter((item) => item.kind === "review_result" && item.payload.reviewResult)
@@ -5481,6 +5622,27 @@ function readLatestReviewGate(
       reason: "latest review detected immutable source mutation",
       status: "human_required",
       evidenceId: reviewEvidence.id,
+    };
+  }
+  if (parsed.data.status === "human_required") {
+    const nonPassingFindings = slice.frAcRefs
+      .map((ref) => ({ ref, finding: reviewFindingForRef(parsed.data.frAcFindings, ref) }))
+      .filter((item) => item.finding?.status !== "passed");
+    const { reasons: qualityBlockingReasons, downgrades } = reviewQualityBlockingDecision(parsed.data, {
+      store,
+      slice,
+      reviewEvidenceId: reviewEvidence.id,
+    });
+    return {
+      passed: false,
+      reason: `latest review status is ${parsed.data.status}`,
+      status: parsed.data.status,
+      evidenceId: reviewEvidence.id,
+      downgrades,
+      humanVerificationReady:
+        nonPassingFindings.every((item) => humanVerificationOnlyReviewFinding(slice, item.ref, item.finding)) &&
+        parsed.data.stubOrHardcodeRisk !== "high" &&
+        qualityBlockingReasons.length === 0,
     };
   }
   if (parsed.data.status !== "accepted") {
@@ -5539,6 +5701,7 @@ function buildSliceRepairContext(store: SwarmStore, slice: SliceRecord): SliceRe
   const activeEscalations = store
     .listEscalations("active")
     .filter((item) => item.entityType === "slice" && item.entityId === slice.id && ["blocker", "human_required", "critical"].includes(item.level))
+    .filter(isRepairPromptEscalation)
     .slice(-6)
     .map((item) => ({
       id: item.id,
@@ -5549,6 +5712,39 @@ function buildSliceRepairContext(store: SwarmStore, slice: SliceRecord): SliceRe
 
   if (!review && humanFeedback.length === 0 && activeEscalations.length === 0) return undefined;
   return { review, humanFeedback, activeEscalations };
+}
+
+function isRepairPromptEscalation(escalation: Pick<EscalationRecord, "message" | "reason">): boolean {
+  return (
+    !isWorkerRepairProofBlocker(escalation) &&
+    !isRepairRetryBudgetExhaustion(escalation) &&
+    !isStaleAgentRunEscalation(escalation) &&
+    !isReviewRepairEscalationForPrompt(escalation)
+  );
+}
+
+function isWorkerRepairProofBlocker(escalation: Pick<EscalationRecord, "message">): boolean {
+  return escalation.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE;
+}
+
+function isRepairRetryBudgetExhaustion(escalation: Pick<EscalationRecord, "message">): boolean {
+  return escalation.message === REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE;
+}
+
+function isStaleAgentRunEscalation(escalation: Pick<EscalationRecord, "message">): boolean {
+  return /^Agent run RUN-[A-Za-z0-9-]+ is stale after /.test(escalation.message);
+}
+
+function isReviewRepairEscalationForPrompt(escalation: Pick<EscalationRecord, "message" | "reason">): boolean {
+  const haystack = `${escalation.message} ${escalation.reason ?? ""}`.toLowerCase();
+  return (
+    haystack.includes("sleuth review gate blocked acceptance") ||
+    haystack.includes("independent review status is repair_required") ||
+    haystack.includes("review status is repair_required") ||
+    haystack.includes("latest review status is repair_required") ||
+    haystack.includes("latest review has non-passing") ||
+    haystack.includes("latest review quality gate failed")
+  );
 }
 
 function buildRepairProofRequirements(context: SliceRepairContext | undefined): RepairProofRequirement[] {
@@ -5586,7 +5782,7 @@ function buildRepairProofRequirements(context: SliceRepairContext | undefined): 
       evidenceId: feedback.evidenceId,
     });
   }
-  for (const escalation of context.activeEscalations) {
+  for (const escalation of context.activeEscalations.filter(isRepairPromptEscalation)) {
     const reason = escalation.reason?.trim() ? ` Reason: ${escalation.reason.trim()}` : "";
     requirements.push({
       source: "active_blocker",
@@ -5792,6 +5988,65 @@ function clearResolvedWorkerRepairProofEscalations(input: {
       },
     }),
   );
+}
+
+function resetRepairRetryBudget(input: {
+  store: SwarmStore;
+  sliceId: string;
+  actor: string;
+  reason: string;
+}): { sliceId: string; eventId: string; clearedEscalationIds: string[] } {
+  const slice = input.store.listSlices().find((item) => item.id === input.sliceId);
+  if (!slice) throw new Error(`Slice not found: ${input.sliceId}`);
+
+  const budgetBlockers = input.store
+    .listEscalations("active")
+    .filter(
+      (item) =>
+        item.entityType === "slice" &&
+        item.entityId === slice.id &&
+        item.message === REPAIR_RETRY_BUDGET_EXHAUSTED_MESSAGE,
+    );
+  const clearedEscalationIds: string[] = [];
+  for (const escalation of budgetBlockers) {
+    const clearReason = `Repair retry budget reset by ${input.actor}: ${input.reason}`;
+    input.store.clearEscalation(escalation.id, { reason: clearReason, clearedBy: input.actor });
+    clearedEscalationIds.push(escalation.id);
+    input.store.addEvent(
+      createEvent({
+        actor: input.actor,
+        type: "escalation.cleared",
+        entityType: "escalation",
+        entityId: escalation.id,
+        payload: {
+          reason: clearReason,
+          sliceId: slice.id,
+          clearedAfterRepairBudgetReset: true,
+        },
+      }),
+    );
+  }
+
+  const event = createEvent({
+    actor: input.actor,
+    type: "repair.retry_budget_reset",
+    entityType: "slice",
+    entityId: slice.id,
+    payload: {
+      reason: input.reason,
+      clearedEscalationIds,
+    },
+  });
+  input.store.addEvent(event);
+  refreshCheckpoint({
+    store: input.store,
+    role: "recovery",
+    entityType: "slice",
+    entityId: slice.id,
+    actor: input.actor,
+    reason: `Repair retry budget reset: ${input.reason}`,
+  });
+  return { sliceId: slice.id, eventId: event.id, clearedEscalationIds };
 }
 
 // FR-CP-001 / FR-CP-003: derive settled facts from DURABLE ledger state (never from
@@ -6318,7 +6573,7 @@ function buildFrAcResults(input: {
         verifiedBy: input.verifier,
       });
     }
-    if (input.reviewGate.passed && requiresHumanVerification(input.slice, ref)) {
+    if (reviewGateAllowsHumanVerificationPacket(input.reviewGate) && requiresHumanVerification(input.slice, ref)) {
       return attachCriterionResults(input.slice, {
         ref,
         status: "awaiting_human_verification",
@@ -6376,6 +6631,27 @@ type HumanVerificationPacketData = {
 
 function requiresHumanVerification(slice: SliceRecord, ref: string): boolean {
   return slice.verificationObligations.some((obligation) => obligation.ref === ref && obligation.mode === "human_verification_required");
+}
+
+function reviewGateAllowsHumanVerificationPacket(reviewGate: ReturnType<typeof readLatestReviewGate>): boolean {
+  if (reviewGate.passed) return true;
+  return reviewGate.status === "human_required" && reviewGate.humanVerificationReady === true;
+}
+
+function humanVerificationOnlyReviewFinding(
+  slice: SliceRecord,
+  ref: string,
+  finding: ReviewResult["frAcFindings"][number] | undefined,
+): boolean {
+  if (!requiresHumanVerification(slice, ref)) return false;
+  if (!finding) return false;
+  if (finding.status !== "missing_evidence" && finding.status !== "uncertain") return false;
+  const haystack = [...finding.evidence, finding.finding].join("\n").toLowerCase();
+  return (
+    /human[\s_-]*(verification|visual|qa|sign[-\s]*off)/i.test(haystack) ||
+    /visual[\s_-]*(verification|review|qa)/i.test(haystack) ||
+    /missing[^.\n]*(human|visual)/i.test(haystack)
+  );
 }
 
 function attachHumanVerificationPacketEvidence(
@@ -8399,6 +8675,7 @@ Instructions:
 - If Git reports dubious ownership, prefer per-command safe-directory usage such as git -c safe.directory=${safeDirectoryPath} status --short; use the normalized forward-slash path and do not mutate global Git config.
 - Provide frAcCoverage for every in-scope FR/AC ref.
 - Map frAcCoverage evidence to the read-only verification obligations above.
+- Always include repairProof in the structured result. Use an empty array when no targeted repair context is present.
 - If Targeted repair context is present, include repairProof entries for every listed repair-proof requirement. A generic "passed" result is not sufficient for a repair run.
 - Return status "passed" when your implementation work and worker evidence are complete, even though the harness will still run independent review and deterministic verification after you.
 - Do not return "needs_human" merely because independent review, deterministic verification, or final acceptance is still pending; those are normal harness phases.

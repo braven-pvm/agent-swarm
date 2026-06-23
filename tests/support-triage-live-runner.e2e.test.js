@@ -360,6 +360,15 @@ test("support triage repair proof blocker clears after later worker passes proof
   });
   assert.match(repairOutput, /Worker completed/);
 
+  const repairPrompt = fs.readFileSync(latestWorkerPromptPath(workspace, seeded.sliceId), "utf8");
+  assert.match(repairPrompt, /Repair proof required in structured worker result/);
+  assert.match(repairPrompt, /source=human_feedback/);
+  assert.doesNotMatch(
+    repairPrompt,
+    /source=active_blocker;[^"]*"[^"]*Worker result did not address targeted repair context/,
+    "worker-proof blocker should trigger another repair attempt, not become a self-referential proof requirement",
+  );
+
   const repairedStore = new SwarmStore(workspace);
   try {
     const slice = repairedStore.listSlices().find((item) => item.id === seeded.sliceId);
@@ -454,6 +463,99 @@ test("support triage full smoke stops high-retry repair loops with a visible blo
     "retry-budget exhaustion should be visible as an active blocker",
   );
   assert.ok(snapshot.recentEvents.some((event) => event.type === "repair.retry_budget_exhausted" && event.entityId === seeded.sliceId));
+});
+
+test("support triage repair retry budget reset starts a fresh repair epoch", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-live-agent-support-triage-retry-budget-reset-${process.pid}-${Date.now()}`);
+  const summaryPath = path.join(workspace, "h2-live-summary.json");
+  const artifactDir = path.join(workspace, "h2-live-artifacts");
+  const fakeCodex = writeFakeCodexScript(path.join(repoRoot, ".swarm-demo", `test-h2-retry-budget-reset-fake-codex-${process.pid}-${Date.now()}.mjs`));
+
+  execFileSync(
+    process.execPath,
+    [cli, "smoke", "live-agent", "reset", "--scenario", "live-agent-smoke-h2", "--workspace", workspace],
+    { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const seeded = seedFailedHumanVerification(workspace);
+  seedRepairAttemptPressure(workspace, seeded.sliceId, 4);
+
+  const resetOutput = execFileSync(
+    process.execPath,
+    [
+      cli,
+      "recovery",
+      "reset-repair-budget",
+      seeded.sliceId,
+      "--reason",
+      "regression test starts a new repair epoch",
+      "--actor",
+      "test-recovery",
+    ],
+    { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  assert.match(resetOutput, /Reset repair retry budget/);
+
+  const output = execFileSync(
+    process.execPath,
+    [
+      cli,
+      "smoke",
+      "live-agent",
+      "full",
+      "--scenario",
+      "live-agent-smoke-h2",
+      "--workspace",
+      workspace,
+      "--summary",
+      summaryPath,
+      "--artifacts",
+      artifactDir,
+      "--max-turns",
+      "2",
+      "--execute-limit",
+      "1",
+      "--max-slices",
+      "5",
+      "--max-agent-runs",
+      "20",
+      "--max-runtime-seconds",
+      "120",
+      "--max-repair-attempts",
+      "3",
+      "--no-history",
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        SWARM_CODEX_COMMAND: process.execPath,
+        SWARM_CODEX_ARGS: JSON.stringify([fakeCodex]),
+        FAKE_SWARM_CLI: cli,
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  const summary = JSON.parse(output);
+
+  assert.notEqual(summary.finalReason, undefined);
+  assert.equal(
+    summary.turns.some((turn) => turn.kind === "repair-retry-budget-exhausted"),
+    false,
+    "old pre-reset attempts must not exhaust the fresh repair epoch",
+  );
+  const repairTurn = summary.turns.find((turn) => turn.kind === "targeted-repair-dispatch");
+  assert.ok(repairTurn, "expected reset retry epoch to permit a targeted repair dispatch");
+  assert.equal(repairTurn.sliceId, seeded.sliceId);
+  assert.equal(repairTurn.resetAt !== undefined, true);
+
+  const snapshot = JSON.parse(fs.readFileSync(summary.artifacts.finalSnapshot, "utf8"));
+  assert.ok(snapshot.recentEvents.some((event) => event.type === "repair.retry_budget_reset" && event.entityId === seeded.sliceId));
+  assert.equal(
+    snapshot.activeEscalations.some((item) => item.entityId === seeded.sliceId && item.message === "Repair retry budget exhausted."),
+    false,
+  );
 });
 
 test("support triage product readiness uses configured JSON fields and workflow probes", () => {
@@ -768,12 +870,21 @@ function seedFailedHumanVerification(workspace) {
   }
 }
 
+function latestWorkerPromptPath(workspace, sliceId) {
+  const artifactDir = path.join(workspace, ".swarm", "artifacts", sliceId);
+  return fs
+    .readdirSync(artifactDir)
+    .filter((name) => /^worker-prompt-.*\.md$/.test(name))
+    .map((name) => path.join(artifactDir, name))
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0];
+}
+
 function seedRepairAttemptPressure(workspace, sliceId, attempts) {
   const store = new SwarmStore(workspace);
   try {
-    const now = new Date();
+    const startedAt = Date.now() - (attempts + 1) * 1000;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const timestamp = new Date(now.getTime() + attempt * 1000).toISOString();
+      const timestamp = new Date(startedAt + attempt * 1000).toISOString();
       store.insertAgentRun({
         id: `RUN-retry-pressure-${attempt}`,
         sliceId,

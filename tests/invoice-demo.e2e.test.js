@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { SwarmStore } from "../dist/storage.js";
 import { buildCoverage } from "../dist/observability.js";
+import { buildHumanActionQueue } from "../dist/human-actions.js";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(repoRoot, "dist", "cli.js");
@@ -469,6 +470,122 @@ test("human-verification obligations produce packets and block acceptance", () =
   assert.ok(humanRecorded, "human verification result should be visible as an event");
 });
 
+test("human-required review gates become actionable visual verification packets", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-human-review-gate-${process.pid}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+  const packagePath = path.join(target, "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  packageJson.scripts = { ...packageJson.scripts, start: "node --version" };
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  let store = new SwarmStore(workspace);
+  let slice = store.listSlices().find((item) => item.id === sliceId);
+  store.close();
+  assert.ok(slice);
+  const humanRef = slice.frAcRefs[0];
+  const obligations = slice.verificationObligations.map((obligation) =>
+    obligation.ref === humanRef
+      ? { ...obligation, mode: "human_verification_required", responsibleParty: "human-qa" }
+      : obligation,
+  );
+  let db = new Database(path.join(workspace, ".swarm", "state.db"));
+  try {
+    db.prepare("update slices set verification_obligations_json = ? where id = ?").run(JSON.stringify(obligations), sliceId);
+  } finally {
+    db.close();
+  }
+
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "human-gate-worker"]);
+  runSwarm(workspace, ["review", sliceId, "--driver", "fixture", "--actor", "human-gate-reviewer"]);
+
+  db = new Database(path.join(workspace, ".swarm", "state.db"));
+  try {
+    const reviewRow = db
+      .prepare(
+        "select id, payload_json from evidence where slice_id = ? and kind = 'review_result' order by created_at desc limit 1",
+      )
+      .get(sliceId);
+    assert.ok(reviewRow, "review evidence should exist");
+    const payload = JSON.parse(reviewRow.payload_json);
+    payload.reviewResult = {
+      ...payload.reviewResult,
+      status: "human_required",
+      summary: "Automated/reviewer evidence supports the implementation; final acceptance requires human visual verification.",
+      requiredFixes: ["Complete and record human visual verification."],
+      recommendation: "Proceed to human visual QA.",
+      escalations: [
+        {
+          level: "human_required",
+          message: "Human visual verification is explicitly required by the immutable obligations before final acceptance.",
+        },
+      ],
+    };
+    db.prepare("update evidence set payload_json = ? where id = ?").run(JSON.stringify(payload), reviewRow.id);
+  } finally {
+    db.close();
+  }
+
+  const escalationId = "ESC-human-review-gate";
+  store = new SwarmStore(workspace);
+  store.insertEscalation({
+    id: escalationId,
+    level: "human_required",
+    status: "active",
+    entityType: "slice",
+    entityId: sliceId,
+    message: "Human visual verification is explicitly required by the immutable obligations before final acceptance.",
+    createdBy: "human-gate-reviewer",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  store.close();
+
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "human-gate-verifier"]);
+  assert.match(verifyOutput, /review gate: latest review status is human_required/);
+  assert.match(verifyOutput, new RegExp(`awaiting human verification: ${humanRef.replace(".", "\\.")}`));
+  assert.match(verifyOutput, /human packet/);
+
+  store = new SwarmStore(workspace);
+  slice = store.listSlices().find((item) => item.id === sliceId);
+  const coverage = buildCoverage(store);
+  const queue = buildHumanActionQueue(store, workspace);
+  store.close();
+
+  assert.equal(slice?.status, "blocked", "human visual verification should block final acceptance");
+  const coverageRef = coverage.refs.find((item) => item.ref === humanRef);
+  assert.equal(coverageRef.ledgerStatus, "awaiting_human_verification");
+  const humanAction = queue.actions.find((action) => action.kind === "human_verification" && action.ref === humanRef);
+  assert.ok(humanAction, "human verification action should be surfaced for the operator");
+  assert.equal(humanAction.reviewTarget.targetName, "invoice-api");
+  assert.equal(humanAction.reviewTarget.startAvailable, true);
+  assert.equal(humanAction.reviewTarget.startCommand, "npm run start");
+  assert.equal(humanAction.reviewTarget.commandName, "start");
+  assert.ok(humanAction.allowedActions.some((action) => action.kind === "record_human_verification"));
+  assert.ok(
+    queue.actions.every((action) => action.id !== `escalation:${escalationId}`),
+    "generic slice human_required escalation should not duplicate the actionable visual QA packet",
+  );
+});
+
 test("worker dispatch blocks explicit slices with missing verification obligations", () => {
   const workspace = path.join(repoRoot, ".swarm-demo", `test-obligation-gate-${process.pid}`);
   const target = path.join(workspace, "invoice-api");
@@ -808,6 +925,83 @@ test("recovery scan marks stale running agent runs and raises a scoped blocker",
   assert.ok(
     restarted.recentEvents.some((event) => event.type === "recovery.restart_started"),
     "recovery.restart_started present",
+  );
+});
+
+test("verification clears stale worker blockers superseded by a later successful worker", () => {
+  const workspace = path.join(repoRoot, ".swarm-demo", `test-invoice-stale-superseded-${process.pid}-${Date.now()}`);
+  const target = path.join(workspace, "invoice-api");
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.cpSync(template, target, { recursive: true });
+
+  runSwarm(workspace, ["init"]);
+  runSwarm(workspace, ["target", "init", target]);
+  runSwarm(workspace, ["sources", "add-file", path.join(target, "specs", "invoice-api.md")]);
+  const pullOutput = runSwarm(workspace, [
+    "slices",
+    "pull",
+    "--target",
+    "invoice-api",
+    "--source",
+    "invoice-api.md",
+    "--batch-size",
+    "3",
+  ]);
+  const sliceId = /Created slice (SLICE-[a-f0-9]+)/i.exec(pullOutput)?.[1];
+  assert.ok(sliceId);
+
+  const staleTimestamp = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const staleRunId = "RUN-staleverify001";
+  const store = new SwarmStore(workspace);
+  try {
+    store.insertAgentRun({
+      id: staleRunId,
+      sliceId,
+      role: "worker",
+      entityType: "slice",
+      entityId: sliceId,
+      actor: "stale-worker",
+      driver: "codex",
+      status: "running",
+      attempt: 1,
+      startedAt: staleTimestamp,
+      updatedAt: staleTimestamp,
+    });
+    store.upsertHeartbeat({
+      id: "heartbeat:stale-worker",
+      actor: "stale-worker",
+      state: "thinking",
+      detail: "Synthetic stale heartbeat",
+      entityType: "slice",
+      entityId: sliceId,
+      timestamp: staleTimestamp,
+    });
+  } finally {
+    store.close();
+  }
+
+  runSwarm(workspace, ["recovery", "scan", "--mark-stale"]);
+  runSwarm(workspace, ["run", sliceId, "--driver", "fixture", "--actor", "fresh-worker"]);
+  runSwarm(workspace, ["review", sliceId, "--driver", "fixture", "--actor", "fresh-reviewer"]);
+  const verifyOutput = runSwarm(workspace, ["verify", sliceId, "--actor", "fresh-verifier"]);
+  assert.match(verifyOutput, /Verification passed/);
+
+  const snapshot = JSON.parse(runSwarm(workspace, ["observe", "--events", "80"]));
+  const slice = snapshot.slices.find((item) => item.id === sliceId);
+  assert.equal(slice.status, "accepted");
+  assert.ok(
+    !snapshot.activeEscalations.some((item) => item.entityId === sliceId && item.message.includes(staleRunId)),
+    "later successful worker/review/verification should clear the superseded stale worker blocker",
+  );
+  assert.ok(
+    snapshot.recentEvents.some(
+      (event) =>
+        event.type === "escalation.cleared" &&
+        event.payload?.staleRunId === staleRunId &&
+        event.payload?.clearedAfterVerificationSupersededRun === true,
+    ),
+    "verification should record a visible stale-run blocker clearance",
   );
 });
 

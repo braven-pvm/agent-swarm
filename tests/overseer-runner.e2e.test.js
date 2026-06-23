@@ -603,8 +603,8 @@ test("overseer launches from a short prompt after dashboard worker evidence", ()
     driver: "codex",
     status: "completed",
     attempt: 1,
-    resultPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-result.json"),
-    eventsPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-events.jsonl"),
+    resultPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-result-RUN-test-dashboard-worker.json"),
+    eventsPath: path.join(workspace, ".swarm", "artifacts", dashboardSliceId, "worker-events-RUN-test-dashboard-worker.jsonl"),
     startedAt: now,
     updatedAt: now,
   });

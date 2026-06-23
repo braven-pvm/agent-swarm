@@ -120,6 +120,11 @@ export function buildHumanActionQueue(store: SwarmStore, workspace?: string): Hu
   const coverage = buildCoverage(store);
   const activeEscalations = store.listEscalations("active");
   const actions: HumanActionItem[] = [];
+  const humanVerificationSliceIds = new Set(
+    coverage.ledger.entries
+      .filter((entry) => entry.status === "awaiting_human_verification" && entry.sliceId)
+      .map((entry) => entry.sliceId as string),
+  );
 
   for (const escalation of activeEscalations) {
     if (!["blocker", "human_required", "critical"].includes(escalation.level)) continue;
@@ -127,6 +132,16 @@ export function buildHumanActionQueue(store: SwarmStore, workspace?: string): Hu
     // repair proof), so it is a concern — not a human action. Skip it here so it is
     // absent from both the queue and totals.blockers; it remains in activeEscalations.
     if (escalation.message === WORKER_REPAIR_PROOF_BLOCKER_MESSAGE) continue;
+    // If the verifier has already converted this slice-level human-required gate into concrete
+    // per-FR/AC visual verification actions, keep the generic escalation in observability but do
+    // not duplicate it in the operator queue. The human needs a packet, target, and checklist.
+    if (
+      escalation.level === "human_required" &&
+      escalation.entityType === "slice" &&
+      humanVerificationSliceIds.has(escalation.entityId)
+    ) {
+      continue;
+    }
     actions.push(humanEscalationAction(escalation));
   }
 

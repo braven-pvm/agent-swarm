@@ -118,8 +118,17 @@ function readEvents(workspace, type, actor) {
 }
 
 function readResultJson(workspace, sliceId) {
-  const resultPath = path.join(workspace, ".swarm", "artifacts", sliceId, "worker-result.json");
-  return fs.readFileSync(resultPath, "utf8");
+  const store = new SwarmStore(workspace);
+  try {
+    const run = store
+      .listAgentRuns()
+      .filter((item) => item.sliceId === sliceId && item.role === "worker" && item.resultPath)
+      .slice(-1)[0];
+    assert.ok(run?.resultPath, "expected latest worker run to record a result path");
+    return fs.readFileSync(run.resultPath, "utf8");
+  } finally {
+    store.close();
+  }
 }
 
 test("OCF-3 (a): journal ON + identical envelope -> HIT replays the byte-identical result without a 2nd spawn", () => {
@@ -139,21 +148,21 @@ test("OCF-3 (a): journal ON + identical envelope -> HIT replays the byte-identic
   runSwarm(workspace, ["run", sliceId, "--driver", "codex", "--actor", "journal-hit"], env);
   assert.equal(spawnCount(marker), 1, "second run must be a HIT and NOT spawn the worker again");
   const secondResult = readResultJson(workspace, sliceId);
-  // The HIT replays the stored VALIDATED VALUE through the shared persist core (canonical 2-space JSON),
-  // exactly as a fresh validated result is persisted. The validated VALUE must be byte-identical; the only
-  // difference vs the raw first-run codex artifact is the canonical persist formatting (proven below).
-  assert.deepEqual(JSON.parse(secondResult), JSON.parse(firstResult), "HIT must replay the identical validated value");
   const journalEntry = JSON.parse(
     fs.readFileSync(
       path.join(workspace, ".swarm", "result-journal", fs.readdirSync(path.join(workspace, ".swarm", "result-journal"))[0]),
       "utf8",
     ),
   );
+  // The HIT replays the stored VALIDATED VALUE through the shared persist core (canonical 2-space JSON),
+  // exactly as a fresh validated result is persisted. Defaults such as repairProof: [] are materialized in
+  // the journal value even when the raw first-run fake artifact omitted them.
+  assert.deepEqual(JSON.parse(secondResult), journalEntry.result, "HIT must replay the stored validated value");
   assert.equal(secondResult, `${JSON.stringify(journalEntry.result, null, 2)}\n`, "HIT writes the canonical persisted validated result");
 
   const hitEvents = readEvents(workspace, "worker.journal_hit");
   assert.equal(hitEvents.length, 1, "exactly one journal_hit event expected");
-  assert.equal(hitEvents[0].payload.resultPath.endsWith("worker-result.json"), true);
+  assert.match(String(hitEvents[0].payload.resultPath), /worker-result-RUN-[A-Za-z0-9-]+\.json$/);
   assert.match(String(hitEvents[0].payload.soundnessNote), /contested boundary/i);
 
   // The journal entry exists on disk under .swarm/result-journal/.

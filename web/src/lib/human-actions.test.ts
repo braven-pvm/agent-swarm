@@ -155,6 +155,55 @@ describe("HumanActionsRail", () => {
 describe("HumanActionDetail", () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it("surfaces review target, checklist, instructions, and a dev-server start affordance for human verification", () => {
+    const store = createConsoleStore();
+    store.hydrate(baseSnap as any);
+    const action: HumanActionQueue["actions"][number] = {
+      id: "human-verification:SLICE-1:AC-1",
+      kind: "human_verification",
+      severity: "danger",
+      title: "Human verification required: AC-1",
+      summary: "Visual sign-off required.",
+      status: "awaiting_human_verification",
+      entityType: "slice",
+      entityId: "SLICE-1",
+      sliceId: "SLICE-1",
+      ref: "AC-1",
+      domain: "Support Dashboard",
+      links: [],
+      allowedActions: [
+        {
+          kind: "record_human_verification",
+          method: "POST",
+          path: "/api/human-verify",
+          bodyTemplate: { sliceId: "SLICE-1", ref: "AC-1", status: "human_verified", actor: "human", notes: "" },
+        },
+      ],
+      reviewTarget: {
+        targetName: "support-ui",
+        targetPathRelative: "support-ui",
+        startCommand: "npm run review",
+        commandName: "review",
+        commandSource: "package.json.scripts.review",
+        startAvailable: true,
+        requirementRef: "AC-1",
+        requirementText: "Dropdowns allow support agents to choose valid values.",
+        responsibleParty: "human-qa",
+        expectedOutcomes: ["Dropdown choices can be selected without closing or clearing."],
+        instructions: ["Open the review target before recording a result."],
+      },
+    };
+    store.setHumanActions(queue([action]));
+
+    render(HumanActionDetail, { props: { store, action, onResolved: () => {} } });
+    expect(screen.getByText("Verification target")).toBeTruthy();
+    expect(screen.getAllByText("npm run review").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Dropdowns allow support agents to choose valid values.")).toBeTruthy();
+    expect(screen.getByText("Dropdown choices can be selected without closing or clearing.")).toBeTruthy();
+    expect(screen.getByText("Open the review target before recording a result.")).toBeTruthy();
+    expect(screen.getByText("Start dev server to verify")).toBeTruthy();
+  });
+
   it("explains legacy repair-requested verification rework actions without offering another human submit", () => {
     const store = createConsoleStore();
     store.hydrate(baseSnap as any);

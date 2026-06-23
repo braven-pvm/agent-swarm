@@ -1,10 +1,36 @@
 # Current Project Memory
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 This file is the durable handoff memory for the current state of `agent-swarm`. It should let a fresh agent resume without relying on the chat transcript.
 
 ## Latest Handoff Update
+
+2026-06-23 repair-budget reset hardening:
+
+- Repair retry exhaustion is now resettable without erasing history. Use:
+
+```powershell
+node dist\cli.js recovery reset-repair-budget SLICE-... --reason "human approved another focused repair attempt" --actor human-ui
+```
+
+- The reset writes `repair.retry_budget_reset`, clears active `Repair retry budget exhausted.` blockers for that slice only, and preserves all historical worker/reviewer runs.
+- The H2 live runner now treats the latest reset event as a new retry epoch: repair-budget counts and "latest worker after repair" checks use only worker/reviewer runs started after the reset. Old retry pressure remains visible but no longer blocks the next focused repair.
+- Repair-proof, retry-budget, and stale-run blockers are filtered out of worker `repairProof[]` requirements. They can remain visible recovery/dispatch signals, but workers prove the canonical underlying review/human/operational repair cause rather than proving a self-referential harness blocker.
+- Live restart after this change exposed a driver-facing schema issue: Codex/OpenAI strict structured outputs require every property on the root output object and every nested object to appear in `required`. `workerResultSchema.repairProof` is now required with default `[]`; repair-proof entry optional fields and skeptic verdict optional fields are now required-with-defaults. Worker prompts explicitly instruct agents to emit `repairProof: []` when no targeted repair context exists.
+- The same restart exposed a stale-artifact recovery bug: direct worker runs reused the fixed `worker-result.json` path, so a failed/no-output child could be mistaken for success by validating an old result file, and an interrupted later worker could erase prior valid proof. Worker result/event/stderr artifacts are now run-scoped (`worker-result-RUN-....json`, `worker-events-RUN-....jsonl`, `worker-stderr-RUN-....log`). Artifact recovery now validates the current run's unique result path, while historical evidence keeps its own path.
+- A later continuation exposed stale recovery blockers as permanent acceptance blockers: old `Agent run RUN-... is stale after ...` slice blockers still blocked verification even after a newer worker passed repair proof and review accepted. Verification now clears stale-run blockers when a later successful same-role run supersedes them, emitting `escalation.cleared` with `clearedAfterVerificationSupersededRun: true`.
+- `tests/schema-parity.test.js` now asserts nested role-output objects require every property so this strict-schema failure class is caught before live agent runs.
+- Focused verification passed:
+
+```text
+npm run build -> passed
+node --test tests\invoice-demo.e2e.test.js -> 12/12 passing
+node --test tests\result-journal.e2e.test.js -> 6/6 passing
+node --test tests\schema-parity.test.js -> 20/20 passing
+node --test tests\structured-result-reask.e2e.test.js -> 6/6 passing
+node --test tests\support-triage-live-runner.e2e.test.js -> 9/9 passing
+```
 
 2026-06-22 repair-proof hardening:
 
@@ -1187,3 +1213,26 @@ Verification:
 - `npm run build --silent && node --test tests\support-triage-live-runner.e2e.test.js` passed `7/7`
 - `node --test tests\web-server.e2e.test.js` passed `2/2`
 - `npm -w web run test -- --run` passed `266/266`
+
+## 2026-06-23 Human Visual QA Action Hardening
+
+Latest H2 lesson: the design-system slice `SLICE-575b5433` was correctly blocked for human visual QA, but the UI surfaced it as generic `decision_required`/`human_input_required`, so the operator could not see the packet, concrete AC checklist, or start-dev-server mechanism. Root cause: the verifier treated reviewer `status: human_required` plus per-FR/AC `missing_evidence` findings as non-actionable, even when the missing evidence was explicitly the human visual QA required by immutable obligations.
+
+Implemented hardening:
+
+- `readLatestReviewGate()` now marks a human-required review as `humanVerificationReady` when all non-passing findings are only missing human visual/sign-off evidence, the refs require `human_verification_required`, and the quality gate has no blocking/high-risk concerns.
+- Deterministic verification now emits `awaiting_human_verification` FR/AC results and writes human-verification packet artifacts for that state.
+- `/api/human-actions` suppresses duplicate generic slice-level `human_required` escalations once concrete per-FR/AC human verification actions exist.
+- Coverage ledger status now prefers explicit `awaiting_human_verification` over a broad active human-required escalation, so visual QA is not mislabeled as spec/human input.
+- The web human-action detail drawer now renders `reviewTarget`, immutable requirement text, expected outcomes, review instructions, command source, and a target-specific dev-server start button.
+- `postDevServerStart()` and `DevServerVerify` now pass through `commandName` from `reviewTarget.startAction.bodyTemplate` and disable the button when no runnable review command is available.
+
+Live H2 workspace status after patch: rerunning `verify SLICE-575b5433 --force` generated four packets for `FR-DS-HUMAN-001` and `AC-DS-HUMAN-001.1` through `.3`; restarted Command Bridge on `http://127.0.0.1:4319/` now reports `/api/human-actions` totals `humanVerification: 4`, with `reviewTarget.targetName: support-ui`, `startCommand: npm run start`, packet links, expected outcomes, and `record_human_verification` actions.
+
+Verification:
+
+- `npm run build`
+- `node --test tests\invoice-demo.e2e.test.js` passed `13/13`
+- `node --test tests\human-actions.test.js` passed `1/1`
+- `node --test tests\web-server.e2e.test.js` passed `3/3`
+- `npm -w web test -- --run src/components/DevServerVerify.test.ts src/lib/control.test.ts src/lib/human-actions.test.ts` passed `32/32`

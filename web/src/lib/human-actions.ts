@@ -37,6 +37,33 @@ export interface HumanActionSource {
   uri: string;
 }
 
+export interface HumanReviewTarget {
+  targetId?: string;
+  targetName?: string;
+  targetPath?: string;
+  targetPathRelative?: string;
+  startCommand?: string;
+  commandName?: string;
+  commandSource?: string;
+  startAvailable: boolean;
+  startUnavailableReason?: string;
+  suggestedUrl?: string;
+  focusHref?: string;
+  sourceHref?: string;
+  packetHref?: string;
+  requirementRef: string;
+  requirementText?: string;
+  requirementContext?: string;
+  responsibleParty?: string;
+  expectedOutcomes: string[];
+  instructions: string[];
+  startAction?: {
+    method: "POST";
+    path: "/api/control/dev-server/start";
+    bodyTemplate: Record<string, unknown>;
+  };
+}
+
 export interface HumanActionItem {
   id: string;
   kind: HumanActionKind;
@@ -51,6 +78,7 @@ export interface HumanActionItem {
   domain?: string;
   source?: HumanActionSource;
   packet?: unknown;
+  reviewTarget?: HumanReviewTarget;
   evidenceIds?: string[];
   links: HumanActionLink[];
   allowedActions: HumanActionCommand[];
